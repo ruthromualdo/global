@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Desafio Global Summit 2026 — Explore. Descubra. Conquiste.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..800;1,9..40,300..800&display=swap" rel="stylesheet">
+  </head>
+  <body class="bg-tutu-dark text-tutu-light font-sans antialiased selection:bg-tutu-lime selection:text-tutu-dark">
+    <div id="root"></div>
+
+    <!-- Entrada padrão para o servidor de desenvolvimento Vite (npm run dev) -->
+    <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Fallback automático caso o usuário abra o index.html direto (file:// ou Live Server sem Vite) -->
+    <script>
+      window.addEventListener('DOMContentLoaded', function () {
+        setTimeout(function () {
+          var root = document.getElementById('root');
+          if (root && root.children.length === 0) {
+            var script = document.createElement('script');
+            script.src = './dist/assets/app.js';
+            document.body.appendChild(script);
+          }
+        }, 80);
+      });
+    </script>
+  </body>
+</html>
