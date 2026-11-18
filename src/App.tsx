@@ -2,6 +2,8 @@ import React from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppStoreProvider } from './hooks/useAppStore';
 import { ToastContainer } from './components/UI';
+import { RequireAdminRoute } from './components/RequireAdminRoute';
+import { RequireParticipantRoute } from './components/RequireParticipantRoute';
 
 import { PublicLayout } from './layouts/PublicLayout';
 import { ParticipantLayout } from './layouts/ParticipantLayout';
@@ -24,6 +26,7 @@ import { RankingPage } from './pages/RankingPage';
 import { AchievementsPage } from './pages/AchievementsPage';
 import { ProfilePage } from './pages/ProfilePage';
 
+import { AdminLoginPage } from './pages/admin/AdminLoginPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { AdminStartupsPage } from './pages/admin/AdminStartupsPage';
 import { AdminMissionsPage } from './pages/admin/AdminMissionsPage';
@@ -54,17 +57,62 @@ export const App: React.FC = () => {
           {/* Participant Area Routes */}
           <Route path="/app" element={<ParticipantLayout />}>
             <Route index element={<Navigate to="/app/dashboard" replace />} />
-            <Route path="dashboard" element={<ParticipantDashboard />} />
-            <Route path="missoes" element={<MissionsCenterPage />} />
-            <Route path="escanear" element={<QRScannerPage />} />
+            <Route
+              path="dashboard"
+              element={
+                <RequireParticipantRoute>
+                  <ParticipantDashboard />
+                </RequireParticipantRoute>
+              }
+            />
+            <Route
+              path="missoes"
+              element={
+                <RequireParticipantRoute>
+                  <MissionsCenterPage />
+                </RequireParticipantRoute>
+              }
+            />
+            <Route
+              path="escanear"
+              element={
+                <RequireParticipantRoute>
+                  <QRScannerPage />
+                </RequireParticipantRoute>
+              }
+            />
             <Route path="startups" element={<StartupsPage />} />
             <Route path="ranking" element={<RankingPage />} />
-            <Route path="conquistas" element={<AchievementsPage />} />
-            <Route path="perfil" element={<ProfilePage />} />
+            <Route
+              path="conquistas"
+              element={
+                <RequireParticipantRoute>
+                  <AchievementsPage />
+                </RequireParticipantRoute>
+              }
+            />
+            <Route
+              path="perfil"
+              element={
+                <RequireParticipantRoute>
+                  <ProfilePage />
+                </RequireParticipantRoute>
+              }
+            />
           </Route>
 
-          {/* Administrative Area Routes */}
-          <Route path="/admin" element={<AdminLayout />}>
+          {/* Exclusive Administrative Authentication Route */}
+          <Route path="/admin/login" element={<AdminLoginPage />} />
+
+          {/* Protected Administrative Area Routes (RBAC: ADMIN only) */}
+          <Route
+            path="/admin"
+            element={
+              <RequireAdminRoute>
+                <AdminLayout />
+              </RequireAdminRoute>
+            }
+          >
             <Route index element={<Navigate to="/admin/dashboard" replace />} />
             <Route path="dashboard" element={<AdminDashboardPage />} />
             <Route path="startups" element={<AdminStartupsPage />} />

@@ -20,15 +20,17 @@ export const ParticipantDashboard: React.FC = () => {
   const { participant, missions, startups, achievements, completeMissionInstant } = useAppStore();
 
   const activeMissions = missions.filter((m) => m.active);
-  const completedMissions = activeMissions.filter((m) => m.status === 'Concluída');
+  const completedMissionsCount = participant.completedMissionsCount;
   const availableMissions = activeMissions.filter(
     (m) => m.status === 'Disponível' || m.status === 'Em andamento'
   );
   const recommendedMission = availableMissions[0] || activeMissions[0];
 
-  const unlockedMedals = achievements.filter((a) => a.unlocked);
+  const unlockedMedals = achievements.filter(
+    (a) => a.unlocked && participant.unlockedAchievementIds.includes(a.id)
+  );
   const progressPercentage = Math.round(
-    (completedMissions.length / Math.max(1, activeMissions.length)) * 100
+    (completedMissionsCount / Math.max(1, activeMissions.length)) * 100
   );
 
   return (
@@ -98,7 +100,7 @@ export const ParticipantDashboard: React.FC = () => {
             <CheckCircle2 className="w-4 h-4 text-tutu-lime" />
           </div>
           <p className="font-display font-bold text-3xl sm:text-4xl text-tutu-light">
-            {completedMissions.length}/{activeMissions.length}
+            {completedMissionsCount}/{activeMissions.length}
           </p>
           <span className="text-[11px] text-tutu-light/70 block">No circuito de 3 dias</span>
         </div>
@@ -159,8 +161,8 @@ export const ParticipantDashboard: React.FC = () => {
               />
             </div>
             <div className="flex justify-between text-xs text-tutu-light/70">
-              <span>{completedMissions.length} concluídas</span>
-              <span>{activeMissions.length - completedMissions.length} restantes</span>
+              <span>{completedMissionsCount} concluídas</span>
+              <span>{Math.max(0, activeMissions.length - completedMissionsCount)} restantes</span>
             </div>
           </div>
 

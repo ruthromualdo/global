@@ -17,12 +17,14 @@ export type MissionStatus =
   | 'Bloqueada';
 
 export type ParticipantStatus = 'Ativo' | 'Pendente' | 'Inativo';
+export type UserRole = 'PARTICIPANT' | 'ADMIN';
 
 export interface Participant {
   id: string;
   name: string;
   nickname: string;
   email: string;
+  role?: UserRole;
   avatar: string;
   points: number;
   rankingPosition: number;

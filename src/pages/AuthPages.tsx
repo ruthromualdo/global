@@ -7,14 +7,14 @@ import { authService } from '../services/authService';
 export const LoginPage: React.FC = () => {
   const { loginDemo } = useAppStore();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('marina.costa@participante.exemplo.br');
+  const [email, setEmail] = useState('ruth.c.romualdo@gmail.com');
   const [password, setPassword] = useState('••••••••••••');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    await loginDemo(email);
+    await loginDemo(email, password);
     setLoading(false);
     navigate('/app/dashboard');
   };
@@ -81,13 +81,23 @@ export const LoginPage: React.FC = () => {
           </button>
         </form>
 
-        <div className="pt-4 border-t border-tutu-secondary/40 text-center space-y-2 text-xs">
+        <div className="pt-4 border-t border-tutu-secondary/40 text-center space-y-3 text-xs">
           <p className="text-tutu-light/75">
             Ainda não tem passaporte no evento?{' '}
             <Link to="/cadastro" className="text-tutu-lime font-bold hover:underline">
               Criar cadastro gratuito
             </Link>
           </p>
+
+          <div className="pt-2 border-t border-tutu-secondary/25 flex justify-center">
+            <Link
+              to="/admin/login"
+              className="inline-flex items-center gap-1.5 text-[11px] text-tutu-light/55 hover:text-tutu-light/90 transition-colors py-1 px-2 rounded-lg"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-tutu-secondary" />
+              <span>Acesso administrativo</span>
+            </Link>
+          </div>
         </div>
       </div>
     </div>
@@ -115,7 +125,7 @@ export const RegisterPage: React.FC = () => {
       return;
     }
 
-    await registerDemo({ name, email, acceptedTerms });
+    await registerDemo({ name, email, password, acceptedTerms });
     navigate('/app/dashboard');
   };
 

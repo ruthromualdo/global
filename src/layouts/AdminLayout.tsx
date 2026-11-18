@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
   Building2,
@@ -8,6 +8,7 @@ import {
   FileBarChart,
   FolderKanban,
   LayoutDashboard,
+  LogOut,
   Menu,
   QrCode,
   Settings,
@@ -17,9 +18,17 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { TutuBrandMark } from '../assets/logos';
+import { useAppStore } from '../hooks/useAppStore';
 
 export const AdminLayout: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { sqliteConnected, authState, logoutSession } = useAppStore();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await logoutSession();
+    navigate('/admin/login', { replace: true });
+  };
 
   const navItems = [
     { to: '/admin/dashboard', label: 'Dashboard Admin', icon: LayoutDashboard },
@@ -55,10 +64,9 @@ export const AdminLayout: React.FC = () => {
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                    isActive
-                      ? 'bg-tutu-blue text-tutu-light shadow-sm border border-tutu-lime/40'
-                      : 'text-tutu-light/80 hover:bg-tutu-secondary/25 hover:text-tutu-light'
+                  `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive
+                    ? 'bg-tutu-blue text-tutu-light shadow-sm border border-tutu-lime/40'
+                    : 'text-tutu-light/80 hover:bg-tutu-secondary/25 hover:text-tutu-light'
                   }`
                 }
               >
@@ -72,19 +80,27 @@ export const AdminLayout: React.FC = () => {
         <div className="p-4 border-t border-tutu-secondary/40 space-y-2">
           <div className="p-3 rounded-xl bg-tutu-secondary/20 border border-tutu-secondary/40 text-xs text-tutu-light/80">
             <p className="font-semibold text-tutu-lime flex items-center gap-1.5">
-              <BarChart3 className="w-3.5 h-3.5" /> Modo Simulação Ativo
+              <BarChart3 className="w-3.5 h-3.5" />{' '}
+              {sqliteConnected ? 'Banco SQLite + RBAC Ativo' : 'Modo Simulação em Memória'}
             </p>
-            <p className="mt-1 text-[11px] leading-relaxed">
-              Camada de serviços preparada para futura conexão com API + SQLite.
+            <p className="mt-1 text-[11px] leading-relaxed truncate">
+              Admin: {authState.email || 'Sessão Verificada'}
             </p>
           </div>
           <Link
             to="/app/dashboard"
-            className="w-full py-2.5 px-3 rounded-xl btn-tutu-outline text-xs flex items-center justify-center gap-2"
+            className="w-full py-2 px-3 rounded-xl btn-tutu-outline text-xs flex items-center justify-center gap-2"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="w-3.5 h-3.5" />
             <span>Ir para Visão do Participante</span>
           </Link>
+          <button
+            onClick={handleLogout}
+            className="w-full py-2 px-3 rounded-xl bg-tutu-secondary/25 hover:bg-tutu-secondary/45 border border-tutu-lime/30 text-tutu-lime font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Encerrar Sessão Admin</span>
+          </button>
         </div>
       </aside>
 
@@ -117,10 +133,9 @@ export const AdminLayout: React.FC = () => {
                   to={item.to}
                   onClick={() => setMobileMenuOpen(false)}
                   className={({ isActive }) =>
-                    `flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium ${
-                      isActive
-                        ? 'bg-tutu-blue text-tutu-light'
-                        : 'text-tutu-light/80 hover:bg-tutu-secondary/30'
+                    `flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium ${isActive
+                      ? 'bg-tutu-blue text-tutu-light'
+                      : 'text-tutu-light/80 hover:bg-tutu-secondary/30'
                     }`
                   }
                 >
@@ -130,7 +145,7 @@ export const AdminLayout: React.FC = () => {
               );
             })}
           </nav>
-          <div className="mt-6 pt-4 border-t border-tutu-secondary/40">
+          <div className="mt-6 pt-4 border-t border-tutu-secondary/40 space-y-2">
             <Link
               to="/app/dashboard"
               onClick={() => setMobileMenuOpen(false)}
@@ -139,6 +154,16 @@ export const AdminLayout: React.FC = () => {
               <ArrowLeft className="w-4 h-4" />
               <span>Voltar à Área do Participante</span>
             </Link>
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false);
+                void handleLogout();
+              }}
+              className="w-full py-3 px-4 rounded-xl bg-tutu-secondary/30 border border-tutu-lime/40 text-tutu-lime font-semibold text-sm flex items-center justify-center gap-2"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Encerrar Sessão Admin</span>
+            </button>
           </div>
         </div>
       )}

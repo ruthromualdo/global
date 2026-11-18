@@ -16,7 +16,7 @@ import { useAppStore } from '../hooks/useAppStore';
 import { formatPoints } from '../utils/formatters';
 
 export const ParticipantLayout: React.FC = () => {
-  const { participant } = useAppStore();
+  const { participant, isAdminAuthenticated } = useAppStore();
 
   const desktopLinks = [
     { to: '/app/dashboard', label: 'Início', icon: Home },
@@ -74,7 +74,7 @@ export const ParticipantLayout: React.FC = () => {
             })}
           </nav>
 
-          {/* User Points & Quick Links */}
+          {/* User Points & Quick Links (Menu Admin somente para administradores autenticados) */}
           <div className="flex items-center gap-2.5">
             <div className="px-3 py-1.5 rounded-xl bg-tutu-secondary/30 border border-tutu-lime/40 flex items-center gap-2">
               <Zap className="w-4 h-4 text-tutu-lime fill-tutu-lime" />
@@ -83,14 +83,16 @@ export const ParticipantLayout: React.FC = () => {
               </span>
             </div>
 
-            <Link
-              to="/admin/dashboard"
-              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-tutu-secondary/25 hover:bg-tutu-secondary/50 border border-tutu-secondary/60 text-xs font-semibold text-tutu-light transition-colors"
-              title="Acessar Painel Administrativo"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-tutu-lime" />
-              <span>Admin</span>
-            </Link>
+            {isAdminAuthenticated && (
+              <Link
+                to="/admin/dashboard"
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-tutu-secondary/25 hover:bg-tutu-secondary/50 border border-tutu-secondary/60 text-xs font-semibold text-tutu-light transition-colors"
+                title="Acessar Painel Administrativo"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-tutu-lime" />
+                <span>Admin</span>
+              </Link>
+            )}
 
             <Link
               to="/app/perfil"
@@ -102,7 +104,7 @@ export const ParticipantLayout: React.FC = () => {
           </div>
         </div>
 
-        {/* Sub-bar on mobile for Startups, Conquistas & Admin access */}
+        {/* Sub-bar on mobile for Startups, Conquistas & Admin access (only if ADMIN) */}
         <div className="lg:hidden border-t border-tutu-secondary/30 px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto text-xs">
           <div className="flex items-center gap-2">
             <NavLink
@@ -130,13 +132,15 @@ export const ParticipantLayout: React.FC = () => {
               Medalhas & Conquistas
             </NavLink>
           </div>
-          <Link
-            to="/admin/dashboard"
-            className="px-2.5 py-1 rounded-lg bg-tutu-secondary/30 border border-tutu-lime/30 text-tutu-lime font-semibold whitespace-nowrap flex items-center gap-1"
-          >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Painel Admin</span>
-          </Link>
+          {isAdminAuthenticated && (
+            <Link
+              to="/admin/dashboard"
+              className="px-2.5 py-1 rounded-lg bg-tutu-secondary/30 border border-tutu-lime/30 text-tutu-lime font-semibold whitespace-nowrap flex items-center gap-1"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Painel Admin</span>
+            </Link>
+          )}
         </div>
       </header>
 
@@ -145,7 +149,7 @@ export const ParticipantLayout: React.FC = () => {
         <Outlet />
       </main>
 
-      {/* Mobile Bottom Navigation Bar (Section 8.1) */}
+      {/* Mobile Bottom Navigation Bar */}
       <nav
         aria-label="Navegação móvel do participante"
         className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-tutu-dark/95 backdrop-blur-lg border-t border-tutu-secondary/60 px-2 py-1.5"

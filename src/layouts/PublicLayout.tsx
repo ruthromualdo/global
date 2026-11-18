@@ -2,8 +2,11 @@ import React from 'react';
 import { Link, Outlet } from 'react-router-dom';
 import { LogIn, Rocket, ShieldCheck, Trophy } from 'lucide-react';
 import { TutuBrandMark } from '../assets/logos';
+import { useAppStore } from '../hooks/useAppStore';
 
 export const PublicLayout: React.FC = () => {
+  const { isAdminAuthenticated } = useAppStore();
+
   return (
     <div className="min-h-screen bg-tutu-dark text-tutu-light flex flex-col">
       <header className="sticky top-0 z-30 bg-tutu-dark/90 backdrop-blur-md border-b border-tutu-secondary/40">
@@ -23,10 +26,15 @@ export const PublicLayout: React.FC = () => {
               <Trophy className="w-4 h-4 text-tutu-lime" />
               <span>Ranking Geral</span>
             </Link>
-            <Link to="/admin/dashboard" className="hover:text-tutu-lime transition-colors flex items-center gap-1.5">
-              <ShieldCheck className="w-4 h-4 text-tutu-lime" />
-              <span>Painel Admin</span>
-            </Link>
+            {isAdminAuthenticated && (
+              <Link
+                to="/admin/dashboard"
+                className="hover:text-tutu-lime transition-colors flex items-center gap-1.5"
+              >
+                <ShieldCheck className="w-4 h-4 text-tutu-lime" />
+                <span>Painel Admin</span>
+              </Link>
+            )}
           </nav>
 
           <div className="flex items-center gap-2.5">
@@ -71,9 +79,11 @@ export const PublicLayout: React.FC = () => {
             <Link to="/app/dashboard" className="hover:text-tutu-lime underline underline-offset-4">
               Área do Participante
             </Link>
-            <Link to="/admin/dashboard" className="hover:text-tutu-lime underline underline-offset-4">
-              Área Administrativa
-            </Link>
+            {isAdminAuthenticated && (
+              <Link to="/admin/dashboard" className="hover:text-tutu-lime underline underline-offset-4">
+                Área Administrativa
+              </Link>
+            )}
           </div>
         </div>
       </footer>

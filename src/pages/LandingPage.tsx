@@ -97,7 +97,7 @@ export const LandingPage: React.FC = () => {
               {/* Primary CTA Buttons */}
               <div className="flex flex-wrap items-center gap-4 pt-3">
                 <Link
-                  to="/app/dashboard"
+                  to="/cadastro"
                   className="px-6 py-3.5 rounded-xl btn-tutu-lime text-base flex items-center gap-2 shadow-lg"
                 >
                   <span>Começar minha jornada</span>
@@ -349,6 +349,30 @@ export const LandingPage: React.FC = () => {
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* FINAL CALL TO ACTION BANNER */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="tutu-card p-8 sm:p-10 border-2 border-tutu-blue flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="space-y-2 max-w-2xl">
+            <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
+              Passaporte Gratuito • 24 a 26 de Novembro de 2026
+            </span>
+            <h2 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
+              Pronto para viver o Desafio Global Summit 2026?
+            </h2>
+            <p className="text-sm text-tutu-light/80">
+              Garanta seu cadastro na plataforma, acumule pontos nos estandes das startups e dispute o topo do ranking na Arena BRB Mané Garrincha.
+            </p>
+          </div>
+          <Link
+            to="/cadastro"
+            className="px-6 py-3.5 rounded-xl btn-tutu-lime text-base flex items-center gap-2 shadow-lg shrink-0"
+          >
+            <span>Começar minha jornada</span>
+            <ArrowRight className="w-5 h-5" />
+          </Link>
         </div>
       </section>
     </div>

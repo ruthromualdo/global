@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import {
   Achievement,
   AdminDashboardMetrics,
@@ -11,6 +11,7 @@ import {
   PublicRankingEntry,
   QRCode,
   Startup,
+  UserRole,
 } from '../types';
 import { authService } from '../services/authService';
 import { participantService } from '../services/participantService';
@@ -20,12 +21,37 @@ import { qrCodeService } from '../services/qrCodeService';
 import { rankingService } from '../services/rankingService';
 import { adminService } from '../services/adminService';
 import { governanceService } from '../services/governanceService';
+import { apiRequest } from '../services/apiClient';
 
 export interface ToastNotice {
   id: string;
   type: 'success' | 'error' | 'info';
   title: string;
   message: string;
+}
+
+export interface AuthStateInfo {
+  authenticated: boolean;
+  role: UserRole | null;
+  userId: string | null;
+  email: string | null;
+  hasConfiguredAdmin: boolean;
+}
+
+interface BootstrapPayload {
+  participant: Participant;
+  allParticipants: Participant[];
+  startups: Startup[];
+  missions: Mission[];
+  achievements: Achievement[];
+  qrCodes: QRCode[];
+  validationQueue: MissionCompletion[];
+  publicRanking: PublicRankingEntry[];
+  pointsTransactions: PointsTransaction[];
+  eventSettings: EventSettings;
+  governancePlans: GovernancePlan[];
+  adminMetrics: AdminDashboardMetrics;
+  auth?: AuthStateInfo;
 }
 
 interface AppStoreContextValue {
@@ -41,12 +67,26 @@ interface AppStoreContextValue {
   eventSettings: EventSettings;
   governancePlans: GovernancePlan[];
   adminMetrics: AdminDashboardMetrics;
+  sqliteConnected: boolean;
+  authState: AuthStateInfo;
+  isCheckingAuth: boolean;
+  isAdminAuthenticated: boolean;
   toasts: ToastNotice[];
   notify: (title: string, message: string, type?: ToastNotice['type']) => void;
   dismissToast: (id: string) => void;
-  // Participant actions
-  loginDemo: (email: string) => Promise<void>;
-  registerDemo: (payload: { name: string; email: string; acceptedTerms: boolean }) => Promise<void>;
+  // Auth & Participant actions
+  loginDemo: (email: string, password?: string) => Promise<void>;
+  loginAdmin: (
+    email: string,
+    password: string
+  ) => Promise<{ ok: boolean; status: number; error?: string }>;
+  logoutSession: () => Promise<void>;
+  registerDemo: (payload: {
+    name: string;
+    email: string;
+    password?: string;
+    acceptedTerms: boolean;
+  }) => Promise<void>;
   completeMissionInstant: (missionId: string) => void;
   startMission: (missionId: string) => void;
   submitMissionEvidence: (missionId: string, evidenceText: string) => void;
@@ -100,9 +140,18 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [governancePlans, setGovernancePlans] = useState<GovernancePlan[]>(() =>
     governanceService.getGovernancePlans()
   );
-  const [adminMetrics] = useState<AdminDashboardMetrics>(() =>
+  const [adminMetrics, setAdminMetrics] = useState<AdminDashboardMetrics>(() =>
     adminService.getDashboardMetrics()
   );
+  const [sqliteConnected, setSqliteConnected] = useState<boolean>(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
+  const [authState, setAuthState] = useState<AuthStateInfo>({
+    authenticated: false,
+    role: null,
+    userId: null,
+    email: null,
+    hasConfiguredAdmin: false,
+  });
   const [toasts, setToasts] = useState<ToastNotice[]>([]);
 
   const notify = useCallback(
@@ -120,7 +169,31 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const syncAll = useCallback(() => {
+  const syncFromSqliteOrMemory = useCallback(async () => {
+    const data = await apiRequest<BootstrapPayload>('/bootstrap');
+    if (data) {
+      setSqliteConnected(true);
+      setParticipant(data.participant);
+      setAllParticipants(data.allParticipants);
+      setStartups(data.startups);
+      setMissions(data.missions);
+      setAchievements(data.achievements);
+      setQrCodes(data.qrCodes);
+      setValidationQueue(data.validationQueue);
+      setPublicRanking(data.publicRanking);
+      setPointsTransactions(data.pointsTransactions);
+      setEventSettings(data.eventSettings);
+      setGovernancePlans(data.governancePlans);
+      setAdminMetrics(data.adminMetrics);
+      if (data.auth) {
+        setAuthState(data.auth);
+      }
+      setIsCheckingAuth(false);
+      return;
+    }
+
+    setSqliteConnected(false);
+    setIsCheckingAuth(false);
     setParticipant(participantService.getParticipantProfile());
     setAllParticipants(participantService.getAllParticipants());
     setStartups(startupService.getStartups());
@@ -134,16 +207,49 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setGovernancePlans(governanceService.getGovernancePlans());
   }, []);
 
-  const loginDemo = async (email: string) => {
-    const res = await authService.loginDemo(email);
+  useEffect(() => {
+    void syncFromSqliteOrMemory();
+  }, [syncFromSqliteOrMemory]);
+
+  const loginDemo = async (email: string, password?: string) => {
+    const res = await authService.loginDemo(email, password);
     participantService.updateParticipantProfile({ email: res.user.email });
-    syncAll();
-    notify('Sessão Demonstrativa Ativa', res.message, 'info');
+    await syncFromSqliteOrMemory();
+    notify('Sessão Ativa', res.message, 'info');
+  };
+
+  const loginAdmin = async (email: string, password: string) => {
+    const res = await authService.loginAdmin(email, password);
+    if (res.ok) {
+      await syncFromSqliteOrMemory();
+      notify(
+        'Acesso Administrativo Liberado',
+        res.message || 'Bem-vindo(a) ao Painel Administrativo.',
+        'success'
+      );
+      return { ok: true, status: res.status };
+    }
+    notify('Acesso Negado', res.error || 'Credenciais inválidas.', 'error');
+    return { ok: false, status: res.status, error: res.error };
+  };
+
+  const logoutSession = async () => {
+    await authService.logout();
+    setAuthState((prev) => ({
+      ...prev,
+      authenticated: false,
+      role: null,
+      userId: null,
+      email: null,
+    }));
+    await syncFromSqliteOrMemory();
+    notify('Sessão Encerrada', 'Seu token de acesso foi invalidado com segurança.', 'info');
   };
 
   const registerDemo = async (payload: {
     name: string;
     email: string;
+    password?: string;
     acceptedTerms: boolean;
   }) => {
     const res = await authService.registerDemo(payload);
@@ -153,17 +259,22 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       email: res.user.email,
       avatar: res.user.avatar,
     });
-    syncAll();
-    notify('Cadastro Demonstrativo Realizado', res.message, 'success');
+    await syncFromSqliteOrMemory();
+    notify('Cadastro Realizado', res.message, 'success');
   };
 
   const startMission = (missionId: string) => {
-    const updated = missionService.updateMissionStatus(missionId, 'Em andamento');
-    syncAll();
-    if (updated) {
+    missionService.updateMissionStatus(missionId, 'Em andamento');
+    void apiRequest(`/missions/${missionId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'Em andamento' }),
+    }).then(() => syncFromSqliteOrMemory());
+
+    const target = missions.find((m) => m.id === missionId);
+    if (target) {
       notify(
         'Missão Iniciada',
-        `A missão "${updated.title}" agora está em andamento.`,
+        `A missão "${target.title}" agora está em andamento.`,
         'info'
       );
     }
@@ -189,10 +300,14 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       previousBalance: prevPoints,
       newBalance: updatedUser.points,
     });
-    syncAll();
+
+    void apiRequest(`/missions/${missionId}/complete`, { method: 'POST' }).then(() =>
+      syncFromSqliteOrMemory()
+    );
+
     notify(
       `+${target.points} Pontos Conquistados!`,
-      `Missão "${target.title}" concluída com sucesso.`,
+      `Missão "${target.title}" concluída e gravada com sucesso.`,
       'success'
     );
   };
@@ -201,7 +316,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const target = missions.find((m) => m.id === missionId);
     if (!target) return;
 
-    missionService.submitMissionForValidation({
+    const payload = {
       participantId: participant.id,
       participantName: participant.name,
       missionId: target.id,
@@ -211,11 +326,17 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       evidenceDescription: evidenceText || 'Registro enviado via Central de Missões.',
       evidenceCode: `EVID-${Math.floor(1000 + Math.random() * 9000)}`,
       pointsAwarded: target.points,
-    });
-    syncAll();
+    };
+
+    missionService.submitMissionForValidation(payload);
+    void apiRequest('/validations', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }).then(() => syncFromSqliteOrMemory());
+
     notify(
       'Enviado para Validação',
-      `Sua evidência para "${target.title}" entrou na fila demonstrativa da curadoria.`,
+      `Sua evidência para "${target.title}" entrou na fila da curadoria.`,
       'info'
     );
   };
@@ -238,100 +359,121 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         previousBalance: prevPoints,
         newBalance: updatedUser.points,
       });
-      syncAll();
+
+      void apiRequest('/qrcodes/scan', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      }).then(() => syncFromSqliteOrMemory());
+
       notify('QR Code Validado!', result.message, 'success');
     } else {
-      notify('Falha na Leitura Simulada', result.message, 'error');
+      notify('Falha na Leitura', result.message, 'error');
     }
     return result;
   };
 
   const updateProfile = (updates: Partial<Participant>) => {
     participantService.updateParticipantProfile(updates);
-    syncAll();
-    notify('Perfil Atualizado', 'Suas preferências demonstrativas foram salvas.', 'success');
+    void apiRequest('/participants/me', {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }).then(() => syncFromSqliteOrMemory());
+    notify('Perfil Atualizado', 'Suas preferências foram salvas no SQLite.', 'success');
   };
 
   const createStartup = (payload: Omit<Startup, 'id'>) => {
     const created = startupService.createStartup(payload);
-    syncAll();
+    void apiRequest('/startups', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }).then(() => syncFromSqliteOrMemory());
     notify('Startup Cadastrada', `"${created.name}" foi adicionada ao circuito.`, 'success');
   };
 
   const updateStartup = (id: string, updates: Partial<Startup>) => {
     startupService.updateStartup(id, updates);
-    syncAll();
-    notify('Startup Atualizada', 'Dados da startup atualizados na camada de serviços.', 'success');
+    void apiRequest(`/startups/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }).then(() => syncFromSqliteOrMemory());
+    notify('Startup Atualizada', 'Dados da startup atualizados no SQLite.', 'success');
   };
 
   const toggleStartupActive = (id: string) => {
     startupService.toggleStartupActive(id);
-    syncAll();
+    void apiRequest(`/startups/${id}/toggle`, { method: 'PATCH' }).then(() =>
+      syncFromSqliteOrMemory()
+    );
     notify('Status Alterado', 'Visibilidade da startup atualizada.', 'info');
   };
 
   const deleteStartup = (id: string) => {
     startupService.deleteStartup(id);
-    syncAll();
-    notify('Startup Removida', 'Registro removido da listagem demonstrativa.', 'info');
+    void apiRequest(`/startups/${id}`, { method: 'DELETE' }).then(() =>
+      syncFromSqliteOrMemory()
+    );
+    notify('Startup Removida', 'Registro removido do banco SQLite.', 'info');
   };
 
   const createMission = (payload: Omit<Mission, 'id'>) => {
     const created = missionService.createMission(payload);
-    syncAll();
+    void apiRequest('/missions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }).then(() => syncFromSqliteOrMemory());
     notify('Missão Criada', `"${created.title}" adicionada à Central de Missões.`, 'success');
   };
 
   const updateMission = (id: string, updates: Partial<Mission>) => {
     missionService.updateMission(id, updates);
-    syncAll();
-    notify('Missão Atualizada', 'Configurações da missão salvas com sucesso.', 'success');
+    void apiRequest(`/missions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }).then(() => syncFromSqliteOrMemory());
+    notify('Missão Atualizada', 'Configurações da missão salvas no SQLite.', 'success');
   };
 
   const toggleMissionActive = (id: string) => {
     missionService.toggleMissionActive(id);
-    syncAll();
+    void apiRequest(`/missions/${id}/toggle`, { method: 'PATCH' }).then(() =>
+      syncFromSqliteOrMemory()
+    );
     notify('Status da Missão Alterado', 'Disponibilidade da missão atualizada.', 'info');
   };
 
   const deleteMission = (id: string) => {
     missionService.deleteMission(id);
-    syncAll();
-    notify('Missão Excluída', 'Missão removida da lista demonstrativa.', 'info');
+    void apiRequest(`/missions/${id}`, { method: 'DELETE' }).then(() =>
+      syncFromSqliteOrMemory()
+    );
+    notify('Missão Excluída', 'Missão removida do banco SQLite.', 'info');
   };
 
   const createQRCode = (payload: Omit<QRCode, 'id' | 'scansCount' | 'createdAt'>) => {
     const created = qrCodeService.createQRCode(payload);
-    syncAll();
+    void apiRequest('/qrcodes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }).then(() => syncFromSqliteOrMemory());
     notify('QR Code Gerado', `Código ${created.code} associado com sucesso.`, 'success');
   };
 
   const toggleQRCodeActive = (id: string) => {
     qrCodeService.toggleQRCodeActive(id);
-    syncAll();
+    void apiRequest(`/qrcodes/${id}/toggle`, { method: 'PATCH' }).then(() =>
+      syncFromSqliteOrMemory()
+    );
     notify('Status do QR Code', 'Estado de ativação do QR Code atualizado.', 'info');
   };
 
   const reviewValidationItem = (id: string, decision: 'Aprovada' | 'Rejeitada') => {
     const target = validationQueue.find((v) => v.id === id);
     missionService.reviewMissionValidation(id, decision);
-    if (target && decision === 'Aprovada' && target.participantId === participant.id) {
-      const prev = participant.points;
-      const updatedUser = participantService.addParticipantPoints(
-        target.pointsAwarded,
-        target.startupId
-      );
-      rankingService.recordPointsTransaction({
-        participantId: updatedUser.id,
-        participantName: updatedUser.name,
-        sourceType: 'Missão',
-        sourceTitle: `Validação Aprovada: ${target.missionTitle}`,
-        pointsDelta: target.pointsAwarded,
-        previousBalance: prev,
-        newBalance: updatedUser.points,
-      });
-    }
-    syncAll();
+    void apiRequest(`/validations/${id}/review`, {
+      method: 'PATCH',
+      body: JSON.stringify({ decision }),
+    }).then(() => syncFromSqliteOrMemory());
+
     notify(
       `Evidência ${decision}`,
       `Submissão de ${target?.participantName || 'participante'} marcada como ${decision.toLowerCase()}.`,
@@ -341,7 +483,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const updateParticipantStatus = (id: string, status: Participant['status']) => {
     participantService.updateParticipantStatus(id, status);
-    syncAll();
+    void apiRequest(`/participants/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }).then(() => syncFromSqliteOrMemory());
     notify('Status do Participante', `Status atualizado para ${status}.`, 'info');
   };
 
@@ -365,25 +510,38 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       previousBalance: prev,
       newBalance: prev + pointsDelta,
     });
-    syncAll();
+
+    void apiRequest('/ranking/adjust', {
+      method: 'POST',
+      body: JSON.stringify({ participantId, pointsDelta, reason }),
+    }).then(() => syncFromSqliteOrMemory());
+
     notify(
       'Registro de Pontuação',
-      `Transação demonstrativa registrada no histórico do ranking.`,
+      `Transação gravada no histórico SQLite do ranking.`,
       'success'
     );
   };
 
   const updateEventSettings = (updates: Partial<EventSettings>) => {
     adminService.updateEventSettings(updates);
-    syncAll();
-    notify('Configurações Salvas', 'Parâmetros do evento atualizados em memória.', 'success');
+    void apiRequest('/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }).then(() => syncFromSqliteOrMemory());
+    notify('Configurações Salvas', 'Parâmetros do evento salvos no banco SQLite.', 'success');
   };
 
   const updateGovernancePlan = (id: string, updates: Partial<GovernancePlan>) => {
     governanceService.updateGovernancePlan(id, updates);
-    syncAll();
-    notify('Plano de Governança Atualizado', 'Alterações demonstrativas registradas.', 'success');
+    void apiRequest(`/admin/governance/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }).then(() => syncFromSqliteOrMemory());
+    notify('Plano de Governança Atualizado', 'Alterações salvas no banco SQLite.', 'success');
   };
+
+  const isAdminAuthenticated = authState.authenticated && authState.role === 'ADMIN';
 
   return (
     <AppStoreContext.Provider
@@ -400,10 +558,16 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         eventSettings,
         governancePlans,
         adminMetrics,
+        sqliteConnected,
+        authState,
+        isCheckingAuth,
+        isAdminAuthenticated,
         toasts,
         notify,
         dismissToast,
         loginDemo,
+        loginAdmin,
+        logoutSession,
         registerDemo,
         completeMissionInstant,
         startMission,

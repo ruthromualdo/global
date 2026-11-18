@@ -1,0 +1,29 @@
+﻿# Dependências
+node_modules/
+
+# Arquivos gerados
+dist/
+coverage/
+
+# Configurações e segredos
+.env
+.env.*
+!.env.example
+
+# Banco SQLite e arquivos auxiliares
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Arquivos auxiliares SQLite
+*.sqlite-*

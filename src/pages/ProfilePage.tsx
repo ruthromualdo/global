@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Award,
   CheckCircle2,
   History,
+  LogOut,
   Save,
   Shield,
   User,
@@ -13,7 +15,8 @@ import { AchievementIcon, MissionStatusBadge } from '../components/UI';
 import { formatPoints, getInitials } from '../utils/formatters';
 
 export const ProfilePage: React.FC = () => {
-  const { participant, missions, achievements, updateProfile } = useAppStore();
+  const { participant, missions, achievements, updateProfile, logoutSession } = useAppStore();
+  const navigate = useNavigate();
 
   const [name, setName] = useState(participant.name);
   const [nickname, setNickname] = useState(participant.nickname);
@@ -27,10 +30,20 @@ export const ProfilePage: React.FC = () => {
     participant.privacyPreferences.shareStartupInterests
   );
 
-  const completedMissions = missions.filter((m) => m.status === 'Concluída');
-  const unlockedMedals = achievements.filter((a) => a.unlocked);
+  useEffect(() => {
+    setName(participant.name);
+    setNickname(participant.nickname);
+    setShowNickname(participant.privacyPreferences.showNicknameInPublicRanking);
+    setAllowNotifications(participant.privacyPreferences.allowActivityNotifications);
+    setShareInterests(participant.privacyPreferences.shareStartupInterests);
+  }, [participant]);
+
+  const completedMissionsCount = participant.completedMissionsCount;
+  const unlockedMedals = achievements.filter(
+    (a) => a.unlocked && participant.unlockedAchievementIds.includes(a.id)
+  );
   const eventProgress = Math.round(
-    (completedMissions.length / Math.max(1, missions.filter((m) => m.active).length)) * 100
+    (completedMissionsCount / Math.max(1, missions.filter((m) => m.active).length)) * 100
   );
 
   const handleSaveProfile = (e: React.FormEvent) => {
@@ -45,6 +58,11 @@ export const ProfilePage: React.FC = () => {
         shareStartupInterests: shareInterests,
       },
     });
+  };
+
+  const handleLogoutAccount = async () => {
+    await logoutSession();
+    navigate('/', { replace: true });
   };
 
   return (
@@ -208,20 +226,26 @@ export const ProfilePage: React.FC = () => {
                 <Award className="w-4 h-4 text-tutu-lime" />
                 <span>Medalhas Desbloqueadas ({unlockedMedals.length})</span>
               </span>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {unlockedMedals.map((ach) => (
-                  <div
-                    key={ach.id}
-                    className="p-2.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 flex items-center gap-3"
-                  >
-                    <AchievementIcon iconName={ach.iconName} unlocked={true} />
-                    <div>
-                      <p className="font-display font-bold text-sm text-tutu-light">{ach.name}</p>
-                      <p className="text-[11px] text-tutu-lime">+{ach.pointsBonus} pts</p>
+              {unlockedMedals.length === 0 ? (
+                <p className="text-xs text-tutu-light/65 italic">
+                  Nenhuma medalha conquistada ainda. Conclua missões nas startups para desbloquear suas primeiras insígnias!
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {unlockedMedals.map((ach) => (
+                    <div
+                      key={ach.id}
+                      className="p-2.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 flex items-center gap-3"
+                    >
+                      <AchievementIcon iconName={ach.iconName} unlocked={true} />
+                      <div>
+                        <p className="font-display font-bold text-sm text-tutu-light">{ach.name}</p>
+                        <p className="text-[11px] text-tutu-lime">+{ach.pointsBonus} pts</p>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -233,7 +257,7 @@ export const ProfilePage: React.FC = () => {
                 <span>Histórico de Missões</span>
               </h2>
               <span className="text-xs text-tutu-light/70">
-                {completedMissions.length} concluídas
+                {completedMissionsCount} concluídas
               </span>
             </div>
 
@@ -263,6 +287,27 @@ export const ProfilePage: React.FC = () => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Seção Inferior: Encerramento de Sessão (Separada da edição de dados pessoais) */}
+      <div className="tutu-card p-5 sm:p-6 border border-tutu-secondary/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <h2 className="font-display font-bold text-base text-tutu-light">
+            Sessão da Conta
+          </h2>
+          <p className="text-xs text-tutu-light/70">
+            Encerre sua sessão atual com segurança neste dispositivo. Seus pontos e progresso permanecem salvos no seu passaporte.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleLogoutAccount}
+          className="px-4 py-2.5 rounded-xl bg-tutu-dark/80 hover:bg-tutu-secondary/30 text-tutu-light/85 hover:text-tutu-lime border border-tutu-secondary/60 hover:border-tutu-lime/50 text-xs font-semibold inline-flex items-center justify-center gap-2 transition-all shrink-0 self-start sm:self-center"
+        >
+          <LogOut className="w-4 h-4 text-tutu-lime" />
+          <span>Sair da conta</span>
+        </button>
       </div>
     </div>
   );
