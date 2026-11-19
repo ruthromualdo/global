@@ -2,6 +2,7 @@ import { initialQRCodes } from '../mocks/mockData';
 import { QRCode } from '../types';
 
 let qrCodesStore: QRCode[] = initialQRCodes.map((q) => ({ ...q }));
+const localScannedCodes = new Set<string>();
 
 export const qrCodeService = {
   getQRCodes(): QRCode[] {
@@ -10,6 +11,14 @@ export const qrCodeService = {
 
   validateSimulatedScan(inputCode: string): {
     success: boolean;
+    status?:
+      | 'VALIDATED'
+      | 'INVALID_CODE'
+      | 'INACTIVE_CODE'
+      | 'INVALID_MISSION'
+      | 'ALREADY_USED'
+      | 'CONNECTION_ERROR';
+    alreadyUsed?: boolean;
     qrCode?: QRCode;
     message: string;
   } {
@@ -19,27 +28,40 @@ export const qrCodeService = {
     if (!match) {
       return {
         success: false,
-        message:
-          'Código QR não localizado na base demonstrativa. Utilize um dos códigos sugeridos dos estandes (ex.: TUTU-SIMULADOR ou FUTURIZE-2030).',
+        status: 'INVALID_CODE',
+        message: `Código QR "${normalized}" inválido ou não localizado. Utilize um dos códigos oficiais dos estandes (ex.: TUTU-2026, TUTU-SIMULADOR ou FUTURIZE-2030).`,
       };
     }
 
     if (!match.active) {
       return {
         success: false,
+        status: 'INACTIVE_CODE',
         qrCode: { ...match },
         message: `O código ${match.code} está temporariamente desativado pela organização.`,
       };
     }
 
+    if (localScannedCodes.has(match.code.toUpperCase())) {
+      return {
+        success: false,
+        status: 'ALREADY_USED',
+        alreadyUsed: true,
+        qrCode: { ...match },
+        message: `Código ${match.code} já utilizado! Você já concluiu a missão "${match.missionTitle}" e os pontos já foram creditados anteriormente.`,
+      };
+    }
+
+    localScannedCodes.add(match.code.toUpperCase());
     qrCodesStore = qrCodesStore.map((q) =>
       q.id === match.id ? { ...q, scansCount: q.scansCount + 1 } : q
     );
 
     return {
       success: true,
+      status: 'VALIDATED',
       qrCode: { ...match, scansCount: match.scansCount + 1 },
-      message: `Leitura simulada confirmada! +${match.points} pontos creditados pela missão "${match.missionTitle}".`,
+      message: `Leitura confirmada! +${match.points} pontos creditados pela missão "${match.missionTitle}".`,
     };
   },
 

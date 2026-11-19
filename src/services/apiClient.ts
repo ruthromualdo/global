@@ -75,8 +75,8 @@ export async function apiRequestWithStatus<T>(
       return {
         ok: false,
         status: response.status,
-        data: null,
-        error: body?.error || `Erro HTTP ${response.status}`,
+        data: body as T | null,
+        error: body?.error || body?.message || `Erro HTTP ${response.status}`,
       };
     }
     return {

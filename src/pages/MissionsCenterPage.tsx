@@ -89,8 +89,10 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    if (mission.qrCodeRequired && mission.status === 'Disponível') {
-      startMission(mission.id);
+    if (mission.qrCodeRequired) {
+      if (mission.status === 'Disponível') {
+        startMission(mission.id);
+      }
       navigate(`/app/escanear?code=${mission.qrCodeRequired}`);
       return;
     }
@@ -128,26 +130,26 @@ export const MissionsCenterPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div className="space-y-1.5">
           <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-            Gamificação Brasil Global Summit 2026
+            Circuito Gamificado
           </span>
-          <h1 className="font-display font-bold text-3xl sm:text-4xl text-tutu-light">
+          <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
             Central de Missões
           </h1>
-          <p className="text-sm text-tutu-light/80">
+          <p className="text-xs sm:text-sm text-tutu-light/80">
             Filtre por categoria, startup ou status e execute as atividades para acumular pontos.
           </p>
         </div>
       </div>
 
       {/* Filters Bar */}
-      <div className="tutu-card p-5 space-y-4">
+      <div className="tutu-card p-4 sm:p-5 space-y-4">
         <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-tutu-lime">
-          <Filter className="w-4 h-4" />
+          <Filter className="w-4 h-4 shrink-0" />
           <span>Filtros Inteligentes</span>
         </div>
 
@@ -157,7 +159,7 @@ export const MissionsCenterPage: React.FC = () => {
             <button
               key={cat}
               onClick={() => setSelectedCategory(cat)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${
+              className={`min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${
                 selectedCategory === cat
                   ? 'bg-tutu-lime text-tutu-dark font-bold shadow-sm'
                   : 'bg-tutu-dark/70 text-tutu-light/80 hover:text-tutu-light border border-tutu-secondary/40'
@@ -169,12 +171,16 @@ export const MissionsCenterPage: React.FC = () => {
         </div>
 
         {/* Startup & Status Selectors */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-tutu-secondary/30">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 pt-2 border-t border-tutu-secondary/30">
           <div>
-            <label className="block text-xs text-tutu-light/75 mb-1.5 font-medium">
+            <label
+              htmlFor="filter-startup"
+              className="block text-xs text-tutu-light/75 mb-1.5 font-medium"
+            >
               Filtrar por Startup Expositora
             </label>
             <select
+              id="filter-startup"
               value={selectedStartupId}
               onChange={(e) => setSelectedStartupId(e.target.value)}
               className="input-tutu text-xs py-2.5"
@@ -189,10 +195,14 @@ export const MissionsCenterPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs text-tutu-light/75 mb-1.5 font-medium">
+            <label
+              htmlFor="filter-status"
+              className="block text-xs text-tutu-light/75 mb-1.5 font-medium"
+            >
               Filtrar por Status da Missão
             </label>
             <select
+              id="filter-status"
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value as 'Todos' | MissionStatus)}
               className="input-tutu text-xs py-2.5"
@@ -207,9 +217,9 @@ export const MissionsCenterPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Missions Grid */}
+      {/* Missions Grid: 1 col mobile, 2 cols tablet/md, 3 cols desktop xl */}
       {filteredMissions.length === 0 ? (
-        <div className="tutu-card p-10 text-center space-y-3">
+        <div className="tutu-card p-8 sm:p-10 text-center space-y-3">
           <Sparkles className="w-8 h-8 text-tutu-lime mx-auto" />
           <h3 className="font-display font-bold text-xl text-tutu-light">
             Nenhuma missão encontrada com estes filtros
@@ -223,82 +233,84 @@ export const MissionsCenterPage: React.FC = () => {
               setSelectedStartupId('Todas');
               setSelectedStatus('Todos');
             }}
-            className="px-4 py-2 rounded-xl btn-tutu-primary text-xs"
+            className="min-h-[44px] px-4 py-2 rounded-xl btn-tutu-primary text-xs"
           >
             Restaurar Filtros
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5 sm:gap-6">
           {filteredMissions.map((mission) => (
             <div
               key={mission.id}
-              className={`tutu-card p-6 flex flex-col justify-between space-y-5 ${
-                mission.status === 'Bloqueada' ? 'opacity-70' : 'tutu-card-hover'
-              }`}
+              className={`tutu-card p-5 sm:p-6 flex flex-col justify-between space-y-5 ${mission.status === 'Bloqueada' ? 'opacity-70' : 'tutu-card-hover'
+                }`}
             >
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                     <CategoryPill category={mission.category} />
-                    <span className="text-xs text-tutu-light/70 font-medium">
+                    <span className="text-xs text-tutu-light/70 font-medium truncate">
                       • {mission.startupName}
                     </span>
                   </div>
                   <MissionStatusBadge status={mission.status} />
                 </div>
 
-                <h2 className="font-display font-bold text-xl text-tutu-light">{mission.title}</h2>
-                <p className="text-sm text-tutu-light/85 leading-relaxed">{mission.description}</p>
+                <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light">
+                  {mission.title}
+                </h2>
+                <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
+                  {mission.description}
+                </p>
               </div>
 
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 text-xs">
                   <div className="flex items-center gap-3">
                     <span className="inline-flex items-center gap-1 text-tutu-lime font-bold">
-                      <Zap className="w-4 h-4" />
+                      <Zap className="w-4 h-4 shrink-0" />
                       {formatPoints(mission.points)}
                     </span>
                     <span className="inline-flex items-center gap-1 text-tutu-light/80">
-                      <Clock className="w-3.5 h-3.5 text-tutu-lime" />
+                      <Clock className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
                       {mission.estimatedTime}
                     </span>
                   </div>
                   <span className="text-[11px] text-tutu-light/65">{mission.period}</span>
                 </div>
 
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-[11px] text-tutu-light/70 line-clamp-1">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <span className="text-[11px] text-tutu-light/70 leading-snug">
                     {mission.completionCriteria}
                   </span>
 
                   <button
                     onClick={() => handleActionClick(mission)}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
-                      mission.status === 'Concluída'
-                        ? 'bg-tutu-secondary/30 text-tutu-lime border border-tutu-lime/40'
-                        : mission.status === 'Bloqueada'
+                    className={`min-h-[44px] w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shrink-0 ${mission.status === 'Concluída'
+                      ? 'bg-tutu-secondary/30 text-tutu-lime border border-tutu-lime/40'
+                      : mission.status === 'Bloqueada'
                         ? 'bg-tutu-dark text-tutu-light/50 border border-tutu-light/15'
                         : mission.category === 'Quiz'
-                        ? 'btn-tutu-lime'
-                        : 'btn-tutu-primary'
-                    }`}
+                          ? 'btn-tutu-lime'
+                          : 'btn-tutu-primary'
+                      }`}
                   >
                     {mission.status === 'Concluída' && (
                       <>
-                        <CheckCircle2 className="w-4 h-4" />
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
                         <span>Concluída</span>
                       </>
                     )}
                     {mission.status === 'Bloqueada' && (
                       <>
-                        <Lock className="w-4 h-4" />
+                        <Lock className="w-4 h-4 shrink-0" />
                         <span>Bloqueada</span>
                       </>
                     )}
                     {mission.status === 'Aguardando validação' && (
                       <>
-                        <Send className="w-4 h-4" />
+                        <Send className="w-4 h-4 shrink-0" />
                         <span>Reenviar Evidência</span>
                       </>
                     )}
@@ -306,22 +318,22 @@ export const MissionsCenterPage: React.FC = () => {
                       <>
                         {mission.category === 'Quiz' ? (
                           <>
-                            <HelpCircle className="w-4 h-4" />
+                            <HelpCircle className="w-4 h-4 shrink-0" />
                             <span>Responder Quiz</span>
                           </>
                         ) : mission.category === 'Compartilhamento' ? (
                           <>
-                            <Send className="w-4 h-4" />
+                            <Send className="w-4 h-4 shrink-0" />
                             <span>Enviar Validação</span>
                           </>
                         ) : mission.qrCodeRequired ? (
                           <>
-                            <QrCode className="w-4 h-4" />
+                            <QrCode className="w-4 h-4 shrink-0" />
                             <span>Ler QR ({mission.qrCodeRequired})</span>
                           </>
                         ) : (
                           <>
-                            <Play className="w-4 h-4" />
+                            <Play className="w-4 h-4 shrink-0" />
                             <span>Concluir Missão</span>
                           </>
                         )}
@@ -337,43 +349,42 @@ export const MissionsCenterPage: React.FC = () => {
 
       {/* QUIZ MODAL */}
       {activeQuizMission && activeQuizMission.quizQuestions && (
-        <div className="fixed inset-0 z-50 bg-tutu-dark/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="tutu-card max-w-xl w-full p-6 sm:p-8 space-y-6 border-2 border-tutu-lime">
-            <div className="flex items-start justify-between gap-4">
+        <div className="fixed inset-0 z-50 bg-tutu-dark/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="tutu-card max-w-xl w-full max-h-[90vh] overflow-y-auto p-5 sm:p-8 space-y-5 sm:space-y-6 border-2 border-tutu-lime">
+            <div className="flex items-start justify-between gap-3">
               <div>
                 <span className="text-xs font-bold uppercase text-tutu-lime">
                   Quiz Interativo • {activeQuizMission.startupName}
                 </span>
-                <h3 className="font-display font-bold text-2xl text-tutu-light mt-1">
+                <h3 className="font-display font-bold text-xl sm:text-2xl text-tutu-light mt-1">
                   {activeQuizMission.title}
                 </h3>
               </div>
               <button
                 onClick={() => setActiveQuizMission(null)}
-                className="text-xs text-tutu-light/70 hover:text-tutu-light px-2.5 py-1 rounded-lg bg-tutu-secondary/30"
+                className="min-h-[38px] text-xs text-tutu-light/70 hover:text-tutu-light px-3 py-1.5 rounded-lg bg-tutu-secondary/30 shrink-0"
               >
                 Fechar
               </button>
             </div>
 
-            <form onSubmit={handleQuizSubmit} className="space-y-5">
+            <form onSubmit={handleQuizSubmit} className="space-y-4 sm:space-y-5">
               {activeQuizMission.quizQuestions.map((q, qIdx) => (
                 <div
                   key={qIdx}
-                  className="p-4 rounded-xl bg-tutu-dark/80 border border-tutu-secondary/50 space-y-3"
+                  className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/80 border border-tutu-secondary/50 space-y-3"
                 >
-                  <p className="text-sm font-semibold text-tutu-light">
+                  <p className="text-xs sm:text-sm font-semibold text-tutu-light leading-relaxed">
                     {qIdx + 1}. {q.question}
                   </p>
                   <div className="space-y-2">
                     {q.options.map((opt, optIdx) => (
                       <label
                         key={optIdx}
-                        className={`flex items-center gap-3 p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
-                          quizAnswers[qIdx] === optIdx
-                            ? 'bg-tutu-blue/30 border-tutu-lime text-tutu-light font-semibold'
-                            : 'bg-tutu-dark/50 border-tutu-secondary/30 text-tutu-light/80'
-                        }`}
+                        className={`flex items-start gap-3 p-3 rounded-lg border text-xs cursor-pointer transition-colors ${quizAnswers[qIdx] === optIdx
+                          ? 'bg-tutu-blue/30 border-tutu-lime text-tutu-light font-semibold'
+                          : 'bg-tutu-dark/50 border-tutu-secondary/30 text-tutu-light/80'
+                          }`}
                       >
                         <input
                           type="radio"
@@ -383,24 +394,27 @@ export const MissionsCenterPage: React.FC = () => {
                           onChange={() =>
                             setQuizAnswers((prev) => ({ ...prev, [qIdx]: optIdx }))
                           }
-                          className="accent-tutu-lime"
+                          className="accent-tutu-lime mt-0.5 shrink-0"
                         />
-                        <span>{opt}</span>
+                        <span className="leading-relaxed">{opt}</span>
                       </label>
                     ))}
                   </div>
                 </div>
               ))}
 
-              <div className="flex items-center justify-end gap-3 pt-2">
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2.5 sm:gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => setActiveQuizMission(null)}
-                  className="px-4 py-2.5 rounded-xl btn-tutu-outline text-xs"
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-outline text-xs"
                 >
                   Cancelar
                 </button>
-                <button type="submit" className="px-5 py-2.5 rounded-xl btn-tutu-lime text-xs">
+                <button
+                  type="submit"
+                  className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs"
+                >
                   Confirmar Respostas (+{formatPoints(activeQuizMission.points)})
                 </button>
               </div>
@@ -411,16 +425,16 @@ export const MissionsCenterPage: React.FC = () => {
 
       {/* EVIDENCE SUBMISSION MODAL */}
       {evidenceMission && (
-        <div className="fixed inset-0 z-50 bg-tutu-dark/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="tutu-card max-w-lg w-full p-6 sm:p-8 space-y-5 border-2 border-tutu-blue">
+        <div className="fixed inset-0 z-50 bg-tutu-dark/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="tutu-card max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-8 space-y-5 border-2 border-tutu-blue">
             <div>
               <span className="text-xs font-bold uppercase text-tutu-lime">
-                Envio Demonstrativo para Curadoria
+                Envio para Curadoria
               </span>
-              <h3 className="font-display font-bold text-2xl text-tutu-light mt-1">
+              <h3 className="font-display font-bold text-xl sm:text-2xl text-tutu-light mt-1">
                 {evidenceMission.title}
               </h3>
-              <p className="text-xs text-tutu-light/75 mt-1">
+              <p className="text-xs text-tutu-light/75 mt-1 leading-relaxed">
                 Descreva seu aprendizado ou informe o código recebido no estande para enviar à fila de validação administrativa.
               </p>
             </div>
@@ -431,18 +445,21 @@ export const MissionsCenterPage: React.FC = () => {
                 required
                 value={evidenceText}
                 onChange={(e) => setEvidenceText(e.target.value)}
-                placeholder="Ex.: Participei da dinâmica no estande da Futurize e compartilhei meu insight no mural #DesafioGlobalSummit2026"
+                placeholder="Ex.: Participei da dinâmica no estande da Futurize e compartilhei meu insight no mural"
                 className="input-tutu text-xs"
               />
-              <div className="flex justify-end gap-3">
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => setEvidenceMission(null)}
-                  className="px-4 py-2.5 rounded-xl btn-tutu-outline text-xs"
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-outline text-xs"
                 >
                   Cancelar
                 </button>
-                <button type="submit" className="px-5 py-2.5 rounded-xl btn-tutu-lime text-xs">
+                <button
+                  type="submit"
+                  className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs"
+                >
                   Enviar para Validação
                 </button>
               </div>

@@ -1,380 +1,267 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowRight,
-  Award,
   Calendar,
-  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Compass,
   MapPin,
-  QrCode,
-  ShieldAlert,
-  Sparkles,
   Trophy,
-  Zap,
+  UserPlus,
 } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
-import { StartupAvatarBadge } from '../assets/logos';
-import { AchievementIcon } from '../components/UI';
-import { formatPoints } from '../utils/formatters';
+
+interface HowToStep {
+  number: string;
+  label: string;
+  title: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const HOW_TO_PARTICIPATE_STEPS: HowToStep[] = [
+  {
+    number: '01',
+    label: 'ETAPA 01 — CADASTRE-SE',
+    title: 'Cadastre-se',
+    description: 'Entre na experiência e crie seu perfil para começar sua jornada.',
+    icon: UserPlus,
+  },
+  {
+    number: '02',
+    label: 'ETAPA 02 — EXPLORE',
+    title: 'Explore',
+    description:
+      'Conheça as startups participantes e descubra o que cada uma tem a oferecer.',
+    icon: Compass,
+  },
+  {
+    number: '03',
+    label: 'ETAPA 03 — PARTICIPE E CONQUISTE',
+    title: 'Participe e Conquiste',
+    description:
+      'Visite as startups, escaneie os QR Codes, complete missões, acumule pontos e acompanhe sua evolução no ranking.',
+    icon: Trophy,
+  },
+];
+
+const AUTO_ADVANCE_INTERVAL_MS = 6000;
 
 export const LandingPage: React.FC = () => {
-  const { startups, achievements, eventSettings } = useAppStore();
-  const activeStartups = startups.filter((s) => s.active);
+  const { eventSettings } = useAppStore();
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [isHoverPaused, setIsHoverPaused] = useState(false);
 
-  const steps = [
-    {
-      step: '01',
-      title: 'Cadastre-se na Plataforma',
-      description:
-        'Crie seu passaporte digital de visitante em segundos e receba acesso imediato à Central de Missões.',
-      icon: Sparkles,
-    },
-    {
-      step: '02',
-      title: 'Visite as Startups & Escaneie QR Codes',
-      description:
-        'Circule pelos estandes na Arena BRB Mané Garrincha, experimente soluções reais e valide códigos exclusivos.',
-      icon: QrCode,
-    },
-    {
-      step: '03',
-      title: 'Responda Quizzes & Cumpra Missões',
-      description:
-        'Teste seus conhecimentos, compartilhe insights e desbloqueie missões surpresas ao longo dos 3 dias.',
-      icon: Compass,
-    },
-    {
-      step: '04',
-      title: 'Suba no Ranking & Desbloqueie Medalhas',
-      description:
-        'Acumule pontos em tempo real, conquiste insígnias exclusivas e acompanhe sua colocação no Ranking Geral.',
-      icon: Trophy,
-    },
-  ];
+  // Detecta preferência do dispositivo por movimento reduzido
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setPrefersReducedMotion(mediaQuery.matches);
+
+    const handleChange = (event: MediaQueryListEvent) => {
+      setPrefersReducedMotion(event.matches);
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, []);
+
+  const isAutoCycleActive = !prefersReducedMotion && !isHoverPaused;
+
+  // Alternância automática a cada 6 segundos
+  useEffect(() => {
+    if (!isAutoCycleActive) return;
+
+    const timer = window.setInterval(() => {
+      setCurrentIndex((prev) => (prev + 1) % HOW_TO_PARTICIPATE_STEPS.length);
+    }, AUTO_ADVANCE_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [isAutoCycleActive, currentIndex]);
+
+  const handleNext = useCallback(() => {
+    setCurrentIndex((prev) => (prev + 1) % HOW_TO_PARTICIPATE_STEPS.length);
+  }, []);
+
+  const handlePrev = useCallback(() => {
+    setCurrentIndex(
+      (prev) =>
+        (prev - 1 + HOW_TO_PARTICIPATE_STEPS.length) % HOW_TO_PARTICIPATE_STEPS.length
+    );
+  }, []);
+
+  const handleSelectStep = useCallback((idx: number) => {
+    setCurrentIndex(idx);
+  }, []);
+
+  const handlePanelKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      handleNext();
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      handlePrev();
+    }
+  };
+
+  const currentStep = HOW_TO_PARTICIPATE_STEPS[currentIndex];
+  const StepIcon = currentStep.icon;
 
   return (
-    <div className="space-y-20 pb-8">
-      {/* HERO SECTION */}
-      <section className="relative overflow-hidden pt-10 sm:pt-16 pb-12 border-b border-tutu-secondary/40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-center">
-            <div className="lg:col-span-7 space-y-6">
-              <div className="inline-flex flex-wrap items-center gap-2 px-3.5 py-1.5 rounded-full bg-tutu-secondary/35 border border-tutu-blue text-xs font-semibold text-tutu-light">
-                <span className="w-2 h-2 rounded-full bg-tutu-lime" />
-                <span>BRASIL GLOBAL SUMMIT 2026 • PLATAFORMA OFICIAL DE GAMIFICAÇÃO</span>
-              </div>
+    <section className="w-full py-6 sm:py-12 lg:py-16">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+          {/* Lado Esquerdo: Marca, Chamada Principal e Botão de Conversão */}
+          <div className="lg:col-span-7 space-y-5 sm:space-y-7 min-w-0">
+            <div className="inline-flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-full bg-tutu-secondary/30 border border-tutu-blue text-[11px] sm:text-xs font-bold tracking-wider text-tutu-light uppercase max-w-full">
+              <span className="w-2 h-2 rounded-full bg-tutu-lime shrink-0" />
+              <span className="truncate">UMA INICIATIVA EX-DEVEDOR</span>
+            </div>
 
-              <h1 className="font-display font-bold text-4xl sm:text-5xl lg:text-6xl tracking-tight text-tutu-light leading-[1.08]">
-                Explore. Descubra.{' '}
-                <span className="text-tutu-lime underline decoration-tutu-blue decoration-4 underline-offset-8">
-                  Conquiste.
+            <h1 className="font-display font-bold text-4xl sm:text-6xl lg:text-7xl tracking-tight text-tutu-light leading-[1.08]">
+              Explore.
+              <span className="block">Descubra.</span>
+              <span className="block text-tutu-lime underline decoration-tutu-blue decoration-4 underline-offset-8 mt-1">
+                Conquiste.
+              </span>
+            </h1>
+
+            <p className="text-sm sm:text-lg text-tutu-light/85 max-w-2xl leading-relaxed">
+              Conheça o ecossistema empreendedor de um jeito inédito no Desafio Ex-Devedor. Conecte-se com startups inovadoras, experimente soluções tecnológicas nos estandes, cumpra missões e acompanhe sua evolução no ranking geral.
+            </p>
+
+            {/* Event Metadata Pills */}
+            <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5 sm:gap-3 pt-1">
+              <div className="flex items-center gap-2 px-3.5 py-2.5 sm:py-2 rounded-xl bg-tutu-secondary/25 border border-tutu-secondary/60 text-xs sm:text-sm min-w-0">
+                <Calendar className="w-4 h-4 text-tutu-lime shrink-0" />
+                <span className="font-medium break-words">{eventSettings.dates}</span>
+              </div>
+              <div className="flex items-center gap-2 px-3.5 py-2.5 sm:py-2 rounded-xl bg-tutu-secondary/25 border border-tutu-secondary/60 text-xs sm:text-sm min-w-0">
+                <MapPin className="w-4 h-4 text-tutu-lime shrink-0" />
+                <span className="font-medium break-words">
+                  {eventSettings.location} • {eventSettings.city}
                 </span>
-              </h1>
-
-              <p className="text-base sm:text-lg text-tutu-light/85 max-w-2xl leading-relaxed">
-                Viva o ecossistema empreendedor de um jeito inédito no{' '}
-                <strong className="text-tutu-light font-semibold">
-                  {eventSettings.eventName}
-                </strong>
-                . Conecte-se com startups inovadoras, experimente soluções tecnológicas nos estandes, cumpra missões e acompanhe sua evolução no ranking geral.
-              </p>
-
-              {/* Event Metadata Pills */}
-              <div className="flex flex-wrap items-center gap-3 pt-1">
-                <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-tutu-secondary/25 border border-tutu-secondary/60 text-sm">
-                  <Calendar className="w-4 h-4 text-tutu-lime shrink-0" />
-                  <span className="font-medium">{eventSettings.dates}</span>
-                </div>
-                <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-tutu-secondary/25 border border-tutu-secondary/60 text-sm">
-                  <MapPin className="w-4 h-4 text-tutu-lime shrink-0" />
-                  <span className="font-medium">
-                    {eventSettings.location} • {eventSettings.city}
-                  </span>
-                </div>
-              </div>
-
-              {/* Primary CTA Buttons */}
-              <div className="flex flex-wrap items-center gap-4 pt-3">
-                <Link
-                  to="/cadastro"
-                  className="px-6 py-3.5 rounded-xl btn-tutu-lime text-base flex items-center gap-2 shadow-lg"
-                >
-                  <span>Começar minha jornada</span>
-                  <ArrowRight className="w-5 h-5" />
-                </Link>
-                <Link
-                  to="/app/ranking"
-                  className="px-6 py-3.5 rounded-xl btn-tutu-primary text-base flex items-center gap-2"
-                >
-                  <Trophy className="w-5 h-5 text-tutu-lime" />
-                  <span>Ver ranking</span>
-                </Link>
               </div>
             </div>
 
-            {/* Right Interactive Highlight Card */}
-            <div className="lg:col-span-5">
-              <div className="tutu-card p-6 sm:p-7 space-y-6 border-2 border-tutu-blue relative">
-                <div className="flex items-center justify-between border-b border-tutu-secondary/40 pb-4">
-                  <div>
-                    <span className="text-xs uppercase tracking-wider text-tutu-lime font-bold">
-                      Circuito Interativo 2026
+            <div className="pt-1 sm:pt-2">
+              <Link
+                to="/cadastro"
+                className="w-full sm:w-auto px-8 py-4 rounded-2xl btn-tutu-lime text-base sm:text-lg inline-flex items-center justify-center gap-3 shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-tutu-lime"
+              >
+                <span>Comece sua jornada</span>
+                <ArrowRight className="w-5 h-5 shrink-0" />
+              </Link>
+            </div>
+          </div>
+
+          {/* Lado Direito: Painel Interativo "Como participar" */}
+          <div className="lg:col-span-5 min-w-0">
+            <div
+              role="region"
+              aria-roledescription="carrossel"
+              aria-label="Como participar — 3 etapas"
+              onMouseEnter={() => setIsHoverPaused(true)}
+              onMouseLeave={() => setIsHoverPaused(false)}
+              onKeyDown={handlePanelKeyDown}
+              className="tutu-card p-4 sm:p-6 lg:p-7 border-2 border-tutu-blue flex flex-col justify-between space-y-5 sm:space-y-6 relative"
+            >
+              {/* Topo do Painel: Título e Indicador de Etapa */}
+              <div className="flex items-center justify-between gap-2 border-b border-tutu-secondary/40 pb-3.5">
+                <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
+                  Como participar
+                </span>
+                <span className="text-xs font-semibold text-tutu-light/75 whitespace-nowrap">
+                  Etapa {currentStep.number} de 03
+                </span>
+              </div>
+
+              {/* Etapa Atual (1 por vez) */}
+              <div
+                key={currentStep.number}
+                aria-live={isAutoCycleActive ? 'off' : 'polite'}
+                className={`min-h-[180px] sm:min-h-[200px] flex flex-col justify-between p-4 sm:p-5 rounded-2xl bg-tutu-dark/85 border border-tutu-secondary/50 ${
+                  prefersReducedMotion ? '' : 'transition-opacity duration-300 ease-out'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="px-2.5 sm:px-3 py-1 rounded-lg bg-tutu-secondary/35 text-tutu-lime font-bold text-[11px] sm:text-xs tracking-wider uppercase break-words">
+                    {currentStep.label}
+                  </span>
+                  <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-tutu-blue/30 border border-tutu-lime/50 flex items-center justify-center text-tutu-lime shrink-0">
+                    <StepIcon className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </div>
+                </div>
+
+                <div className="space-y-2 mt-4">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-display font-bold text-2xl sm:text-3xl text-tutu-lime shrink-0">
+                      {currentStep.number}.
                     </span>
-                    <h2 className="font-display font-bold text-2xl text-tutu-light mt-0.5">
-                      Passaporte da Arena BRB
+                    <h2 className="font-display font-bold text-xl sm:text-3xl text-tutu-light break-words">
+                      {currentStep.title}
                     </h2>
                   </div>
-                  <div className="w-12 h-12 rounded-2xl bg-tutu-lime text-tutu-dark flex items-center justify-center font-display font-bold text-xl">
-                    26
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="p-4 rounded-xl bg-tutu-dark/80 border border-tutu-secondary/50">
-                    <span className="text-xs text-tutu-light/70">Startups no Circuito</span>
-                    <p className="font-display font-bold text-3xl text-tutu-lime mt-1">
-                      0{activeStartups.length}
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-xl bg-tutu-dark/80 border border-tutu-secondary/50">
-                    <span className="text-xs text-tutu-light/70">Pontos em Jogo</span>
-                    <p className="font-display font-bold text-3xl text-tutu-light mt-1">
-                      +3.950
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-2.5">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-tutu-light/75">
-                    Destaques da Experiência
+                  <p className="text-sm sm:text-base text-tutu-light/85 leading-relaxed">
+                    {currentStep.description}
                   </p>
-                  {[
-                    'Leitura instantânea de QR Codes nos estandes',
-                    'Quizzes temáticos e experimentação guiada',
-                    '5 medalhas colecionáveis de impacto',
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center gap-2.5 text-sm text-tutu-light/90">
-                      <CheckCircle2 className="w-4 h-4 text-tutu-lime shrink-0" />
-                      <span>{item}</span>
-                    </div>
-                  ))}
+                </div>
+              </div>
+
+              {/* Controles de Navegação: Indicadores de Posição (3 etapas) + Setas */}
+              <div className="flex items-center justify-between gap-4 pt-1">
+                {/* 3 Indicadores de Posição */}
+                <div
+                  className="flex items-center gap-2"
+                  role="tablist"
+                  aria-label="Selecionar etapa"
+                >
+                  {HOW_TO_PARTICIPATE_STEPS.map((step, idx) => {
+                    const isActive = idx === currentIndex;
+                    return (
+                      <button
+                        key={step.number}
+                        type="button"
+                        role="tab"
+                        aria-selected={isActive}
+                        aria-label={`Ir para ${step.label}`}
+                        onClick={() => handleSelectStep(idx)}
+                        className={`h-3 rounded-full transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-tutu-lime ${
+                          isActive
+                            ? 'w-8 bg-tutu-lime'
+                            : 'w-3 bg-tutu-secondary/60 hover:bg-tutu-blue'
+                        }`}
+                      />
+                    );
+                  })}
                 </div>
 
-                <div className="pt-2 flex items-center justify-between text-xs text-tutu-light/75 border-t border-tutu-secondary/40">
-                  <span>Identidade Oficial Tutu</span>
-                  <Link
-                    to="/cadastro"
-                    className="text-tutu-lime font-semibold hover:underline flex items-center gap-1"
+                {/* Setas de Navegação Manual (Área de toque 44x44px) */}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePrev}
+                    aria-label="Etapa anterior"
+                    className="w-11 h-11 rounded-xl bg-tutu-dark/80 hover:bg-tutu-blue/40 border border-tutu-secondary/60 flex items-center justify-center text-tutu-light transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-tutu-lime"
                   >
-                    <span>Criar conta demonstrativa</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleNext}
+                    aria-label="Próxima etapa"
+                    className="w-11 h-11 rounded-xl bg-tutu-dark/80 hover:bg-tutu-blue/40 border border-tutu-secondary/60 flex items-center justify-center text-tutu-light transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-tutu-lime"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </section>
-
-      {/* EXPLANATION OF DYNAMICS */}
-      <section id="dinamica" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
-        <div className="max-w-3xl space-y-3">
-          <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-            Dinâmica do Evento
-          </span>
-          <h2 className="font-display font-bold text-3xl sm:text-4xl text-tutu-light">
-            Como funciona o Desafio Global Summit 2026
-          </h2>
-          <p className="text-tutu-light/80 text-base">
-            Uma jornada estruturada para transformar sua visita aos pavilhões da Arena BRB Mané Garrincha em conexões práticas com startups de alto impacto.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          {steps.map((item) => {
-            const Icon = item.icon;
-            return (
-              <div key={item.step} className="tutu-card tutu-card-hover p-6 flex flex-col justify-between space-y-5">
-                <div className="flex items-center justify-between">
-                  <span className="font-display font-bold text-3xl text-tutu-lime">
-                    {item.step}
-                  </span>
-                  <div className="w-10 h-10 rounded-xl bg-tutu-blue/30 border border-tutu-blue flex items-center justify-center text-tutu-light">
-                    <Icon className="w-5 h-5 text-tutu-lime" />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <h3 className="font-display font-bold text-lg text-tutu-light">{item.title}</h3>
-                  <p className="text-sm text-tutu-light/80 leading-relaxed">{item.description}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* STARTUPS PRESENTATION */}
-      <section id="startups" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-          <div className="space-y-2">
-            <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-              Ecossistema Expositor
-            </span>
-            <h2 className="font-display font-bold text-3xl sm:text-4xl text-tutu-light">
-              Startups Participantes
-            </h2>
-          </div>
-          <Link
-            to="/app/startups"
-            className="px-4 py-2.5 rounded-xl btn-tutu-outline text-sm inline-flex items-center gap-2 self-start"
-          >
-            <span>Explorar detalhes das startups</span>
-            <ArrowRight className="w-4 h-4" />
-          </Link>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {activeStartups.map((st) => (
-            <div key={st.id} className="tutu-card tutu-card-hover p-6 flex flex-col justify-between gap-5">
-              <div className="flex items-start gap-4">
-                <StartupAvatarBadge logoText={st.logoText} isGuest={st.isConfigurableGuest} />
-                <div className="space-y-1 flex-1">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-tutu-secondary/40 text-tutu-lime">
-                      {st.category}
-                    </span>
-                    <span className="text-xs font-bold text-tutu-lime flex items-center gap-1">
-                      <Zap className="w-3.5 h-3.5" /> Até {formatPoints(st.availablePoints)}
-                    </span>
-                  </div>
-                  <h3 className="font-display font-bold text-xl text-tutu-light pt-1">{st.name}</h3>
-                  <p className="text-xs text-tutu-light/70">{st.boothNumber}</p>
-                </div>
-              </div>
-
-              <p className="text-sm text-tutu-light/85 leading-relaxed">{st.description}</p>
-
-              <div className="pt-3 border-t border-tutu-secondary/40 flex items-center justify-between">
-                <span className="text-xs text-tutu-light/75 italic">{st.tagline}</span>
-                <Link
-                  to="/app/startups"
-                  className="text-xs font-bold text-tutu-lime hover:underline flex items-center gap-1 shrink-0 ml-2"
-                >
-                  <span>Conhecer</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* MISSIONS, SCORING & ACHIEVEMENTS */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Regras de Pontuação */}
-          <div className="lg:col-span-6 tutu-card p-6 sm:p-8 space-y-6">
-            <div className="space-y-2">
-              <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-                Missões & Pontuação
-              </span>
-              <h2 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
-                Como acumular pontos no evento
-              </h2>
-            </div>
-
-            <div className="space-y-3">
-              {eventSettings.scoringRules.map((rule, idx) => (
-                <div
-                  key={idx}
-                  className="p-3.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 flex items-start gap-3"
-                >
-                  <div className="w-6 h-6 rounded-lg bg-tutu-blue text-tutu-light font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
-                    {idx + 1}
-                  </div>
-                  <p className="text-sm text-tutu-light/90">{rule}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="p-4 rounded-xl bg-tutu-secondary/25 border border-tutu-lime/40 flex items-start gap-3">
-              <ShieldAlert className="w-5 h-5 text-tutu-lime shrink-0 mt-0.5" />
-              <div className="text-xs text-tutu-light/85 space-y-1">
-                <p className="font-bold text-tutu-light">
-                  Sobre Conquistas e Premiações ({eventSettings.rewardsEnabled ? 'Ativas' : 'Aguardando Liberação Formal'})
-                </p>
-                <p>
-                  {eventSettings.rewardsEnabled
-                    ? eventSettings.rewardsDescription
-                    : eventSettings.rewardsLegalNote}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Medalhas Colecionáveis */}
-          <div className="lg:col-span-6 tutu-card p-6 sm:p-8 space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-                  Insígnias Oficiais
-                </span>
-                <h2 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
-                  Medalhas & Conquistas
-                </h2>
-              </div>
-              <Award className="w-8 h-8 text-tutu-lime" />
-            </div>
-
-            <div className="space-y-3">
-              {achievements.map((ach) => (
-                <div
-                  key={ach.id}
-                  className="p-3.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 flex items-center gap-4"
-                >
-                  <AchievementIcon iconName={ach.iconName} unlocked={ach.unlocked} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="font-display font-bold text-base text-tutu-light">
-                        {ach.name}
-                      </h3>
-                      <span className="text-xs font-bold text-tutu-lime">
-                        +{ach.pointsBonus} pts
-                      </span>
-                    </div>
-                    <p className="text-xs text-tutu-light/75 mt-0.5">{ach.description}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* FINAL CALL TO ACTION BANNER */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="tutu-card p-8 sm:p-10 border-2 border-tutu-blue flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="space-y-2 max-w-2xl">
-            <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-              Passaporte Gratuito • 24 a 26 de Novembro de 2026
-            </span>
-            <h2 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
-              Pronto para viver o Desafio Global Summit 2026?
-            </h2>
-            <p className="text-sm text-tutu-light/80">
-              Garanta seu cadastro na plataforma, acumule pontos nos estandes das startups e dispute o topo do ranking na Arena BRB Mané Garrincha.
-            </p>
-          </div>
-          <Link
-            to="/cadastro"
-            className="px-6 py-3.5 rounded-xl btn-tutu-lime text-base flex items-center gap-2 shadow-lg shrink-0"
-          >
-            <span>Começar minha jornada</span>
-            <ArrowRight className="w-5 h-5" />
-          </Link>
-        </div>
-      </section>
-    </div>
+      </div>
+    </section>
   );
 };

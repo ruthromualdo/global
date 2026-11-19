@@ -39,24 +39,24 @@ export const AdminLoginPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-tutu-dark text-tutu-light flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full mx-auto space-y-6">
-        <div className="flex items-center justify-between">
+    <div className="min-h-screen bg-tutu-dark text-tutu-light flex flex-col justify-center py-8 sm:py-12 px-3 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full mx-auto space-y-5 sm:space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <Link to="/">
             <TutuBrandMark size="sm" />
           </Link>
-          <span className="px-3 py-1 rounded-full bg-tutu-secondary/40 border border-tutu-lime/40 text-tutu-lime text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-            <ShieldCheck className="w-3.5 h-3.5" />
+          <span className="px-3 py-1 rounded-full bg-tutu-secondary/40 border border-tutu-lime/40 text-tutu-lime text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
             <span>Área Restrita</span>
           </span>
         </div>
 
-        <div className="tutu-card p-6 sm:p-8 space-y-6 border-2 border-tutu-blue">
+        <div className="tutu-card p-5 sm:p-8 space-y-6 border-2 border-tutu-blue">
           <div className="space-y-2">
             <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
               Controle de Acesso Baseado em Papéis (RBAC)
             </span>
-            <h1 className="font-display font-bold text-3xl text-tutu-light">
+            <h1 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
               Autenticação Administrativa
             </h1>
             <p className="text-xs text-tutu-light/75 leading-relaxed">
@@ -71,7 +71,7 @@ export const AdminLoginPage: React.FC = () => {
                 <ShieldAlert className="w-4 h-4 shrink-0" />
                 <span>Acesso Negado (Perfil PARTICIPANT)</span>
               </p>
-              <p className="text-tutu-light/85 leading-relaxed">
+              <p className="text-tutu-light/85 leading-relaxed break-words">
                 Sua sessão atual pertence a um participante comum ({authState.email || 'PARTICIPANT'}). Para acessar o Painel Administrativo, autentique-se abaixo com uma credencial administrativa autorizada.
               </p>
             </div>
@@ -90,7 +90,7 @@ export const AdminLoginPage: React.FC = () => {
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>Falha de Autorização</span>
               </p>
-              <p className="text-tutu-light/90">{errorMessage}</p>
+              <p className="text-tutu-light/90 break-words">{errorMessage}</p>
             </div>
           )}
 
@@ -111,14 +111,19 @@ export const AdminLoginPage: React.FC = () => {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+              <label
+                htmlFor="admin-email"
+                className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+              >
                 E-mail Administrativo
               </label>
               <div className="relative">
-                <Mail className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-3.5" />
+                <Mail className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
+                  id="admin-email"
                   type="email"
                   required
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="admin@organizacao.com.br"
@@ -128,14 +133,19 @@ export const AdminLoginPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+              <label
+                htmlFor="admin-password"
+                className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+              >
                 Senha Administrativa
               </label>
               <div className="relative">
-                <Lock className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-3.5" />
+                <Lock className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
+                  id="admin-password"
                   type="password"
                   required
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••••••"
@@ -147,22 +157,22 @@ export const AdminLoginPage: React.FC = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3.5 px-4 btn-tutu-lime text-sm flex items-center justify-center gap-2"
+              className="min-h-[48px] w-full py-3.5 px-4 btn-tutu-lime text-sm flex items-center justify-center gap-2"
             >
               <span>{loading ? 'Validando Credenciais...' : 'Acessar Painel Administrativo'}</span>
-              <ArrowRight className="w-4 h-4" />
+              <ArrowRight className="w-4 h-4 shrink-0" />
             </button>
           </form>
 
-          <div className="pt-4 border-t border-tutu-secondary/40 flex items-center justify-between text-xs">
+          <div className="pt-4 border-t border-tutu-secondary/40 flex flex-wrap items-center justify-between gap-2 text-xs">
             <Link
               to="/app/dashboard"
-              className="text-tutu-light/75 hover:text-tutu-lime flex items-center gap-1.5"
+              className="text-tutu-light/75 hover:text-tutu-lime flex items-center gap-1.5 py-1"
             >
-              <ArrowLeft className="w-3.5 h-3.5" />
+              <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
               <span>Voltar à Área do Participante</span>
             </Link>
-            <Link to="/" className="text-tutu-light/75 hover:text-tutu-lime">
+            <Link to="/" className="text-tutu-light/75 hover:text-tutu-lime py-1">
               Início
             </Link>
           </div>

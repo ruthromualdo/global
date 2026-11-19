@@ -21,7 +21,24 @@ import { qrCodeService } from '../services/qrCodeService';
 import { rankingService } from '../services/rankingService';
 import { adminService } from '../services/adminService';
 import { governanceService } from '../services/governanceService';
-import { apiRequest } from '../services/apiClient';
+import { apiRequest, apiRequestWithStatus } from '../services/apiClient';
+
+export type QRScanStatus =
+  | 'VALIDATED'
+  | 'INVALID_CODE'
+  | 'INACTIVE_CODE'
+  | 'INVALID_MISSION'
+  | 'ALREADY_USED'
+  | 'CONNECTION_ERROR';
+
+export interface QRScanResult {
+  success: boolean;
+  status: QRScanStatus;
+  alreadyUsed?: boolean;
+  message: string;
+  qrCode?: QRCode;
+  pointsAwarded?: number;
+}
 
 export interface ToastNotice {
   id: string;
@@ -90,7 +107,7 @@ interface AppStoreContextValue {
   completeMissionInstant: (missionId: string) => void;
   startMission: (missionId: string) => void;
   submitMissionEvidence: (missionId: string, evidenceText: string) => void;
-  scanQRCodeDemo: (code: string) => { success: boolean; message: string; qrCode?: QRCode };
+  scanQRCodeDemo: (code: string) => Promise<QRScanResult>;
   updateProfile: (updates: Partial<Participant>) => void;
   // Admin actions
   createStartup: (payload: Omit<Startup, 'id'>) => void;
@@ -288,28 +305,49 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return;
     }
 
-    const prevPoints = participant.points;
-    missionService.updateMissionStatus(missionId, 'Concluída');
-    const updatedUser = participantService.addParticipantPoints(target.points, target.startupId);
-    rankingService.recordPointsTransaction({
-      participantId: updatedUser.id,
-      participantName: updatedUser.name,
-      sourceType: 'Missão',
-      sourceTitle: target.title,
-      pointsDelta: target.points,
-      previousBalance: prevPoints,
-      newBalance: updatedUser.points,
+    void apiRequestWithStatus<{
+      success?: boolean;
+      alreadyCompleted?: boolean;
+      pointsAwarded?: number;
+      error?: string;
+    }>(`/missions/${missionId}/complete`, { method: 'POST' }).then(async (res) => {
+      if (res.ok && res.data?.success) {
+        const prevPoints = participant.points;
+        missionService.updateMissionStatus(missionId, 'Concluída');
+        const updatedUser = participantService.addParticipantPoints(
+          target.points,
+          target.startupId
+        );
+        rankingService.recordPointsTransaction({
+          participantId: updatedUser.id,
+          participantName: updatedUser.name,
+          sourceType: 'Missão',
+          sourceTitle: target.title,
+          pointsDelta: target.points,
+          previousBalance: prevPoints,
+          newBalance: updatedUser.points,
+        });
+        await syncFromSqliteOrMemory();
+        notify(
+          `+${target.points} Pontos Conquistados!`,
+          `Missão "${target.title}" concluída e gravada com sucesso.`,
+          'success'
+        );
+      } else if (res.status === 409 || res.data?.alreadyCompleted) {
+        await syncFromSqliteOrMemory();
+        notify(
+          'Missão já concluída',
+          res.data?.error || 'Você já recebeu os pontos desta missão anteriormente.',
+          'info'
+        );
+      } else {
+        notify(
+          'Não foi possível concluir a missão',
+          res.error || 'Verifique sua conexão com o servidor e tente novamente.',
+          'error'
+        );
+      }
     });
-
-    void apiRequest(`/missions/${missionId}/complete`, { method: 'POST' }).then(() =>
-      syncFromSqliteOrMemory()
-    );
-
-    notify(
-      `+${target.points} Pontos Conquistados!`,
-      `Missão "${target.title}" concluída e gravada com sucesso.`,
-      'success'
-    );
   };
 
   const submitMissionEvidence = (missionId: string, evidenceText: string) => {
@@ -341,35 +379,109 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     );
   };
 
-  const scanQRCodeDemo = (code: string) => {
-    const result = qrCodeService.validateSimulatedScan(code);
-    if (result.success && result.qrCode) {
+  const scanQRCodeDemo = async (code: string): Promise<QRScanResult> => {
+    const normalized = (code || '').trim().toUpperCase();
+    if (!normalized) {
+      const emptyRes: QRScanResult = {
+        success: false,
+        status: 'INVALID_CODE',
+        message: 'Informe ou escaneie um código QR válido.',
+      };
+      notify('Código Inválido', emptyRes.message, 'error');
+      return emptyRes;
+    }
+
+    // Validação definitiva no backend SQLite
+    const apiRes = await apiRequestWithStatus<{
+      success: boolean;
+      status?: QRScanStatus;
+      alreadyUsed?: boolean;
+      qrCode?: QRCode;
+      pointsAwarded?: number;
+      message?: string;
+      error?: string;
+    }>('/qrcodes/scan', {
+      method: 'POST',
+      body: JSON.stringify({ code: normalized }),
+    });
+
+    // Erro de rede / servidor indisponível
+    if (apiRes.status === 0) {
+      const connError: QRScanResult = {
+        success: false,
+        status: 'CONNECTION_ERROR',
+        message:
+          'Erro de conexão com o servidor de validação. Verifique sua conexão e tente ler o QR Code novamente.',
+      };
+      notify('Erro de Conexão', connError.message, 'error');
+      return connError;
+    }
+
+    const payload = apiRes.data;
+
+    if (apiRes.ok && payload?.success && payload.qrCode) {
+      // Sincroniza estado local e recarrega dados reais do SQLite
+      qrCodeService.validateSimulatedScan(normalized);
+      missionService.updateMissionStatus(payload.qrCode.missionId, 'Concluída');
       const prevPoints = participant.points;
-      missionService.updateMissionStatus(result.qrCode.missionId, 'Concluída');
       const updatedUser = participantService.addParticipantPoints(
-        result.qrCode.points,
-        result.qrCode.startupId
+        payload.qrCode.points,
+        payload.qrCode.startupId
       );
       rankingService.recordPointsTransaction({
         participantId: updatedUser.id,
         participantName: updatedUser.name,
         sourceType: 'QR Code',
-        sourceTitle: `${result.qrCode.code} — ${result.qrCode.missionTitle}`,
-        pointsDelta: result.qrCode.points,
+        sourceTitle: `${payload.qrCode.code} — ${payload.qrCode.missionTitle}`,
+        pointsDelta: payload.qrCode.points,
         previousBalance: prevPoints,
         newBalance: updatedUser.points,
       });
 
-      void apiRequest('/qrcodes/scan', {
-        method: 'POST',
-        body: JSON.stringify({ code }),
-      }).then(() => syncFromSqliteOrMemory());
+      await syncFromSqliteOrMemory();
 
-      notify('QR Code Validado!', result.message, 'success');
-    } else {
-      notify('Falha na Leitura', result.message, 'error');
+      const successResult: QRScanResult = {
+        success: true,
+        status: 'VALIDATED',
+        qrCode: payload.qrCode,
+        pointsAwarded: payload.pointsAwarded ?? payload.qrCode.points,
+        message:
+          payload.message ||
+          `Leitura confirmada! +${payload.qrCode.points} pontos creditados pela missão "${payload.qrCode.missionTitle}".`,
+      };
+      notify('QR Code Validado!', successResult.message, 'success');
+      return successResult;
     }
-    return result;
+
+    // Código já utilizado pelo participante (HTTP 409)
+    if (apiRes.status === 409 || payload?.status === 'ALREADY_USED' || payload?.alreadyUsed) {
+      await syncFromSqliteOrMemory();
+      const usedResult: QRScanResult = {
+        success: false,
+        status: 'ALREADY_USED',
+        alreadyUsed: true,
+        qrCode: payload?.qrCode,
+        message:
+          payload?.message ||
+          `O código ${normalized} já foi utilizado por você anteriormente e os pontos já foram registrados.`,
+      };
+      notify('Código Já Utilizado', usedResult.message, 'info');
+      return usedResult;
+    }
+
+    // Código inválido, inativo ou missão inválida
+    const failStatus: QRScanStatus = payload?.status || 'INVALID_CODE';
+    const failResult: QRScanResult = {
+      success: false,
+      status: failStatus,
+      qrCode: payload?.qrCode,
+      message:
+        payload?.message ||
+        apiRes.error ||
+        `Código QR "${normalized}" inválido ou não localizado no sistema.`,
+    };
+    notify('Código Não Validado', failResult.message, 'error');
+    return failResult;
   };
 
   const updateProfile = (updates: Partial<Participant>) => {

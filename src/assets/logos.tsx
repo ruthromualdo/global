@@ -2,28 +2,20 @@ import React from 'react';
 import { Sparkles, Feather, Cpu, Orbit } from 'lucide-react';
 
 export const TutuBrandMark: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 'md' }) => {
-  const dimensions =
+  const pillDimensions =
     size === 'sm'
-      ? 'h-8 px-2.5 text-sm'
+      ? 'h-8 px-2.5 text-xs'
       : size === 'lg'
-      ? 'h-12 px-4 text-xl'
-      : 'h-10 px-3 text-base';
+      ? 'h-11 px-4 text-base'
+      : 'h-9 px-3 text-sm';
 
   return (
-    <div className="inline-flex items-center gap-2.5 select-none">
+    <div className="inline-flex items-center gap-2 sm:gap-2.5 select-none">
       <div
-        className={`${dimensions} rounded-xl bg-tutu-blue border border-tutu-lime/40 flex items-center justify-center font-display font-bold tracking-tight text-tutu-light shadow-sm`}
+        className={`${pillDimensions} rounded-xl bg-tutu-blue border border-tutu-lime/50 flex items-center justify-center font-display font-bold tracking-wide text-tutu-light shadow-sm`}
       >
-        <span>tutu</span>
-        <span className="ml-1 w-2 h-2 rounded-full bg-tutu-lime inline-block" />
-      </div>
-      <div className="leading-tight">
-        <span className="block font-display font-bold text-tutu-light tracking-tight text-sm sm:text-base">
-          Desafio Global Summit
-        </span>
-        <span className="block text-[11px] font-medium text-tutu-lime uppercase tracking-wider">
-          Brasília • 2026
-        </span>
+        <span className="mr-1.5 w-2 h-2 rounded-full bg-tutu-lime inline-block" />
+        <span>EX-DEVEDOR + TUTU</span>
       </div>
     </div>
   );

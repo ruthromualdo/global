@@ -53,7 +53,7 @@ export const AdminDashboardPage: React.FC = () => {
     {
       label: 'Pontuação Distribuída',
       value: formatNumber(adminMetrics.totalPointsDistributed),
-      sub: 'Pontos Tutu creditados',
+      sub: 'Pontos creditados',
       icon: Zap,
     },
     {
@@ -66,56 +66,56 @@ export const AdminDashboardPage: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div className="space-y-1.5">
           <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-            Centro de Comando • Brasil Global Summit 2026
+            Centro de Comando Administrativo
           </span>
-          <h1 className="font-display font-bold text-3xl sm:text-4xl text-tutu-light">
+          <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
             Dashboard Administrativo
           </h1>
-          <p className="text-sm text-tutu-light/80">
-            Monitoramento simulado em tempo real de engajamento, leituras de QR Code e desempenho das startups na Arena BRB.
+          <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed">
+            Monitoramento em tempo real de engajamento, leituras de QR Code e desempenho das startups na Arena BRB.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2.5">
           <Link
             to="/admin/validacao"
-            className="px-4 py-2.5 rounded-xl btn-tutu-lime text-xs flex items-center gap-2"
+            className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-2"
           >
             <span>Fila de Validação ({pendingValidations} pendentes)</span>
-            <ArrowRight className="w-3.5 h-3.5" />
+            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
           </Link>
           <Link
             to="/admin/governanca"
-            className="px-4 py-2.5 rounded-xl btn-tutu-primary text-xs flex items-center gap-2"
+            className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-primary text-xs flex items-center justify-center gap-2"
           >
-            <FolderKanban className="w-4 h-4" />
+            <FolderKanban className="w-4 h-4 shrink-0" />
             <span>12 Planos de Governança</span>
           </Link>
         </div>
       </div>
 
-      {/* KPIs Grid (Section 6.1) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* KPIs Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
         {kpis.map((item, idx) => {
           const Icon = item.icon;
           return (
             <div
               key={idx}
-              className={`tutu-card p-5 space-y-2 ${
+              className={`tutu-card p-4 sm:p-5 space-y-2 ${
                 item.highlight ? 'border-2 border-tutu-lime bg-tutu-secondary/25' : ''
               }`}
             >
-              <div className="flex items-center justify-between text-xs text-tutu-light/75 font-medium">
+              <div className="flex items-center justify-between text-xs text-tutu-light/75 font-medium gap-2">
                 <span>{item.label}</span>
-                <Icon className="w-4 h-4 text-tutu-lime" />
+                <Icon className="w-4 h-4 text-tutu-lime shrink-0" />
               </div>
               <p
-                className={`font-display font-bold text-3xl ${
+                className={`font-display font-bold text-2xl sm:text-3xl ${
                   item.highlight ? 'text-tutu-lime' : 'text-tutu-light'
                 }`}
               >
@@ -127,31 +127,29 @@ export const AdminDashboardPage: React.FC = () => {
         })}
       </div>
 
-      {/* Demonstrative Engagement Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* Engagement Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
         {/* Daily Evolution Chart */}
-        <div className="lg:col-span-6 tutu-card p-6 space-y-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-tutu-lime">
-                Gráfico Demonstrativo 01
-              </span>
-              <h2 className="font-display font-bold text-xl text-tutu-light mt-0.5">
-                Evolução Diária de Engajamento (24 a 26/11)
-              </h2>
-            </div>
+        <div className="lg:col-span-6 tutu-card p-5 sm:p-6 space-y-5">
+          <div>
+            <span className="text-xs font-bold uppercase tracking-wider text-tutu-lime">
+              Indicador 01
+            </span>
+            <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light mt-0.5">
+              Evolução Diária de Engajamento (24 a 26/11)
+            </h2>
           </div>
 
           <div className="space-y-4">
             {adminMetrics.engagementByDay.map((day) => {
-              const scanPct = Math.round((day.scans / 1600) * 100);
-              const missionPct = Math.round((day.missions / 1600) * 100);
+              const scanPct = Math.min(100, Math.round((day.scans / Math.max(1, 1600)) * 100));
+              const missionPct = Math.min(100, Math.round((day.missions / Math.max(1, 1600)) * 100));
               return (
                 <div
                   key={day.day}
-                  className="p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2.5"
+                  className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2.5"
                 >
-                  <div className="flex items-center justify-between text-xs font-semibold">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
                     <span className="text-tutu-light">{day.day}</span>
                     <span className="text-tutu-lime">{day.activeUsers} usuários ativos</span>
                   </div>
@@ -188,26 +186,26 @@ export const AdminDashboardPage: React.FC = () => {
         </div>
 
         {/* Startup Engagement Chart */}
-        <div className="lg:col-span-6 tutu-card p-6 space-y-5">
+        <div className="lg:col-span-6 tutu-card p-5 sm:p-6 space-y-5">
           <div>
             <span className="text-xs font-bold uppercase tracking-wider text-tutu-lime">
-              Gráfico Demonstrativo 02
+              Indicador 02
             </span>
-            <h2 className="font-display font-bold text-xl text-tutu-light mt-0.5">
+            <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light mt-0.5">
               Desempenho por Startup Expositora
             </h2>
           </div>
 
           <div className="space-y-4">
             {adminMetrics.participationByStartup.map((st) => {
-              const pct = Math.min(100, Math.round((st.missionsCompleted / 1500) * 100));
+              const pct = Math.min(100, Math.round((st.missionsCompleted / Math.max(1, 1500)) * 100));
               return (
                 <div
                   key={st.startupName}
-                  className="p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2"
+                  className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2"
                 >
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-display font-bold text-sm text-tutu-light">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-display font-bold text-sm text-tutu-light break-words">
                       {st.startupName}
                     </span>
                     <span className="text-tutu-lime font-bold">
@@ -222,7 +220,7 @@ export const AdminDashboardPage: React.FC = () => {
                     />
                   </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-tutu-light/75">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-tutu-light/75">
                     <span>{formatNumber(st.visits)} visitas registradas</span>
                     <span>{formatNumber(st.missionsCompleted)} missões concluídas</span>
                   </div>

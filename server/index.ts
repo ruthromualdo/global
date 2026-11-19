@@ -172,6 +172,74 @@ function creditPointsInSql(params: {
   return mapParticipantRow(updatedRow);
 }
 
+// Helper para resolver o status das missões vinculado ao histórico real do participante ativo
+function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticipantRow>) {
+  const baseMissions = (
+    db.prepare('SELECT * FROM missions').all() as Record<string, unknown>[]
+  ).map(mapMissionRow);
+
+  const scannedMissionRows = db
+    .prepare(
+      `SELECT q.mission_id as missionId
+       FROM qr_scans s
+       JOIN qr_codes q ON q.id = s.qr_code_id
+       WHERE s.participant_id = ?`
+    )
+    .all(participant.id) as { missionId: string }[];
+  const scannedMissionIds = new Set(scannedMissionRows.map((r) => String(r.missionId)));
+
+  const txRows = db
+    .prepare('SELECT source_title FROM points_transactions WHERE participant_id = ?')
+    .all(participant.id) as { source_title: string }[];
+  const txTitles = txRows.map((r) => String(r.source_title));
+
+  const completionRows = db
+    .prepare('SELECT mission_id, status FROM mission_completions WHERE participant_id = ?')
+    .all(participant.id) as { mission_id: string; status: string }[];
+
+  const approvedMissionIds = new Set(
+    completionRows.filter((r) => r.status === 'Aprovada').map((r) => String(r.mission_id))
+  );
+  const pendingMissionIds = new Set(
+    completionRows.filter((r) => r.status === 'Pendente').map((r) => String(r.mission_id))
+  );
+
+  // Conta quantas missões o participante efetivamente concluiu
+  const completedIds = new Set<string>();
+  for (const m of baseMissions) {
+    const hasTx = txTitles.some(
+      (t) =>
+        t === m.title ||
+        t.endsWith(`— ${m.title}`) ||
+        t === `Validação Aprovada: ${m.title}`
+    );
+    if (scannedMissionIds.has(m.id) || approvedMissionIds.has(m.id) || hasTx) {
+      completedIds.add(m.id);
+    }
+  }
+
+  const unlockedSurprise = completedIds.size >= 3 || participant.completedMissionsCount >= 3;
+
+  return baseMissions.map((m) => {
+    if (completedIds.has(m.id)) {
+      return { ...m, status: 'Concluída' as const };
+    }
+    if (pendingMissionIds.has(m.id)) {
+      return { ...m, status: 'Aguardando validação' as const };
+    }
+    if (m.category === 'Missão surpresa' || m.id === 'ms-08') {
+      return {
+        ...m,
+        status: unlockedSurprise ? ('Disponível' as const) : ('Bloqueada' as const),
+      };
+    }
+    if (m.status === 'Em andamento') {
+      return { ...m, status: 'Em andamento' as const };
+    }
+    return { ...m, status: 'Disponível' as const };
+  });
+}
+
 // ============================================================================
 // 1. HEALTH & BOOTSTRAP (COM FILTRAGEM RBAC NO SERVIDOR)
 // ============================================================================
@@ -199,9 +267,9 @@ app.get('/api/bootstrap', (req, res) => {
     db.prepare('SELECT * FROM startups').all() as Record<string, unknown>[]
   ).map(mapStartupRow);
 
-  const missions = (
-    db.prepare('SELECT * FROM missions').all() as Record<string, unknown>[]
-  ).map(mapMissionRow);
+  const missions = isAdmin
+    ? (db.prepare('SELECT * FROM missions').all() as Record<string, unknown>[]).map(mapMissionRow)
+    : getParticipantMissionsFromDb(participant);
 
   const achievements = getParticipantAchievementsFromDb(participant);
 
@@ -875,7 +943,39 @@ app.post('/api/missions/:id/complete', (req, res) => {
   }
 
   const mission = mapMissionRow(missionRow);
+  if (!mission.active) {
+    res.status(400).json({ error: 'Esta missão está inativa no momento.' });
+    return;
+  }
+
   const currentParticipant = getCurrentParticipantFromDb(req);
+
+  // Verifica se o participante já concluiu esta missão (via transação ou leitura de QR Code)
+  const existingTx = db
+    .prepare(
+      'SELECT id FROM points_transactions WHERE participant_id = ? AND (source_title = ? OR source_title LIKE ?) LIMIT 1'
+    )
+    .get(currentParticipant.id, mission.title, `%— ${mission.title}`) as
+    | { id: string }
+    | undefined;
+
+  const existingQrScan = db
+    .prepare(
+      `SELECT s.id FROM qr_scans s
+       JOIN qr_codes q ON q.id = s.qr_code_id
+       WHERE s.participant_id = ? AND q.mission_id = ?
+       LIMIT 1`
+    )
+    .get(currentParticipant.id, mission.id) as { id: string } | undefined;
+
+  if (existingTx || existingQrScan) {
+    res.status(409).json({
+      success: false,
+      alreadyCompleted: true,
+      error: `A missão "${mission.title}" já foi concluída por você anteriormente e os pontos já foram creditados.`,
+    });
+    return;
+  }
 
   db.exec('BEGIN TRANSACTION;');
   try {
@@ -1067,33 +1167,98 @@ app.patch('/api/qrcodes/:id/toggle', requireAdmin, (req, res) => {
 });
 
 app.post('/api/qrcodes/scan', (req, res) => {
-  const { code } = req.body as { code: string };
+  const { code } = req.body as { code?: string };
   const normalized = (code || '').trim().toUpperCase();
+
+  if (!normalized) {
+    res.status(400).json({
+      success: false,
+      status: 'INVALID_CODE',
+      message: 'Informe ou escaneie um código QR válido.',
+    });
+    return;
+  }
 
   const row = db
     .prepare('SELECT * FROM qr_codes WHERE UPPER(code) = ?')
     .get(normalized) as Record<string, unknown> | undefined;
 
   if (!row) {
-    res.json({
+    res.status(404).json({
       success: false,
-      message:
-        'Código QR não localizado no banco SQLite. Utilize um dos códigos dos estandes (ex.: TUTU-SIMULADOR ou FUTURIZE-2030).',
+      status: 'INVALID_CODE',
+      message: `Código QR "${normalized}" inválido ou não localizado no banco SQLite. Verifique o totem do estande (ex.: TUTU-2026, TUTU-SIMULADOR ou FUTURIZE-2030).`,
     });
     return;
   }
 
   const qr = mapQRCodeRow(row);
   if (!qr.active) {
-    res.json({
+    res.status(400).json({
       success: false,
+      status: 'INACTIVE_CODE',
       qrCode: qr,
       message: `O código ${qr.code} está temporariamente desativado pela organização.`,
     });
     return;
   }
 
+  // Valida se o código pertence a uma missão existente e ativa
+  const missionRow = db
+    .prepare('SELECT * FROM missions WHERE id = ?')
+    .get(qr.missionId) as Record<string, unknown> | undefined;
+
+  if (!missionRow) {
+    res.status(400).json({
+      success: false,
+      status: 'INVALID_MISSION',
+      qrCode: qr,
+      message: `O código ${qr.code} não pertence a uma missão válida cadastrada no sistema.`,
+    });
+    return;
+  }
+
+  const linkedMission = mapMissionRow(missionRow);
+  if (!linkedMission.active) {
+    res.status(400).json({
+      success: false,
+      status: 'INVALID_MISSION',
+      qrCode: qr,
+      message: `A missão "${linkedMission.title}" vinculada ao código ${qr.code} está inativa no momento.`,
+    });
+    return;
+  }
+
   const currentParticipant = getCurrentParticipantFromDb(req);
+
+  // Impede pontuação duplicada para o mesmo participante no mesmo QR Code ou na mesma missão
+  const existingScan = db
+    .prepare(
+      'SELECT id, scanned_at FROM qr_scans WHERE qr_code_id = ? AND participant_id = ? LIMIT 1'
+    )
+    .get(qr.id, currentParticipant.id) as { id: string; scanned_at: string } | undefined;
+
+  const existingMissionTx = db
+    .prepare(
+      'SELECT id FROM points_transactions WHERE participant_id = ? AND (source_title = ? OR source_title = ? OR source_title = ?) LIMIT 1'
+    )
+    .get(
+      currentParticipant.id,
+      linkedMission.title,
+      `${qr.code} — ${qr.missionTitle}`,
+      `${qr.code} — ${linkedMission.title}`
+    ) as { id: string } | undefined;
+
+  if (existingScan || existingMissionTx) {
+    res.status(409).json({
+      success: false,
+      status: 'ALREADY_USED',
+      alreadyUsed: true,
+      qrCode: qr,
+      message: `Código ${qr.code} já utilizado! Você já concluiu a missão "${qr.missionTitle}" e os pontos já foram creditados anteriormente.`,
+    });
+    return;
+  }
 
   db.exec('BEGIN TRANSACTION;');
   try {
@@ -1103,6 +1268,15 @@ app.post('/api/qrcodes/scan', (req, res) => {
     ).run(`scan-${Date.now()}`, qr.id, currentParticipant.id, new Date().toISOString());
 
     db.prepare("UPDATE missions SET status = 'Concluída' WHERE id = ?").run(qr.missionId);
+
+    const completedCount = (
+      db.prepare("SELECT COUNT(*) as total FROM missions WHERE status = 'Concluída'").get() as {
+        total: number;
+      }
+    ).total;
+    if (completedCount >= 3) {
+      db.prepare("UPDATE missions SET status = 'Disponível' WHERE status = 'Bloqueada'").run();
+    }
 
     creditPointsInSql({
       participantId: currentParticipant.id,
@@ -1125,7 +1299,9 @@ app.post('/api/qrcodes/scan', (req, res) => {
 
   res.json({
     success: true,
+    status: 'VALIDATED',
     qrCode: mapQRCodeRow(updatedRow),
+    pointsAwarded: qr.points,
     message: `Leitura confirmada e gravada no SQLite! +${qr.points} pontos creditados pela missão "${qr.missionTitle}".`,
   });
 });

@@ -45,24 +45,24 @@ export const AdminSettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <div className="space-y-1.5">
         <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
           Parâmetros Institucionais • Seção 6.8
         </span>
-        <h1 className="font-display font-bold text-3xl sm:text-4xl text-tutu-light">
+        <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
           Configurações do Evento
         </h1>
-        <p className="text-sm text-tutu-light/80">
+        <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed">
           Gerencie nome, datas, local, período, regras de pontuação, critérios de desempate e governança do módulo de premiação.
         </p>
       </div>
 
-      <form onSubmit={handleSave} className="space-y-6">
+      <form onSubmit={handleSave} className="space-y-5 sm:space-y-6">
         {/* General Event Data */}
-        <div className="tutu-card p-6 sm:p-8 space-y-5">
+        <div className="tutu-card p-5 sm:p-8 space-y-5">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-tutu-lime">
-            <Settings className="w-4 h-4" />
+            <Settings className="w-4 h-4 shrink-0" />
             <span>Dados Principais do Evento</span>
           </div>
 
@@ -135,8 +135,8 @@ export const AdminSettingsPage: React.FC = () => {
         </div>
 
         {/* Startups Vinculadas & Regras */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="tutu-card p-6 space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-6">
+          <div className="tutu-card p-5 sm:p-6 space-y-4">
             <label className="block text-xs font-bold uppercase tracking-wider text-tutu-lime">
               Regras de Pontuação (1 por linha)
             </label>
@@ -148,7 +148,7 @@ export const AdminSettingsPage: React.FC = () => {
             />
           </div>
 
-          <div className="tutu-card p-6 space-y-4">
+          <div className="tutu-card p-5 sm:p-6 space-y-4">
             <label className="block text-xs font-bold uppercase tracking-wider text-tutu-lime">
               Critérios de Desempate (1 por linha)
             </label>
@@ -162,12 +162,12 @@ export const AdminSettingsPage: React.FC = () => {
         </div>
 
         {/* Startups Overview */}
-        <div className="tutu-card p-6 space-y-3">
+        <div className="tutu-card p-5 sm:p-6 space-y-3">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-tutu-lime">
-            <Building2 className="w-4 h-4" />
+            <Building2 className="w-4 h-4 shrink-0" />
             <span>Startups Vinculadas ao Evento ({startups.length})</span>
           </div>
-          <div className="flex flex-wrap gap-2.5">
+          <div className="flex flex-wrap gap-2">
             {startups.map((st) => (
               <span
                 key={st.id}
@@ -179,12 +179,12 @@ export const AdminSettingsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Premiação — Começa Desabilitada (Section 6.8) */}
-        <div className="tutu-card p-6 sm:p-8 space-y-5 border-2 border-tutu-blue">
+        {/* Premiação — Começa Desabilitada */}
+        <div className="tutu-card p-5 sm:p-8 space-y-5 border-2 border-tutu-blue">
           <div className="flex items-start gap-3">
             <ShieldAlert className="w-6 h-6 text-tutu-lime shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <h2 className="font-display font-bold text-xl text-tutu-light">
+            <div className="space-y-1 min-w-0">
+              <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light">
                 Configuração de Premiação & Validação Jurídica
               </h2>
               <p className="text-xs text-tutu-light/80 leading-relaxed">
@@ -193,21 +193,21 @@ export const AdminSettingsPage: React.FC = () => {
             </div>
           </div>
 
-          <label className="flex items-center gap-3 p-4 rounded-xl bg-tutu-dark border border-tutu-secondary/60 cursor-pointer">
+          <label className="flex items-start sm:items-center gap-3 p-4 rounded-xl bg-tutu-dark border border-tutu-secondary/60 cursor-pointer">
             <input
               type="checkbox"
               checked={rewardsEnabled}
               onChange={(e) => setRewardsEnabled(e.target.checked)}
-              className="accent-tutu-lime w-5 h-5"
+              className="accent-tutu-lime w-5 h-5 mt-0.5 sm:mt-0 shrink-0"
             />
-            <div className="text-xs">
+            <div className="text-xs min-w-0">
               <span className="font-bold text-tutu-light block">
                 Habilitar exibição pública de premiação (Requer autorização formal e jurídica)
               </span>
-              <span className="text-tutu-light/70">
+              <span className="text-tutu-light/70 leading-relaxed block mt-0.5">
                 Status atual:{' '}
                 <strong className="text-tutu-lime">
-                  {rewardsEnabled ? 'Habilitada (Demonstração)' : 'Desabilitada (Padrão Seguro)'}
+                  {rewardsEnabled ? 'Habilitada' : 'Desabilitada (Padrão Seguro)'}
                 </strong>{' '}
                 — Nenhum sorteio automático é realizado.
               </span>
@@ -231,9 +231,9 @@ export const AdminSettingsPage: React.FC = () => {
         <div className="flex justify-end">
           <button
             type="submit"
-            className="px-6 py-3.5 rounded-xl btn-tutu-lime text-sm flex items-center gap-2"
+            className="min-h-[48px] w-full sm:w-auto px-6 py-3.5 rounded-xl btn-tutu-lime text-sm flex items-center justify-center gap-2"
           >
-            <Save className="w-4 h-4" />
+            <Save className="w-4 h-4 shrink-0" />
             <span>Salvar Configurações do Evento</span>
           </button>
         </div>

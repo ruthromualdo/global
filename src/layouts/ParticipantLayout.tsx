@@ -37,16 +37,16 @@ export const ParticipantLayout: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-tutu-dark text-tutu-light flex flex-col pb-24 lg:pb-10">
+    <div className="min-h-screen bg-tutu-dark text-tutu-light flex flex-col pb-28 lg:pb-10">
       {/* Top Navbar */}
       <header className="sticky top-0 z-30 bg-tutu-dark/95 backdrop-blur-md border-b border-tutu-secondary/40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-16 py-2 flex items-center justify-between gap-2 sm:gap-4">
           <Link to="/" className="shrink-0">
             <TutuBrandMark size="sm" />
           </Link>
 
           {/* Desktop Navigation */}
-          <nav className="hidden lg:flex items-center gap-1">
+          <nav className="hidden lg:flex items-center gap-1" aria-label="Menu principal do participante">
             {desktopLinks.map((item) => {
               const Icon = item.icon;
               return (
@@ -55,30 +55,30 @@ export const ParticipantLayout: React.FC = () => {
                   to={item.to}
                   className={({ isActive }) =>
                     item.highlight
-                      ? `px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all mx-1 ${
+                      ? `px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all mx-1 whitespace-nowrap ${
                           isActive
                             ? 'bg-tutu-lime text-tutu-dark'
                             : 'bg-tutu-blue text-tutu-light hover:bg-tutu-secondary border border-tutu-lime/40'
                         }`
-                      : `px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-2 transition-colors ${
+                      : `px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-2 transition-colors whitespace-nowrap ${
                           isActive
                             ? 'bg-tutu-secondary/50 text-tutu-lime border border-tutu-blue/50'
                             : 'text-tutu-light/80 hover:text-tutu-light hover:bg-tutu-secondary/20'
                         }`
                   }
                 >
-                  <Icon className="w-4 h-4" />
+                  <Icon className="w-4 h-4 shrink-0" />
                   <span>{item.label}</span>
                 </NavLink>
               );
             })}
           </nav>
 
-          {/* User Points & Quick Links (Menu Admin somente para administradores autenticados) */}
-          <div className="flex items-center gap-2.5">
-            <div className="px-3 py-1.5 rounded-xl bg-tutu-secondary/30 border border-tutu-lime/40 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-tutu-lime fill-tutu-lime" />
-              <span className="font-display font-bold text-sm text-tutu-lime">
+          {/* User Points & Quick Links */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-tutu-secondary/30 border border-tutu-lime/40 flex items-center gap-1.5 whitespace-nowrap">
+              <Zap className="w-4 h-4 text-tutu-lime fill-tutu-lime shrink-0" />
+              <span className="font-display font-bold text-xs sm:text-sm text-tutu-lime">
                 {formatPoints(participant.points)}
               </span>
             </div>
@@ -86,7 +86,7 @@ export const ParticipantLayout: React.FC = () => {
             {isAdminAuthenticated && (
               <Link
                 to="/admin/dashboard"
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-tutu-secondary/25 hover:bg-tutu-secondary/50 border border-tutu-secondary/60 text-xs font-semibold text-tutu-light transition-colors"
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-tutu-secondary/25 hover:bg-tutu-secondary/50 border border-tutu-secondary/60 text-xs font-semibold text-tutu-light transition-colors whitespace-nowrap"
                 title="Acessar Painel Administrativo"
               >
                 <ShieldCheck className="w-3.5 h-3.5 text-tutu-lime" />
@@ -96,46 +96,49 @@ export const ParticipantLayout: React.FC = () => {
 
             <Link
               to="/app/perfil"
-              className="w-9 h-9 rounded-xl bg-tutu-blue text-tutu-light font-display font-bold text-xs flex items-center justify-center border border-tutu-light/20"
+              className="w-10 h-10 rounded-xl bg-tutu-blue text-tutu-light font-display font-bold text-xs flex items-center justify-center border border-tutu-light/20 shrink-0"
               title={participant.name}
+              aria-label={`Perfil de ${participant.name}`}
             >
               {participant.avatar}
             </Link>
           </div>
         </div>
 
-        {/* Sub-bar on mobile for Startups, Conquistas & Admin access (only if ADMIN) */}
-        <div className="lg:hidden border-t border-tutu-secondary/30 px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto text-xs">
+        {/* Sub-bar on mobile/tablet for Startups, Conquistas & Admin access (only if ADMIN) */}
+        <div className="lg:hidden border-t border-tutu-secondary/30 px-3 sm:px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto text-xs">
           <div className="flex items-center gap-2">
             <NavLink
               to="/app/startups"
               className={({ isActive }) =>
-                `px-2.5 py-1 rounded-lg font-medium whitespace-nowrap ${
+                `px-3 py-2 rounded-xl font-medium whitespace-nowrap inline-flex items-center gap-1.5 ${
                   isActive
-                    ? 'bg-tutu-blue text-tutu-light'
-                    : 'bg-tutu-secondary/25 text-tutu-light/80'
+                    ? 'bg-tutu-blue text-tutu-light font-semibold'
+                    : 'bg-tutu-secondary/25 text-tutu-light/85'
                 }`
               }
             >
-              Startups Expositoras
+              <Building2 className="w-3.5 h-3.5 text-tutu-lime" />
+              <span>Startups Expositoras</span>
             </NavLink>
             <NavLink
               to="/app/conquistas"
               className={({ isActive }) =>
-                `px-2.5 py-1 rounded-lg font-medium whitespace-nowrap ${
+                `px-3 py-2 rounded-xl font-medium whitespace-nowrap inline-flex items-center gap-1.5 ${
                   isActive
-                    ? 'bg-tutu-blue text-tutu-light'
-                    : 'bg-tutu-secondary/25 text-tutu-light/80'
+                    ? 'bg-tutu-blue text-tutu-light font-semibold'
+                    : 'bg-tutu-secondary/25 text-tutu-light/85'
                 }`
               }
             >
-              Medalhas & Conquistas
+              <Award className="w-3.5 h-3.5 text-tutu-lime" />
+              <span>Medalhas & Conquistas</span>
             </NavLink>
           </div>
           {isAdminAuthenticated && (
             <Link
               to="/admin/dashboard"
-              className="px-2.5 py-1 rounded-lg bg-tutu-secondary/30 border border-tutu-lime/30 text-tutu-lime font-semibold whitespace-nowrap flex items-center gap-1"
+              className="px-3 py-2 rounded-xl bg-tutu-secondary/30 border border-tutu-lime/30 text-tutu-lime font-semibold whitespace-nowrap flex items-center gap-1.5"
             >
               <ShieldCheck className="w-3.5 h-3.5" />
               <span>Painel Admin</span>
@@ -145,16 +148,16 @@ export const ParticipantLayout: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8 min-w-0">
         <Outlet />
       </main>
 
       {/* Mobile Bottom Navigation Bar */}
       <nav
         aria-label="Navegação móvel do participante"
-        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-tutu-dark/95 backdrop-blur-lg border-t border-tutu-secondary/60 px-2 py-1.5"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-tutu-dark/95 backdrop-blur-lg border-t border-tutu-secondary/60 px-1.5 sm:px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
       >
-        <div className="max-w-md mx-auto grid grid-cols-5 items-end">
+        <div className="max-w-md mx-auto grid grid-cols-5 items-end gap-1">
           {mobileBottomLinks.map((item) => {
             const Icon = item.icon;
             if (item.centerHighlight) {
@@ -162,21 +165,21 @@ export const ParticipantLayout: React.FC = () => {
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  className="flex flex-col items-center justify-center -mt-5"
+                  className="flex flex-col items-center justify-center -mt-4 sm:-mt-5 py-1"
                 >
                   {({ isActive }) => (
                     <>
                       <div
-                        className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg transition-transform ${
+                        className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center shadow-lg transition-transform ${
                           isActive
                             ? 'bg-tutu-lime text-tutu-dark scale-105 border-2 border-tutu-light'
                             : 'bg-tutu-blue text-tutu-light border-2 border-tutu-lime'
                         }`}
                       >
-                        <Icon className="w-6 h-6" />
+                        <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
                       </div>
                       <span
-                        className={`text-[11px] mt-1 font-bold ${
+                        className={`text-[10px] sm:text-[11px] mt-1 font-bold truncate max-w-full ${
                           isActive ? 'text-tutu-lime' : 'text-tutu-light'
                         }`}
                       >
@@ -193,13 +196,15 @@ export const ParticipantLayout: React.FC = () => {
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${
+                  `min-h-[48px] flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-colors ${
                     isActive ? 'text-tutu-lime font-semibold' : 'text-tutu-light/70'
                   }`
                 }
               >
-                <Icon className="w-5 h-5" />
-                <span className="text-[11px] mt-1">{item.label}</span>
+                <Icon className="w-5 h-5 shrink-0" />
+                <span className="text-[10px] sm:text-[11px] mt-1 truncate max-w-full">
+                  {item.label}
+                </span>
               </NavLink>
             );
           })}

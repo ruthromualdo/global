@@ -12,15 +12,35 @@
     --color-tutu-light: #FFFAF5;
   }
 
+  html {
+    max-width: 100%;
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
     background-color: #05001A;
     color: #FFFAF5;
     font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+    max-width: 100%;
     overflow-x: hidden;
+    min-height: 100vh;
+    min-height: 100dvh;
   }
 
   h1, h2, .font-bogart {
     font-family: 'Bogart', Georgia, serif;
+    overflow-wrap: break-word;
+  }
+
+  /* Estados de foco visíveis para navegação por teclado */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #D0FF00;
+    outline-offset: 2px;
   }
 }
 
@@ -30,6 +50,7 @@
     border: 1px solid rgba(50, 72, 199, 0.38);
     border-radius: 1rem;
     transition: all 0.2s ease;
+    max-width: 100%;
   }
 
   .tutu-card-hover:hover {
@@ -96,7 +117,9 @@
     color: #FFFAF5;
     border-radius: 0.75rem;
     padding: 0.75rem 1rem;
+    min-height: 2.75rem;
     width: 100%;
+    max-width: 100%;
     transition: border-color 0.2s ease;
   }
 
@@ -104,6 +127,33 @@
     outline: none;
     border-color: #3D5AFF;
     box-shadow: 0 0 0 2px rgba(61, 90, 255, 0.25);
+  }
+}
+
+/* Áreas de toque confortáveis (~44-48px) em telas touch sem afetar o desktop */
+@media (pointer: coarse) {
+  .input-tutu,
+  select.input-tutu {
+    min-height: 3rem;
+    font-size: 16px; /* Evita zoom automático indesejado no iOS Safari ao focar inputs */
+  }
+}
+
+/* Respeito global à preferência por movimento reduzido */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .tutu-card-hover:hover,
+  .btn-tutu-primary:hover:not(:disabled),
+  .btn-tutu-lime:hover:not(:disabled) {
+    transform: none !important;
   }
 }
 

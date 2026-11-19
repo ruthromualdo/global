@@ -20,28 +20,35 @@ export const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
-      <div className="tutu-card p-6 sm:p-8 space-y-6">
+    <div className="w-full max-w-md mx-auto px-3 sm:px-4 py-6 sm:py-12">
+      <div className="tutu-card p-5 sm:p-8 space-y-6">
         <div className="space-y-2 text-center">
-          <span className="px-3 py-1 rounded-full bg-tutu-secondary/40 text-tutu-lime text-xs font-bold uppercase tracking-wider">
-            Acesso Demonstrativo
+          <span className="inline-block px-3 py-1 rounded-full bg-tutu-secondary/40 text-tutu-lime text-xs font-bold uppercase tracking-wider">
+            Passaporte do Participante
           </span>
-          <h1 className="font-display font-bold text-3xl text-tutu-light">Entrar na Plataforma</h1>
-          <p className="text-xs text-tutu-light/75">
-            Navegação demonstrativa do Desafio Global Summit 2026 (sem autenticação em servidor nesta etapa).
+          <h1 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
+            Entrar na Plataforma
+          </h1>
+          <p className="text-xs text-tutu-light/75 leading-relaxed">
+            Acesse sua conta para acompanhar suas missões, pontos e posição no ranking.
           </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+            <label
+              htmlFor="login-email"
+              className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+            >
               E-mail do Participante
             </label>
             <div className="relative">
-              <Mail className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-3.5" />
+              <Mail className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
+                id="login-email"
                 type="email"
                 required
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="input-tutu pl-10 text-sm"
@@ -51,19 +58,24 @@ export const LoginPage: React.FC = () => {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+              <label
+                htmlFor="login-password"
+                className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80"
+              >
                 Senha
               </label>
-              <Link to="/recuperar-senha" className="text-xs text-tutu-lime hover:underline">
+              <Link to="/recuperar-senha" className="text-xs text-tutu-lime hover:underline py-0.5">
                 Esqueceu a senha?
               </Link>
             </div>
             <div className="relative">
-              <Lock className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-3.5" />
+              <Lock className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
+                id="login-password"
                 type="password"
                 required
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="input-tutu pl-10 text-sm"
@@ -74,17 +86,17 @@ export const LoginPage: React.FC = () => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3.5 px-4 btn-tutu-lime text-sm flex items-center justify-center gap-2"
+            className="min-h-[48px] w-full py-3.5 px-4 btn-tutu-lime text-sm flex items-center justify-center gap-2"
           >
             <span>{loading ? 'Acessando...' : 'Entrar no Desafio Global'}</span>
-            <ArrowRight className="w-4 h-4" />
+            <ArrowRight className="w-4 h-4 shrink-0" />
           </button>
         </form>
 
         <div className="pt-4 border-t border-tutu-secondary/40 text-center space-y-3 text-xs">
           <p className="text-tutu-light/75">
             Ainda não tem passaporte no evento?{' '}
-            <Link to="/cadastro" className="text-tutu-lime font-bold hover:underline">
+            <Link to="/cadastro" className="text-tutu-lime font-bold hover:underline inline-block py-1">
               Criar cadastro gratuito
             </Link>
           </p>
@@ -92,9 +104,9 @@ export const LoginPage: React.FC = () => {
           <div className="pt-2 border-t border-tutu-secondary/25 flex justify-center">
             <Link
               to="/admin/login"
-              className="inline-flex items-center gap-1.5 text-[11px] text-tutu-light/55 hover:text-tutu-light/90 transition-colors py-1 px-2 rounded-lg"
+              className="inline-flex items-center gap-1.5 text-[11px] text-tutu-light/55 hover:text-tutu-light/90 transition-colors py-1.5 px-3 rounded-lg"
             >
-              <ShieldCheck className="w-3.5 h-3.5 text-tutu-secondary" />
+              <ShieldCheck className="w-3.5 h-3.5 text-tutu-secondary shrink-0" />
               <span>Acesso administrativo</span>
             </Link>
           </div>
@@ -130,28 +142,35 @@ export const RegisterPage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-lg mx-auto px-4 py-10">
-      <div className="tutu-card p-6 sm:p-8 space-y-6">
+    <div className="w-full max-w-lg mx-auto px-3 sm:px-4 py-6 sm:py-10">
+      <div className="tutu-card p-5 sm:p-8 space-y-6">
         <div className="space-y-2">
-          <span className="px-3 py-1 rounded-full bg-tutu-secondary/40 text-tutu-lime text-xs font-bold uppercase tracking-wider">
-            Passaporte Brasil Global Summit 2026
+          <span className="inline-block px-3 py-1 rounded-full bg-tutu-secondary/40 text-tutu-lime text-xs font-bold uppercase tracking-wider">
+            Passaporte do Participante
           </span>
-          <h1 className="font-display font-bold text-3xl text-tutu-light">Criar Cadastro</h1>
-          <p className="text-xs text-tutu-light/75">
+          <h1 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
+            Criar Cadastro
+          </h1>
+          <p className="text-xs text-tutu-light/75 leading-relaxed">
             Preencha os campos abaixo para iniciar sua jornada gamificada nos dias 24, 25 e 26 de novembro.
           </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+            <label
+              htmlFor="register-name"
+              className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+            >
               Nome Completo
             </label>
             <div className="relative">
-              <User className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-3.5" />
+              <User className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
+                id="register-name"
                 type="text"
                 required
+                autoComplete="name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Ex.: Marina Costa"
@@ -161,14 +180,19 @@ export const RegisterPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+            <label
+              htmlFor="register-email"
+              className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+            >
               E-mail
             </label>
             <div className="relative">
-              <Mail className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-3.5" />
+              <Mail className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
+                id="register-email"
                 type="email"
                 required
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="voce@exemplo.com.br"
@@ -179,12 +203,17 @@ export const RegisterPage: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+              <label
+                htmlFor="register-password"
+                className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+              >
                 Senha
               </label>
               <input
+                id="register-password"
                 type="password"
                 required
+                autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Mínimo 6 caracteres"
@@ -192,12 +221,17 @@ export const RegisterPage: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+              <label
+                htmlFor="register-confirm-password"
+                className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+              >
                 Confirmação de Senha
               </label>
               <input
+                id="register-confirm-password"
                 type="password"
                 required
+                autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder="Repita a senha"
@@ -211,9 +245,9 @@ export const RegisterPage: React.FC = () => {
               type="checkbox"
               checked={acceptedTerms}
               onChange={(e) => setAcceptedTerms(e.target.checked)}
-              className="mt-0.5 accent-tutu-lime w-4 h-4 rounded"
+              className="mt-0.5 accent-tutu-lime w-4 h-4 rounded shrink-0"
             />
-            <span>
+            <span className="leading-relaxed">
               Li e concordo com os{' '}
               <Link to="/termos" className="text-tutu-lime underline">
                 Termos de Uso
@@ -222,22 +256,22 @@ export const RegisterPage: React.FC = () => {
               <Link to="/privacidade" className="text-tutu-lime underline">
                 Política de Privacidade
               </Link>{' '}
-              do Desafio Global Summit 2026.
+              do evento.
             </span>
           </label>
 
           <button
             type="submit"
-            className="w-full py-3.5 px-4 btn-tutu-lime text-sm flex items-center justify-center gap-2"
+            className="min-h-[48px] w-full py-3.5 px-4 btn-tutu-lime text-sm flex items-center justify-center gap-2"
           >
             <span>Concluir Cadastro e Acessar</span>
-            <ArrowRight className="w-4 h-4" />
+            <ArrowRight className="w-4 h-4 shrink-0" />
           </button>
         </form>
 
         <p className="text-xs text-center text-tutu-light/75">
           Já possui cadastro?{' '}
-          <Link to="/login" className="text-tutu-lime font-bold hover:underline">
+          <Link to="/login" className="text-tutu-lime font-bold hover:underline inline-block py-1">
             Fazer login
           </Link>
         </p>
@@ -259,52 +293,60 @@ export const PasswordRecoveryPage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
-      <div className="tutu-card p-6 sm:p-8 space-y-6">
+    <div className="w-full max-w-md mx-auto px-3 sm:px-4 py-6 sm:py-12">
+      <div className="tutu-card p-5 sm:p-8 space-y-6">
         <div className="w-12 h-12 rounded-2xl bg-tutu-blue/30 border border-tutu-blue flex items-center justify-center text-tutu-lime">
           <KeyRound className="w-6 h-6" />
         </div>
         <div className="space-y-1.5">
           <h1 className="font-display font-bold text-2xl text-tutu-light">Recuperar Senha</h1>
-          <p className="text-xs text-tutu-light/75">
-            Informe seu e-mail cadastrado para receber o link demonstrativo de redefinição.
+          <p className="text-xs text-tutu-light/75 leading-relaxed">
+            Informe seu e-mail cadastrado para receber o link de redefinição.
           </p>
         </div>
 
         {sentMessage ? (
           <div className="p-4 rounded-xl bg-tutu-secondary/30 border border-tutu-lime space-y-3">
             <div className="flex items-center gap-2 text-tutu-lime font-bold text-sm">
-              <CheckCircle2 className="w-4 h-4" />
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>Solicitação Processada</span>
             </div>
-            <p className="text-xs text-tutu-light/90">{sentMessage}</p>
-            <Link to="/login" className="inline-block text-xs font-bold text-tutu-lime underline">
+            <p className="text-xs text-tutu-light/90 break-words">{sentMessage}</p>
+            <Link to="/login" className="inline-block text-xs font-bold text-tutu-lime underline py-1">
               Voltar para o Login
             </Link>
           </div>
         ) : (
           <form onSubmit={handleReset} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5">
+              <label
+                htmlFor="recovery-email"
+                className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+              >
                 E-mail Cadastrado
               </label>
               <input
+                id="recovery-email"
                 type="email"
                 required
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="seu.email@exemplo.br"
                 className="input-tutu text-sm"
               />
             </div>
-            <button type="submit" className="w-full py-3 px-4 btn-tutu-primary text-sm">
-              Enviar Instruções Demonstrativas
+            <button
+              type="submit"
+              className="min-h-[48px] w-full py-3 px-4 btn-tutu-primary text-sm"
+            >
+              Enviar Instruções
             </button>
           </form>
         )}
 
         <div className="text-center">
-          <Link to="/login" className="text-xs text-tutu-light/75 hover:text-tutu-lime">
+          <Link to="/login" className="text-xs text-tutu-light/75 hover:text-tutu-lime inline-block py-1">
             ← Voltar para a tela de login
           </Link>
         </div>
@@ -314,11 +356,11 @@ export const PasswordRecoveryPage: React.FC = () => {
 };
 
 export const TermsOfUsePage: React.FC = () => (
-  <div className="max-w-4xl mx-auto px-4 py-12">
-    <div className="tutu-card p-6 sm:p-10 space-y-6">
-      <div className="flex items-center gap-3">
-        <ShieldCheck className="w-7 h-7 text-tutu-lime" />
-        <h1 className="font-display font-bold text-3xl text-tutu-light">
+  <div className="w-full max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-12">
+    <div className="tutu-card p-5 sm:p-10 space-y-6">
+      <div className="flex items-start sm:items-center gap-3">
+        <ShieldCheck className="w-7 h-7 text-tutu-lime shrink-0 mt-1 sm:mt-0" />
+        <h1 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
           Termos de Uso — Desafio Global Summit 2026
         </h1>
       </div>
@@ -337,7 +379,10 @@ export const TermsOfUsePage: React.FC = () => (
         </p>
       </div>
       <div className="pt-4">
-        <Link to="/cadastro" className="px-5 py-2.5 rounded-xl btn-tutu-primary text-xs inline-block">
+        <Link
+          to="/cadastro"
+          className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-primary text-xs inline-flex items-center justify-center"
+        >
           Voltar para o Cadastro
         </Link>
       </div>
@@ -346,11 +391,11 @@ export const TermsOfUsePage: React.FC = () => (
 );
 
 export const PrivacyPolicyPage: React.FC = () => (
-  <div className="max-w-4xl mx-auto px-4 py-12">
-    <div className="tutu-card p-6 sm:p-10 space-y-6">
-      <div className="flex items-center gap-3">
-        <ShieldCheck className="w-7 h-7 text-tutu-lime" />
-        <h1 className="font-display font-bold text-3xl text-tutu-light">
+  <div className="w-full max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-12">
+    <div className="tutu-card p-5 sm:p-10 space-y-6">
+      <div className="flex items-start sm:items-center gap-3">
+        <ShieldCheck className="w-7 h-7 text-tutu-lime shrink-0 mt-1 sm:mt-0" />
+        <h1 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
           Política de Privacidade e Proteção de Dados
         </h1>
       </div>
@@ -362,11 +407,14 @@ export const PrivacyPolicyPage: React.FC = () => (
           <strong>2. Controle pelo Participante:</strong> Na tela de Perfil, o participante pode gerenciar a qualquer momento suas preferências de exibição de apelido, notificações de atividades e compartilhamento de interesses com as startups expositoras.
         </p>
         <p>
-          <strong>3. Camada Demonstrativa:</strong> Nesta etapa do projeto front-end, os dados operam em memória através da camada de serviços independente, preparados para futura integração controlada com banco de dados SQLite.
+          <strong>3. Persistência e Segurança:</strong> Os dados são armazenados de forma segura no banco SQLite com controle de acesso baseado em papéis (RBAC) e senhas protegidas por hash criptográfico.
         </p>
       </div>
       <div className="pt-4">
-        <Link to="/cadastro" className="px-5 py-2.5 rounded-xl btn-tutu-primary text-xs inline-block">
+        <Link
+          to="/cadastro"
+          className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-primary text-xs inline-flex items-center justify-center"
+        >
           Voltar para o Cadastro
         </Link>
       </div>

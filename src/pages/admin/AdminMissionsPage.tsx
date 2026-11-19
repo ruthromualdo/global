@@ -93,25 +93,25 @@ export const AdminMissionsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div className="space-y-1.5">
           <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
             Motor de Gamificação • Seção 6.3
           </span>
-          <h1 className="font-display font-bold text-3xl sm:text-4xl text-tutu-light">
+          <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
             Gestão de Missões
           </h1>
-          <p className="text-sm text-tutu-light/80">
+          <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed">
             Crie, edite, exclua e configure pontuação, categoria, startup vinculada, período e critérios de conclusão.
           </p>
         </div>
 
         <button
           onClick={openCreate}
-          className="px-5 py-3 rounded-xl btn-tutu-lime text-xs flex items-center gap-2 self-start"
+          className="min-h-[44px] w-full sm:w-auto px-5 py-3 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-2 self-start shrink-0"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-4 h-4 shrink-0" />
           <span>Criar Nova Missão</span>
         </button>
       </div>
@@ -119,16 +119,16 @@ export const AdminMissionsPage: React.FC = () => {
       {showForm && (
         <form
           onSubmit={handleSubmit}
-          className="tutu-card p-6 sm:p-8 space-y-5 border-2 border-tutu-lime"
+          className="tutu-card p-5 sm:p-8 space-y-5 border-2 border-tutu-lime"
         >
-          <div className="flex items-center justify-between">
-            <h2 className="font-display font-bold text-2xl text-tutu-light">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-display font-bold text-xl sm:text-2xl text-tutu-light">
               {editingId ? 'Editar Missão' : 'Nova Missão Oficial'}
             </h2>
             <button
               type="button"
               onClick={() => setShowForm(false)}
-              className="text-xs text-tutu-light/70 hover:text-tutu-light"
+              className="min-h-[38px] px-3 py-1 rounded-lg bg-tutu-secondary/30 text-xs text-tutu-light/80 hover:text-tutu-light"
             >
               Cancelar
             </button>
@@ -161,7 +161,7 @@ export const AdminMissionsPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
               <label className="block text-xs text-tutu-light/80 mb-1">Categoria</label>
               <select
@@ -237,71 +237,79 @@ export const AdminMissionsPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex justify-end gap-3">
+          <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 sm:gap-3">
             <button
               type="button"
               onClick={() => setShowForm(false)}
-              className="px-4 py-2.5 rounded-xl btn-tutu-outline text-xs"
+              className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-outline text-xs"
             >
               Cancelar
             </button>
-            <button type="submit" className="px-5 py-2.5 rounded-xl btn-tutu-lime text-xs">
+            <button
+              type="submit"
+              className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs"
+            >
               {editingId ? 'Salvar Missão' : 'Adicionar Missão'}
             </button>
           </div>
         </form>
       )}
 
-      {/* Missions Table / Cards */}
+      {/* Missions Cards */}
       <div className="space-y-4">
         {missions.map((m) => (
           <div
             key={m.id}
-            className={`tutu-card p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+            className={`tutu-card p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
               !m.active ? 'opacity-60' : ''
             }`}
           >
-            <div className="space-y-2 max-w-3xl">
+            <div className="space-y-2 max-w-3xl min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <CategoryPill category={m.category} />
                 <MissionStatusBadge status={m.status} />
                 <span className="text-xs text-tutu-light/75 font-semibold">• {m.startupName}</span>
                 <span className="text-xs text-tutu-light/60">({m.period})</span>
               </div>
-              <h3 className="font-display font-bold text-lg text-tutu-light">{m.title}</h3>
-              <p className="text-xs text-tutu-light/80">{m.description}</p>
-              <p className="text-[11px] text-tutu-lime">
+              <h3 className="font-display font-bold text-lg text-tutu-light break-words">
+                {m.title}
+              </h3>
+              <p className="text-xs text-tutu-light/80 leading-relaxed">{m.description}</p>
+              <p className="text-[11px] text-tutu-lime break-words">
                 Critério: {m.completionCriteria}
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <div className="flex flex-wrap items-center justify-between sm:justify-start gap-2.5 shrink-0 pt-2 lg:pt-0 border-t lg:border-t-0 border-tutu-secondary/30">
               <span className="px-3 py-1.5 rounded-xl bg-tutu-dark font-display font-bold text-sm text-tutu-lime flex items-center gap-1">
-                <Zap className="w-4 h-4" />
+                <Zap className="w-4 h-4 shrink-0" />
                 {formatPoints(m.points)}
               </span>
 
-              <button
-                onClick={() => openEdit(m)}
-                className="px-3 py-2 rounded-xl btn-tutu-primary text-xs flex items-center gap-1"
-              >
-                <Edit3 className="w-3.5 h-3.5" />
-                <span>Editar</span>
-              </button>
-              <button
-                onClick={() => toggleMissionActive(m.id)}
-                className="px-3 py-2 rounded-xl btn-tutu-outline text-xs flex items-center gap-1"
-              >
-                <Power className="w-3.5 h-3.5" />
-                <span>{m.active ? 'Desativar' : 'Ativar'}</span>
-              </button>
-              <button
-                onClick={() => deleteMission(m.id)}
-                className="p-2 rounded-xl bg-tutu-dark hover:bg-tutu-secondary/40 text-tutu-light/70 hover:text-tutu-lime border border-tutu-secondary/40"
-                title="Excluir missão"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => openEdit(m)}
+                  className="min-h-[38px] px-3 py-2 rounded-xl btn-tutu-primary text-xs flex items-center gap-1"
+                >
+                  <Edit3 className="w-3.5 h-3.5 shrink-0" />
+                  <span>Editar</span>
+                </button>
+                <button
+                  onClick={() => toggleMissionActive(m.id)}
+                  className="min-h-[38px] px-3 py-2 rounded-xl btn-tutu-outline text-xs flex items-center gap-1"
+                >
+                  <Power className="w-3.5 h-3.5 shrink-0" />
+                  <span>{m.active ? 'Desativar' : 'Ativar'}</span>
+                </button>
+                <button
+                  onClick={() => deleteMission(m.id)}
+                  className="min-w-[38px] min-h-[38px] p-2 rounded-xl bg-tutu-dark hover:bg-tutu-secondary/40 text-tutu-light/70 hover:text-tutu-lime border border-tutu-secondary/40 flex items-center justify-center"
+                  title="Excluir missão"
+                  aria-label={`Excluir ${m.title}`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
         ))}
