@@ -15,6 +15,7 @@ import {
 import { useAppStore } from '../hooks/useAppStore';
 import { Mission, MissionCategory, MissionStatus } from '../types';
 import { CategoryPill, MissionStatusBadge } from '../components/UI';
+import { MissionTimer } from '../components/MissionTimer';
 import { formatPoints } from '../utils/formatters';
 
 const CATEGORIES: ('Todas' | MissionCategory)[] = [
@@ -77,6 +78,11 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
+    // Inicia o cronômetro no servidor quando a missão for iniciada pela primeira vez
+    if (mission.status === 'Disponível') {
+      startMission(mission.id);
+    }
+
     if (mission.category === 'Quiz' && mission.quizQuestions?.length) {
       setQuizAnswers({});
       setActiveQuizMission(mission);
@@ -90,9 +96,6 @@ export const MissionsCenterPage: React.FC = () => {
     }
 
     if (mission.qrCodeRequired) {
-      if (mission.status === 'Disponível') {
-        startMission(mission.id);
-      }
       navigate(`/app/escanear?code=${mission.qrCodeRequired}`);
       return;
     }
@@ -280,6 +283,18 @@ export const MissionsCenterPage: React.FC = () => {
                   <span className="text-[11px] text-tutu-light/65">{mission.period}</span>
                 </div>
 
+                {/* Cronômetro e Bônus de Velocidade (Etapa 3) */}
+                <MissionTimer
+                  status={mission.status}
+                  startedAtMs={mission.startedAtMs}
+                  durationSeconds={mission.durationSeconds}
+                  targetEndAtMs={mission.targetEndAtMs}
+                  serverTimeMs={mission.serverTimeMs}
+                  completedAtMs={mission.completedAtMs}
+                  elapsedSeconds={mission.elapsedSeconds}
+                  speedBonusAwarded={mission.speedBonusAwarded}
+                />
+
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <span className="text-[11px] text-tutu-light/70 leading-snug">
                     {mission.completionCriteria}
@@ -291,7 +306,7 @@ export const MissionsCenterPage: React.FC = () => {
                       ? 'bg-tutu-secondary/30 text-tutu-lime border border-tutu-lime/40'
                       : mission.status === 'Bloqueada'
                         ? 'bg-tutu-dark text-tutu-light/50 border border-tutu-light/15'
-                        : mission.category === 'Quiz'
+                        : mission.status === 'Em andamento'
                           ? 'btn-tutu-lime'
                           : 'btn-tutu-primary'
                       }`}
@@ -314,7 +329,19 @@ export const MissionsCenterPage: React.FC = () => {
                         <span>Reenviar Evidência</span>
                       </>
                     )}
-                    {(mission.status === 'Disponível' || mission.status === 'Em andamento') && (
+                    {mission.status === 'Disponível' && (
+                      <>
+                        <Play className="w-4 h-4 shrink-0" />
+                        <span>
+                          {mission.qrCodeRequired
+                            ? `Iniciar & Ler QR (${mission.qrCodeRequired})`
+                            : mission.category === 'Quiz'
+                              ? 'Iniciar Quiz'
+                              : 'Iniciar Missão'}
+                        </span>
+                      </>
+                    )}
+                    {mission.status === 'Em andamento' && (
                       <>
                         {mission.category === 'Quiz' ? (
                           <>
@@ -329,7 +356,7 @@ export const MissionsCenterPage: React.FC = () => {
                         ) : mission.qrCodeRequired ? (
                           <>
                             <QrCode className="w-4 h-4 shrink-0" />
-                            <span>Ler QR ({mission.qrCodeRequired})</span>
+                            <span>Escanear QR ({mission.qrCodeRequired})</span>
                           </>
                         ) : (
                           <>

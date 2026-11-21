@@ -40,6 +40,10 @@ export const MISSION_COMPLETION_POINTS = 180;
 export const MISSION_MAX_SPEED_BONUS = 50;
 export const SEQUENTIAL_MISSION_IDS = ['ms-01', 'ms-04', 'ms-06', 'ms-08'] as const;
 
+export const DEFAULT_MISSION_TIMER_MINUTES = 5;
+export const MIN_MISSION_TIMER_MINUTES = 1;
+export const MAX_MISSION_TIMER_MINUTES = 30;
+
 function ensureColumnExists(tableName: string, columnName: string, columnDefinition: string): void {
   const cols = db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
   const exists = cols.some((c) => c.name.toLowerCase() === columnName.toLowerCase());
@@ -49,68 +53,236 @@ function ensureColumnExists(tableName: string, columnName: string, columnDefinit
 }
 
 /**
+ * Retorna a duração configurada da missão em segundos (entre 1 e 30 minutos).
+ * Se a missão possuir configuração individual, ela tem precedência;
+ * caso contrário, herda a configuração global do evento (default 5 min).
+ */
+export function getMissionConfiguredDurationSeconds(missionId: string): number {
+  const missionRow = db
+    .prepare('SELECT timer_minutes FROM missions WHERE id = ? LIMIT 1')
+    .get(missionId) as { timer_minutes: number | null } | undefined;
+
+  if (missionRow && missionRow.timer_minutes !== null && missionRow.timer_minutes !== undefined) {
+    const min = Math.max(
+      MIN_MISSION_TIMER_MINUTES,
+      Math.min(MAX_MISSION_TIMER_MINUTES, Math.trunc(Number(missionRow.timer_minutes)))
+    );
+    return min * 60;
+  }
+
+  const settingsRow = db
+    .prepare('SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1')
+    .get() as { default_mission_timer_minutes: number | null } | undefined;
+
+  const globalMin = settingsRow?.default_mission_timer_minutes
+    ? Math.max(
+        MIN_MISSION_TIMER_MINUTES,
+        Math.min(
+          MAX_MISSION_TIMER_MINUTES,
+          Math.trunc(Number(settingsRow.default_mission_timer_minutes))
+        )
+      )
+    : DEFAULT_MISSION_TIMER_MINUTES;
+
+  return globalMin * 60;
+}
+
+export interface ParticipantPointsReservation {
+  participantId: string;
+  currentPoints: number;
+  maxPoints: number;
+  totalReservedPoints: number;
+  freeMargin: number;
+  missionBreakdown: {
+    missionId: string;
+    sequenceOrder: number;
+    title: string;
+    status: string;
+    remainingUnlock: number;
+    remainingCompletion: number;
+    remainingSpeedBonus: number;
+    totalMissionReserved: number;
+  }[];
+}
+
+/**
+ * Calcula de forma centralizada e determinística a reserva de pontos de cada participante,
+ * considerando o estado real das 4 missões principais sequenciais e seus bônus de velocidade potenciais.
+ *
+ * Regras:
+ * 1. Missão desbloqueada e não concluída: reserva 180 pts (conclusão) + até 50 pts (bônus potencial).
+ * 2. Missão futura ainda bloqueada: reserva 20 pts (desbloqueio) + 180 pts (conclusão) + até 50 pts (bônus potencial).
+ * 3. Missão concluída: não reserva pontos já creditados (desbloqueio e conclusão = 0); reserva bônus potencial restante.
+ * 4. Saldo livre: MAX (0, 1.000 - pontosAtuais - totalReservado).
+ */
+export function calculateParticipantReservedPoints(
+  participantId: string
+): ParticipantPointsReservation {
+  const partRow = db
+    .prepare('SELECT id, points FROM participants WHERE id = ? LIMIT 1')
+    .get(participantId) as { id: string; points: number } | undefined;
+
+  const currentPoints = partRow ? Number(partRow.points || 0) : 0;
+
+  const seqMissions = db
+    .prepare(`
+      SELECT id, title, sequence_order, unlock_points, completion_points, max_speed_bonus
+      FROM missions
+      WHERE sequence_order IS NOT NULL AND active = 1
+      ORDER BY sequence_order ASC
+    `)
+    .all() as {
+      id: string;
+      title: string;
+      sequence_order: number;
+      unlock_points: number;
+      completion_points: number;
+      max_speed_bonus: number;
+    }[];
+
+  const pmRows = db
+    .prepare('SELECT * FROM participant_missions WHERE participant_id = ?')
+    .all(participantId) as Record<string, unknown>[];
+  const pmByMissionId = new Map<string, Record<string, unknown>>();
+  for (const pm of pmRows) {
+    pmByMissionId.set(String(pm.mission_id), pm);
+  }
+
+  let totalReservedPoints = 0;
+  const missionBreakdown: ParticipantPointsReservation['missionBreakdown'] = [];
+
+  for (const m of seqMissions) {
+    const pm = pmByMissionId.get(m.id);
+    const seq = Number(m.sequence_order);
+
+    const unlockTx = db
+      .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+      .get(`UNLOCK:${participantId}:${m.id}`);
+    const completeTx = db
+      .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+      .get(`COMPLETE:${participantId}:${m.id}`);
+
+    const isUnlocked =
+      Boolean(unlockTx) ||
+      (pm !== undefined && Number(pm.unlock_points_awarded || 0) > 0) ||
+      (pm !== undefined && String(pm.status) !== 'Bloqueada');
+
+    const isCompleted =
+      Boolean(completeTx) ||
+      (pm !== undefined &&
+        (String(pm.status) === 'Concluída' || Number(pm.completion_points_awarded || 0) > 0));
+
+    // 1. Desbloqueio: se não foi creditado ainda, reservar 20 pts
+    const remainingUnlock = isUnlocked ? 0 : Number(m.unlock_points) || MISSION_UNLOCK_POINTS;
+
+    // 2. Conclusão: se não foi creditado ainda, reservar 180 pts
+    const remainingCompletion = isCompleted
+      ? 0
+      : Number(m.completion_points) || MISSION_COMPLETION_POINTS;
+
+    // 3. Bônus potencial de velocidade: preservar até 50 pontos por missão pendente
+    // Quando a missão é concluída, o bônus de velocidade já foi avaliado e creditado
+    // no saldo do participante (ou 0 se expirada), portanto deixa de ser reservado.
+    const maxBonus = Number(m.max_speed_bonus) || MISSION_MAX_SPEED_BONUS;
+    const awardedBonus = pm ? Number(pm.speed_bonus_awarded || 0) : 0;
+    const remainingSpeedBonus = isCompleted ? 0 : Math.max(0, maxBonus - awardedBonus);
+
+    const totalMissionReserved = remainingUnlock + remainingCompletion + remainingSpeedBonus;
+    totalReservedPoints += totalMissionReserved;
+
+    let computedStatus = 'Bloqueada';
+    if (isCompleted) {
+      computedStatus = 'Concluída';
+    } else if (isUnlocked) {
+      computedStatus = pm ? String(pm.status) : 'Disponível';
+    }
+
+    missionBreakdown.push({
+      missionId: m.id,
+      sequenceOrder: seq,
+      title: m.title,
+      status: computedStatus,
+      remainingUnlock,
+      remainingCompletion,
+      remainingSpeedBonus,
+      totalMissionReserved,
+    });
+  }
+
+  const freeMargin = Math.max(0, MAX_PARTICIPANT_POINTS - currentPoints - totalReservedPoints);
+
+  return {
+    participantId,
+    currentPoints,
+    maxPoints: MAX_PARTICIPANT_POINTS,
+    totalReservedPoints,
+    freeMargin,
+    missionBreakdown,
+  };
+}
+
+/**
  * Garante de forma idempotente e atômica que o participante tenha as 4 missões sequenciais
  * inicializadas em participant_missions, com a Missão 1 desbloqueada e seus +20 pontos
  * creditados exatamente uma única vez.
+ *
+ * Utiliza SAVEPOINT nomeado para operar com segurança tanto isoladamente quanto dentro
+ * de transações BEGIN já abertas sem causar erro de transações aninhadas.
+ * A concessão de pontos é condicionada estritamente ao sucesso da inserção da transação única
+ * (changes === 1) via índice único em event_key.
  */
 export function ensureParticipantFirstMissionUnlockedInDb(participantId: string): void {
-  const partRow = db
-    .prepare("SELECT * FROM participants WHERE id = ? AND UPPER(role) = 'PARTICIPANT' LIMIT 1")
-    .get(participantId) as Record<string, unknown> | undefined;
-  if (!partRow) return;
+  const savepointName = `sp_unlock_${Date.now()}_${Math.random().toString(36).replace(/[^a-zA-Z0-9_]/g, '')}`;
+  db.exec(`SAVEPOINT ${savepointName};`);
+  try {
+    const partRow = db
+      .prepare("SELECT * FROM participants WHERE id = ? AND UPPER(role) = 'PARTICIPANT' LIMIT 1")
+      .get(participantId) as Record<string, unknown> | undefined;
+    if (!partRow) {
+      db.exec(`RELEASE ${savepointName};`);
+      return;
+    }
 
-  const seqMissions = db
-    .prepare(
-      'SELECT * FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
-    )
-    .all() as Record<string, unknown>[];
-  if (seqMissions.length === 0) return;
-
-  const nowMs = Date.now();
-  const nowStr = new Date().toLocaleString('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-  for (const mRow of seqMissions) {
-    const mId = String(mRow.id);
-    const mTitle = String(mRow.title);
-    const seqOrder = Number(mRow.sequence_order);
-
-    const existingPm = db
+    const seqMissions = db
       .prepare(
-        'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+        'SELECT * FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
       )
-      .get(participantId, mId) as Record<string, unknown> | undefined;
+      .all() as Record<string, unknown>[];
+    if (seqMissions.length === 0) {
+      db.exec(`RELEASE ${savepointName};`);
+      return;
+    }
 
-    if (seqOrder === 1) {
-      const unlockEventKey = `UNLOCK:${participantId}:${mId}`;
-      const existingUnlockTx = db
-        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-        .get(unlockEventKey) as { id: string } | undefined;
+    const nowMs = Date.now();
+    const nowStr = new Date().toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
 
-      let awardedUnlockPts = existingPm ? Number(existingPm.unlock_points_awarded || 20) : 0;
+    for (const mRow of seqMissions) {
+      const mId = String(mRow.id);
+      const mTitle = String(mRow.title);
+      const seqOrder = Number(mRow.sequence_order);
 
-      if (!existingUnlockTx) {
+      if (seqOrder === 1) {
+        const unlockEventKey = `UNLOCK:${participantId}:${mId}`;
+
+        // Obtém o saldo e dados mais recentes do participante
         const freshPart = db
           .prepare('SELECT id, name, points FROM participants WHERE id = ?')
           .get(participantId) as { id: string; name: string; points: number };
-        const prevBalance = Math.max(0, Math.min(MAX_PARTICIPANT_POINTS, Number(freshPart.points)));
+        const prevBalance = Math.max(0, Math.min(MAX_PARTICIPANT_POINTS, Number(freshPart.points || 0)));
         const remainingCap = Math.max(0, MAX_PARTICIPANT_POINTS - prevBalance);
         const delta = Math.min(MISSION_UNLOCK_POINTS, remainingCap);
         const newBalance = prevBalance + delta;
-        awardedUnlockPts = delta;
 
-        db.prepare('UPDATE participants SET points = ? WHERE id = ?').run(
-          newBalance,
-          participantId
-        );
+        const txId = `tx-unlock-${nowMs}-${Math.random().toString(36).replace(/[^a-zA-Z0-9_]/g, '').slice(0, 6)}`;
 
-        const txId = `tx-unlock-${nowMs}-${Math.random().toString(36).slice(2, 7)}`;
-        db.prepare(`
+        // Inserção atômica no histórico com restrição de chave única por event_key
+        const txInsertRes = db.prepare(`
           INSERT OR IGNORE INTO points_transactions (
             id, participant_id, participant_name, source_type, source_title,
             points_delta, previous_balance, new_balance, created_at, event_key, mission_id
@@ -127,15 +299,37 @@ export function ensureParticipantFirstMissionUnlockedInDb(participantId: string)
           unlockEventKey,
           mId
         );
-      }
 
-      if (!existingPm) {
+        let awardedUnlockPts = 0;
+        // O crédito de pontos ocorre estritamente se e somente se a transação única foi inserida (changes === 1)
+        if (Number(txInsertRes.changes) === 1) {
+          if (delta > 0) {
+            db.prepare('UPDATE participants SET points = points + ? WHERE id = ?').run(
+              delta,
+              participantId
+            );
+          }
+          awardedUnlockPts = delta;
+        } else {
+          // Já inserido anteriormente por outra chamada. Recupera os pontos registrados originalmente
+          const existingTx = db
+            .prepare('SELECT points_delta FROM points_transactions WHERE event_key = ? LIMIT 1')
+            .get(unlockEventKey) as { points_delta: number } | undefined;
+          awardedUnlockPts = existingTx ? Number(existingTx.points_delta) : MISSION_UNLOCK_POINTS;
+        }
+
+        // Garante o registro da Missão 1 em participant_missions sem sobrescrever conclusão existente
         db.prepare(`
-          INSERT OR IGNORE INTO participant_missions (
+          INSERT INTO participant_missions (
             id, participant_id, mission_id, sequence_order, status,
             unlocked_at_ms, unlock_points_awarded, completion_points_awarded,
             speed_bonus_awarded, total_points_awarded
           ) VALUES (?, ?, ?, 1, 'Disponível', ?, ?, 0, 0, ?)
+          ON CONFLICT(participant_id, mission_id) DO UPDATE SET
+            status = CASE WHEN participant_missions.status = 'Concluída' THEN 'Concluída' ELSE 'Disponível' END,
+            unlocked_at_ms = COALESCE(participant_missions.unlocked_at_ms, excluded.unlocked_at_ms),
+            unlock_points_awarded = CASE WHEN participant_missions.unlock_points_awarded > 0 THEN participant_missions.unlock_points_awarded ELSE excluded.unlock_points_awarded END,
+            total_points_awarded = (CASE WHEN participant_missions.unlock_points_awarded > 0 THEN participant_missions.unlock_points_awarded ELSE excluded.unlock_points_awarded END) + participant_missions.completion_points_awarded + participant_missions.speed_bonus_awarded
         `).run(
           `pm-${participantId}-${mId}`,
           participantId,
@@ -144,25 +338,24 @@ export function ensureParticipantFirstMissionUnlockedInDb(participantId: string)
           awardedUnlockPts,
           awardedUnlockPts
         );
-      } else if (String(existingPm.status) === 'Bloqueada') {
+      } else {
+        // As missões subsequentes (2, 3 e 4) são inicializadas como Bloqueadas
         db.prepare(`
-          UPDATE participant_missions
-          SET status = 'Disponível',
-              unlocked_at_ms = COALESCE(unlocked_at_ms, ?),
-              unlock_points_awarded = ?,
-              total_points_awarded = ? + completion_points_awarded + speed_bonus_awarded
-          WHERE participant_id = ? AND mission_id = ?
-        `).run(nowMs, awardedUnlockPts, awardedUnlockPts, participantId, mId);
+          INSERT INTO participant_missions (
+            id, participant_id, mission_id, sequence_order, status,
+            unlock_points_awarded, completion_points_awarded,
+            speed_bonus_awarded, total_points_awarded
+          ) VALUES (?, ?, ?, ?, 'Bloqueada', 0, 0, 0, 0)
+          ON CONFLICT(participant_id, mission_id) DO NOTHING
+        `).run(`pm-${participantId}-${mId}`, participantId, mId, seqOrder);
       }
-    } else if (!existingPm) {
-      db.prepare(`
-        INSERT OR IGNORE INTO participant_missions (
-          id, participant_id, mission_id, sequence_order, status,
-          unlock_points_awarded, completion_points_awarded,
-          speed_bonus_awarded, total_points_awarded
-        ) VALUES (?, ?, ?, ?, 'Bloqueada', 0, 0, 0, 0)
-      `).run(`pm-${participantId}-${mId}`, participantId, mId, seqOrder);
     }
+
+    db.exec(`RELEASE ${savepointName};`);
+  } catch (err) {
+    db.exec(`ROLLBACK TO ${savepointName};`);
+    db.exec(`RELEASE ${savepointName};`);
+    throw err;
   }
 }
 
@@ -508,6 +701,16 @@ export function initializeDatabase(): void {
       "UPDATE qr_codes SET mission_id = 'ms-01', mission_title = 'Check-in no Estande Tutu (Ex Devedor)' WHERE id = 'qr-02'"
     ).run();
 
+    // 8. Migração Etapa 3 — Cronômetro e Bônus de Velocidade
+    ensureColumnExists(
+      'event_settings',
+      'default_mission_timer_minutes',
+      'INTEGER NOT NULL DEFAULT 5'
+    );
+    ensureColumnExists('missions', 'timer_minutes', 'INTEGER');
+    ensureColumnExists('participant_missions', 'duration_seconds', 'INTEGER');
+    ensureColumnExists('participant_missions', 'target_end_at_ms', 'INTEGER');
+
     // Garante o limite global de 1.000 pontos e o desbloqueio inicial da Missão 1 (+20 pts) para participantes existentes
     db.prepare('UPDATE participants SET points = ? WHERE points > ?').run(
       MAX_PARTICIPANT_POINTS,
@@ -595,6 +798,10 @@ export function mapMissionRow(row: Record<string, unknown>): Mission {
     quizQuestions: row.quiz_questions_json
       ? JSON.parse(String(row.quiz_questions_json))
       : undefined,
+    timerMinutes:
+      row.timer_minutes !== null && row.timer_minutes !== undefined
+        ? Number(row.timer_minutes)
+        : null,
   };
 }
 
@@ -704,6 +911,7 @@ export function mapEventSettingsRow(row: Record<string, unknown>): EventSettings
     rewardsEnabled: Boolean(row.rewards_enabled),
     rewardsLegalNote: String(row.rewards_legal_note),
     rewardsDescription: String(row.rewards_description),
+    defaultMissionTimerMinutes: Number(row.default_mission_timer_minutes || 5),
   };
 }
 

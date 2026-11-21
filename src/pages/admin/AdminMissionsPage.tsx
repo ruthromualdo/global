@@ -1,9 +1,24 @@
-import React, { useState } from 'react';
-import { Edit3, Plus, Power, Trash2, Zap } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Clock, Edit3, Plus, Power, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
 import { Mission, MissionCategory, MissionStatus } from '../../types';
 import { CategoryPill, MissionStatusBadge } from '../../components/UI';
 import { formatPoints } from '../../utils/formatters';
+import { apiRequestWithStatus } from '../../services/apiClient';
+
+interface AdminTimersResponse {
+  defaultTimerMinutes: number;
+  minMinutes: number;
+  maxMinutes: number;
+  missions: {
+    id: string;
+    title: string;
+    sequenceOrder: number;
+    timerMinutes: number | null;
+    effectiveTimerMinutes: number;
+    source: 'individual' | 'global';
+  }[];
+}
 
 export const AdminMissionsPage: React.FC = () => {
   const {
@@ -13,6 +28,7 @@ export const AdminMissionsPage: React.FC = () => {
     updateMission,
     toggleMissionActive,
     deleteMission,
+    notify,
   } = useAppStore();
 
   const [showForm, setShowForm] = useState(false);
@@ -27,6 +43,65 @@ export const AdminMissionsPage: React.FC = () => {
   const [period, setPeriod] = useState('24 a 26/11/2026');
   const [completionCriteria, setCompletionCriteria] = useState('');
   const [status, setStatus] = useState<MissionStatus>('Disponível');
+  const [timerMinutes, setTimerMinutes] = useState<string>('');
+
+  // Estados da Configuração de Cronômetros (Etapa 3)
+  const [defaultTimerMinutes, setDefaultTimerMinutes] = useState<number>(5);
+  const [missionTimersMap, setMissionTimersMap] = useState<Record<string, string>>({});
+  const [isSavingTimers, setIsSavingTimers] = useState<boolean>(false);
+  const [isLoadingTimers, setIsLoadingTimers] = useState<boolean>(false);
+
+  const loadTimersConfig = async () => {
+    setIsLoadingTimers(true);
+    const res = await apiRequestWithStatus<AdminTimersResponse>('/admin/timers');
+    setIsLoadingTimers(false);
+    if (res.ok && res.data) {
+      setDefaultTimerMinutes(res.data.defaultTimerMinutes);
+      const map: Record<string, string> = {};
+      for (const m of res.data.missions) {
+        map[m.id] = m.timerMinutes !== null ? String(m.timerMinutes) : '';
+      }
+      setMissionTimersMap(map);
+    }
+  };
+
+  useEffect(() => {
+    void loadTimersConfig();
+  }, [missions]);
+
+  const handleSaveTimers = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingTimers(true);
+
+    const formattedMissionTimers: Record<string, number | null> = {};
+    for (const [mId, strVal] of Object.entries(missionTimersMap)) {
+      if (strVal.trim() === '') {
+        formattedMissionTimers[mId] = null;
+      } else {
+        const val = Math.trunc(Number(strVal));
+        formattedMissionTimers[mId] = isNaN(val) ? null : Math.max(1, Math.min(30, val));
+      }
+    }
+
+    const res = await apiRequestWithStatus<{ success: boolean; message: string; error?: string }>(
+      '/admin/timers',
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          defaultTimerMinutes: Math.max(1, Math.min(30, defaultTimerMinutes)),
+          missionTimers: formattedMissionTimers,
+        }),
+      }
+    );
+    setIsSavingTimers(false);
+
+    if (res.ok && res.data?.success) {
+      notify('Cronômetros Atualizados', res.data.message, 'success');
+      void loadTimersConfig();
+    } else {
+      notify('Erro ao Atualizar', res.error || 'Falha ao salvar cronômetros.', 'error');
+    }
+  };
 
   const openCreate = () => {
     setEditingId(null);
@@ -39,6 +114,7 @@ export const AdminMissionsPage: React.FC = () => {
     setPeriod('24 a 26/11/2026');
     setCompletionCriteria('Leitura do QR Code no estande ou validação pela equipe.');
     setStatus('Disponível');
+    setTimerMinutes('');
     setShowForm(true);
   };
 
@@ -53,6 +129,7 @@ export const AdminMissionsPage: React.FC = () => {
     setPeriod(m.period);
     setCompletionCriteria(m.completionCriteria);
     setStatus(m.status);
+    setTimerMinutes(m.timerMinutes !== null && m.timerMinutes !== undefined ? String(m.timerMinutes) : '');
     setShowForm(true);
   };
 
@@ -60,6 +137,7 @@ export const AdminMissionsPage: React.FC = () => {
     e.preventDefault();
     const chosenStartup = startups.find((s) => s.id === startupId);
     const startupName = chosenStartup ? chosenStartup.name : 'Tutu (Ex Devedor)';
+    const parsedTimerMinutes = timerMinutes.trim() === '' ? null : Math.max(1, Math.min(30, Number(timerMinutes)));
 
     if (editingId) {
       updateMission(editingId, {
@@ -73,6 +151,7 @@ export const AdminMissionsPage: React.FC = () => {
         period,
         completionCriteria,
         status,
+        timerMinutes: parsedTimerMinutes,
       });
     } else {
       createMission({
@@ -87,6 +166,7 @@ export const AdminMissionsPage: React.FC = () => {
         completionCriteria,
         status,
         active: true,
+        timerMinutes: parsedTimerMinutes,
       });
     }
     setShowForm(false);
@@ -212,6 +292,23 @@ export const AdminMissionsPage: React.FC = () => {
                 <option value="Bloqueada">Bloqueada</option>
               </select>
             </div>
+            <div>
+              <label className="block text-xs text-tutu-light/80 mb-1">
+                Cronômetro (1 a 30 min)
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={30}
+                placeholder={`Padrão (${defaultTimerMinutes} min)`}
+                value={timerMinutes}
+                onChange={(e) => setTimerMinutes(e.target.value)}
+                className="input-tutu text-sm"
+              />
+              <span className="text-[10px] text-tutu-light/50">
+                Deixe em branco para herdar padrão ({defaultTimerMinutes} min).
+              </span>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -255,6 +352,113 @@ export const AdminMissionsPage: React.FC = () => {
         </form>
       )}
 
+      {/* Card de Configuração de Cronômetros & Bônus de Velocidade (Etapa 3) */}
+      <div className="tutu-card p-5 sm:p-6 space-y-4 border border-tutu-lime/30 bg-tutu-dark/70">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-tutu-lime/10 border border-tutu-lime/30 flex items-center justify-center text-tutu-lime">
+              <Clock className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="font-display font-bold text-base sm:text-lg text-tutu-light">
+                Configuração de Cronômetros &amp; Bônus de Velocidade
+              </h2>
+              <p className="text-xs text-tutu-light/70">
+                Defina o tempo padrão do evento (1 a 30 min) e sobreposições individuais por missão.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={loadTimersConfig}
+            disabled={isLoadingTimers}
+            className="px-3 py-1.5 rounded-lg bg-tutu-secondary/30 text-xs text-tutu-light/80 hover:text-tutu-light flex items-center gap-1.5 self-start sm:self-auto"
+            title="Recarregar do servidor"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingTimers ? 'animate-spin' : ''}`} />
+            <span>Atualizar</span>
+          </button>
+        </div>
+
+        <form onSubmit={handleSaveTimers} className="space-y-4 pt-2">
+          <div className="p-3.5 rounded-xl bg-tutu-secondary/20 border border-tutu-secondary/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold text-tutu-lime">Tempo Padrão Global do Evento</div>
+              <div className="text-[11px] text-tutu-light/60">
+                Aplicado a todas as missões sem tempo individual definido. Padrão inicial: 5 min.
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={30}
+                required
+                value={defaultTimerMinutes}
+                onChange={(e) => setDefaultTimerMinutes(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
+                className="input-tutu text-xs w-24 text-center font-bold text-tutu-lime"
+              />
+              <span className="text-xs text-tutu-light/70">minutos</span>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-tutu-light/80">
+              Tempos Individuais por Missão (Sobreposição ao padrão)
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {missions.map((m) => {
+                const isCustom = (missionTimersMap[m.id] ?? '').trim() !== '';
+                const effective = isCustom ? Number(missionTimersMap[m.id]) : defaultTimerMinutes;
+                return (
+                  <div
+                    key={m.id}
+                    className="p-3 rounded-xl bg-tutu-secondary/10 border border-tutu-secondary/20 flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0 pr-2">
+                      <div className="text-xs font-medium text-tutu-light truncate">{m.title}</div>
+                      <div className="text-[10px] text-tutu-light/50 flex items-center gap-1">
+                        <span>Efetivo: <strong className="text-tutu-lime">{effective} min</strong></span>
+                        <span>•</span>
+                        <span>{isCustom ? 'Individual' : 'Padrão Global'}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        placeholder={String(defaultTimerMinutes)}
+                        value={missionTimersMap[m.id] ?? ''}
+                        onChange={(e) =>
+                          setMissionTimersMap((prev) => ({
+                            ...prev,
+                            [m.id]: e.target.value,
+                          }))
+                        }
+                        className="input-tutu text-xs w-16 text-center"
+                      />
+                      <span className="text-[11px] text-tutu-light/60">min</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-2">
+            <button
+              type="submit"
+              disabled={isSavingTimers}
+              className="min-h-[40px] px-5 py-2 rounded-xl btn-tutu-lime text-xs flex items-center gap-2 font-semibold disabled:opacity-50"
+            >
+              <Save className="w-4 h-4" />
+              <span>{isSavingTimers ? 'Salvando...' : 'Salvar Configurações de Cronômetro'}</span>
+            </button>
+          </div>
+        </form>
+      </div>
+
       {/* Missions Cards */}
       <div className="space-y-4">
         {missions.map((m) => (
@@ -270,6 +474,10 @@ export const AdminMissionsPage: React.FC = () => {
                 <MissionStatusBadge status={m.status} />
                 <span className="text-xs text-tutu-light/75 font-semibold">• {m.startupName}</span>
                 <span className="text-xs text-tutu-light/60">({m.period})</span>
+                <span className="text-xs text-tutu-light/60 flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-tutu-lime" />
+                  {m.timerMinutes ? `${m.timerMinutes} min (individual)` : `${defaultTimerMinutes} min (padrão)`}
+                </span>
               </div>
               <h3 className="font-display font-bold text-lg text-tutu-light break-words">
                 {m.title}

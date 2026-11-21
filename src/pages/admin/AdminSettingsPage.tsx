@@ -21,6 +21,9 @@ export const AdminSettingsPage: React.FC = () => {
   const [rewardsDescription, setRewardsDescription] = useState(
     eventSettings.rewardsDescription
   );
+  const [defaultMissionTimerMinutes, setDefaultMissionTimerMinutes] = useState(
+    eventSettings.defaultMissionTimerMinutes || 5
+  );
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,6 +44,7 @@ export const AdminSettingsPage: React.FC = () => {
         .filter(Boolean),
       rewardsEnabled,
       rewardsDescription,
+      defaultMissionTimerMinutes: Number(defaultMissionTimerMinutes),
     });
   };
 
@@ -131,6 +135,32 @@ export const AdminSettingsPage: React.FC = () => {
               onChange={(e) => setDescription(e.target.value)}
               className="input-tutu text-xs"
             />
+          </div>
+
+          {/* Configuração de Cronômetro Global (Etapa 3) */}
+          <div className="pt-3 border-t border-tutu-secondary/30">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <label className="block text-xs font-bold text-tutu-lime mb-0.5">
+                  Tempo Padrão das Missões (Cronômetro Global)
+                </label>
+                <p className="text-[11px] text-tutu-light/70">
+                  Duração aplicada automaticamente às missões que não possuírem tempo individual customizado (limites: 1 a 30 min).
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  required
+                  value={defaultMissionTimerMinutes}
+                  onChange={(e) => setDefaultMissionTimerMinutes(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
+                  className="input-tutu text-sm w-24 text-center font-bold"
+                />
+                <span className="text-xs text-tutu-light/80 font-medium">minutos</span>
+              </div>
+            </div>
           </div>
         </div>
 

@@ -37,6 +37,7 @@ export const initialEventSettings: EventSettings = {
     'Módulo de premiação desabilitado por padrão. A ativação aguarda autorização formal da comissão organizadora do Brasil Global Summit 2026 e parecer de validação jurídica. Nenhum sorteio automático é realizado pela plataforma.',
   rewardsDescription:
     'Reconhecimento oficial por mérito de engajamento no palco de inovação (sujeito à liberação institucional).',
+  defaultMissionTimerMinutes: 5,
 };
 
 export const initialStartups: Startup[] = [

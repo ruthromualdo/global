@@ -77,6 +77,21 @@ export interface Mission {
   active: boolean;
   qrCodeRequired?: string;
   quizQuestions?: QuizQuestion[];
+  sequenceOrder?: number;
+  unlockPoints?: number;
+  completionPoints?: number;
+  maxSpeedBonus?: number;
+  timerMinutes?: number | null;
+  durationSeconds?: number;
+  startedAtMs?: number | null;
+  targetEndAtMs?: number | null;
+  completedAtMs?: number | null;
+  elapsedSeconds?: number;
+  remainingSeconds?: number;
+  isExpired?: boolean;
+  potentialSpeedBonus?: number;
+  speedBonusAwarded?: number;
+  serverTimeMs?: number;
 }
 
 export interface MissionCompletion {
@@ -146,6 +161,7 @@ export interface EventSettings {
   rewardsEnabled: boolean;
   rewardsLegalNote: string;
   rewardsDescription: string;
+  defaultMissionTimerMinutes?: number;
 }
 
 export interface GovernancePlan {

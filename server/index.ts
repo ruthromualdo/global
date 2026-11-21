@@ -1,10 +1,13 @@
 import express from 'express';
 import cors from 'cors';
 import {
+  calculateParticipantReservedPoints,
   db,
   DB_FILE_PATH,
+  DEFAULT_MISSION_TIMER_MINUTES,
   ensureParticipantFirstMissionUnlockedInDb,
   getAdminMetricsFromDb,
+  getMissionConfiguredDurationSeconds,
   getParticipantAchievementsFromDb,
   getPublicRankingFromDb,
   initializeDatabase,
@@ -16,9 +19,12 @@ import {
   mapStartupRow,
   mapTransactionRow,
   mapValidationRow,
+  MAX_MISSION_TIMER_MINUTES,
   MAX_PARTICIPANT_POINTS,
+  MIN_MISSION_TIMER_MINUTES,
   MISSION_COMPLETION_POINTS,
   MISSION_UNLOCK_POINTS,
+  ParticipantPointsReservation,
   recalculateRankingsInDb,
 } from './db/database';
 import {
@@ -237,28 +243,81 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
     }
   }
 
+  const nowMs = Date.now();
+
   return baseMissionsRows.map((mRow) => {
     const m = mapMissionRow(mRow);
     const seq = Number(mRow.sequence_order);
     const pm = pmByMissionId.get(m.id);
+    const isCompleted = completedSeqOrders.has(seq);
 
-    if (completedSeqOrders.has(seq)) {
-      return { ...m, status: 'Concluída' as const };
+    let computedStatus: 'Disponível' | 'Em andamento' | 'Aguardando validação' | 'Concluída' | 'Bloqueada' = 'Disponível';
+    if (isCompleted) {
+      computedStatus = 'Concluída';
+    } else if (seq > 1 && !completedSeqOrders.has(seq - 1)) {
+      computedStatus = 'Bloqueada';
+    } else {
+      const pmStatus = pm ? String(pm.status) : 'Disponível';
+      if (pmStatus === 'Aguardando validação') {
+        computedStatus = 'Aguardando validação';
+      } else if (pmStatus === 'Em andamento') {
+        computedStatus = 'Em andamento';
+      } else {
+        computedStatus = 'Disponível';
+      }
     }
 
-    // Regra sequencial estrita: Missão N (N > 1) só desbloqueia se Missão N-1 estiver Concluída
-    if (seq > 1 && !completedSeqOrders.has(seq - 1)) {
-      return { ...m, status: 'Bloqueada' as const };
+    const durationSeconds = pm?.duration_seconds
+      ? Number(pm.duration_seconds)
+      : getMissionConfiguredDurationSeconds(m.id);
+    const startedAtMs = pm?.started_at_ms ? Number(pm.started_at_ms) : null;
+    const targetEndAtMs = pm?.target_end_at_ms
+      ? Number(pm.target_end_at_ms)
+      : (startedAtMs ? startedAtMs + durationSeconds * 1000 : null);
+    const completedAtMs = pm?.completed_at_ms ? Number(pm.completed_at_ms) : null;
+    const speedBonusAwarded = Number(pm?.speed_bonus_awarded || 0);
+
+    let elapsedSeconds = 0;
+    let remainingSeconds = durationSeconds;
+    let isExpired = false;
+    let potentialSpeedBonus = 50;
+
+    if (isCompleted) {
+      if (startedAtMs && completedAtMs) {
+        elapsedSeconds = Math.max(0, Math.round((completedAtMs - startedAtMs) / 1000));
+        remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
+      } else {
+        elapsedSeconds = Number(pm?.elapsed_seconds || 0);
+        remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
+      }
+      isExpired = remainingSeconds <= 0;
+      potentialSpeedBonus = 0;
+    } else if (startedAtMs && targetEndAtMs) {
+      elapsedSeconds = Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
+      remainingSeconds = Math.max(0, Math.ceil((targetEndAtMs - nowMs) / 1000));
+      isExpired = remainingSeconds <= 0;
+      potentialSpeedBonus = isExpired
+        ? 0
+        : Math.max(
+            0,
+            Math.min(50, Math.round(50 * (remainingSeconds / durationSeconds)))
+          );
     }
 
-    const pmStatus = pm ? String(pm.status) : 'Disponível';
-    if (pmStatus === 'Aguardando validação') {
-      return { ...m, status: 'Aguardando validação' as const };
-    }
-    if (pmStatus === 'Em andamento') {
-      return { ...m, status: 'Em andamento' as const };
-    }
-    return { ...m, status: 'Disponível' as const };
+    return {
+      ...m,
+      status: computedStatus,
+      durationSeconds,
+      startedAtMs,
+      targetEndAtMs,
+      completedAtMs,
+      elapsedSeconds,
+      remainingSeconds,
+      isExpired,
+      potentialSpeedBonus,
+      speedBonusAwarded,
+      serverTimeMs: nowMs,
+    };
   });
 }
 
@@ -397,6 +456,23 @@ function completeSequentialMissionInSql(params: {
       ? `Conclusão (${params.qrCodeRow.code}): ${mission.title}`
       : `Conclusão: ${mission.title}`;
 
+    const startedAtMs = pmRow?.started_at_ms ? Number(pmRow.started_at_ms) : null;
+    const durationSeconds = pmRow?.duration_seconds
+      ? Number(pmRow.duration_seconds)
+      : getMissionConfiguredDurationSeconds(mission.id);
+
+    let elapsedSeconds = 0;
+    let speedBonus = 0;
+
+    if (startedAtMs) {
+      elapsedSeconds = Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
+      const remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
+      if (remainingSeconds > 0 && durationSeconds > 0) {
+        speedBonus = Math.round(50 * (remainingSeconds / durationSeconds));
+        speedBonus = Math.max(0, Math.min(50, speedBonus));
+      }
+    }
+
     // 1. Concede 180 pontos pela conclusão válida da missão
     const completionCredit = creditPointsInSql({
       participantId: params.participantId,
@@ -411,17 +487,38 @@ function completeSequentialMissionInSql(params: {
 
     const awardedCompletionPoints = completionCredit?.effectiveDelta ?? 0;
 
+    // 1.5 Concede até 50 pontos de bônus de velocidade proporcional (Etapa 3)
+    let awardedSpeedBonus = 0;
+    if (speedBonus > 0) {
+      const speedBonusEventKey = `SPEED_BONUS:${params.participantId}:${mission.id}`;
+      const bonusCredit = creditPointsInSql({
+        participantId: params.participantId,
+        pointsDelta: speedBonus,
+        sourceType: 'Missão',
+        sourceTitle: `Bônus de Velocidade (+${speedBonus} pts): ${mission.title}`,
+        incrementMissionCount: false,
+        eventKey: speedBonusEventKey,
+        missionId: mission.id,
+      });
+      awardedSpeedBonus = bonusCredit?.effectiveDelta ?? 0;
+    }
+
     db.prepare(`
       UPDATE participant_missions
       SET status = 'Concluída',
           completed_at_ms = ?,
+          elapsed_seconds = ?,
           completion_points_awarded = ?,
-          total_points_awarded = unlock_points_awarded + ? + speed_bonus_awarded
+          speed_bonus_awarded = ?,
+          total_points_awarded = unlock_points_awarded + ? + ?
       WHERE participant_id = ? AND mission_id = ?
     `).run(
       nowMs,
+      elapsedSeconds,
       awardedCompletionPoints,
+      awardedSpeedBonus,
       awardedCompletionPoints,
+      awardedSpeedBonus,
       params.participantId,
       mission.id
     );
@@ -480,6 +577,10 @@ function completeSequentialMissionInSql(params: {
       .prepare('SELECT * FROM participants WHERE id = ?')
       .get(params.participantId) as Record<string, unknown>;
 
+    const bonusMsg =
+      awardedSpeedBonus > 0
+        ? ` com Bônus de Velocidade (+${awardedSpeedBonus} pts)! Total na missão: ${awardedCompletionPoints + awardedSpeedBonus} pts.`
+        : ' (sem bônus de velocidade adicional).';
     const unlockMsg = nextMissionUnlockedTitle
       ? ` Próxima missão "${nextMissionUnlockedTitle}" desbloqueada automaticamente (+${awardedNextUnlockPoints} pts)!`
       : ' Você concluiu todas as 4 missões principais do circuito!';
@@ -491,11 +592,12 @@ function completeSequentialMissionInSql(params: {
       missionId: mission.id,
       missionTitle: mission.title,
       completionPointsAwarded: awardedCompletionPoints,
+      speedBonusAwarded: awardedSpeedBonus,
       unlockPointsAwarded: awardedNextUnlockPoints,
-      pointsAwarded: awardedCompletionPoints + awardedNextUnlockPoints,
+      pointsAwarded: awardedCompletionPoints + awardedSpeedBonus + awardedNextUnlockPoints,
       nextMissionUnlocked: nextMissionUnlockedTitle,
       participant: mapParticipantRow(updatedParticipant),
-      message: `Missão "${mission.title}" concluída (+${awardedCompletionPoints} pts)!${unlockMsg}`,
+      message: `Missão "${mission.title}" concluída (+${awardedCompletionPoints} pts)${bonusMsg}${unlockMsg}`,
     };
   } catch (err) {
     try {
@@ -1220,6 +1322,216 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
   res.json(rows.map(mapMissionRow));
 });
 
+// Helper centralizado para iniciar a missão com controle de cronômetro e idempotência
+function startMissionForParticipant(participantId: string, missionId: string) {
+  ensureParticipantFirstMissionUnlockedInDb(participantId);
+
+  const missionRow = db
+    .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
+    .get(missionId) as Record<string, unknown> | undefined;
+
+  if (!missionRow || !missionRow.active || missionRow.sequence_order === null) {
+    return {
+      ok: false,
+      httpStatus: 404,
+      errorCode: 'MISSION_NOT_FOUND',
+      error: 'Missão não encontrada ou inativa.',
+    };
+  }
+
+  const seqOrder = Number(missionRow.sequence_order);
+
+  // Se for missão > 1, exige que a missão anterior esteja Concluída pelo participante
+  if (seqOrder > 1) {
+    const prevMission = db
+      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
+      .get(seqOrder - 1) as { id: string; title: string } | undefined;
+
+    if (prevMission) {
+      const prevCompleteTx = db
+        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+        .get(`COMPLETE:${participantId}:${prevMission.id}`);
+      const prevPm = db
+        .prepare(
+          'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+        )
+        .get(participantId, prevMission.id) as { status: string } | undefined;
+
+      const isPrevCompleted =
+        Boolean(prevCompleteTx) || (prevPm && String(prevPm.status) === 'Concluída');
+      if (!isPrevCompleted) {
+        return {
+          ok: false,
+          httpStatus: 403,
+          errorCode: 'MISSION_LOCKED',
+          error: `Missão bloqueada: conclua primeiro a Missão 0${seqOrder - 1} ("${prevMission.title}") para desbloquear esta missão.`,
+        };
+      }
+    }
+  }
+
+  const currentPm = db
+    .prepare(
+      'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+    )
+    .get(participantId, missionId) as Record<string, unknown> | undefined;
+
+  if (currentPm && String(currentPm.status) === 'Concluída') {
+    return {
+      ok: false,
+      httpStatus: 409,
+      errorCode: 'ALREADY_COMPLETED',
+      error: 'Esta missão já foi concluída anteriormente.',
+    };
+  }
+
+  const nowMs = Date.now();
+  const durationSeconds = currentPm?.duration_seconds
+    ? Number(currentPm.duration_seconds)
+    : getMissionConfiguredDurationSeconds(missionId);
+  const targetEndAtMs = currentPm?.target_end_at_ms
+    ? Number(currentPm.target_end_at_ms)
+    : nowMs + durationSeconds * 1000;
+
+  // Atualiza com COALESCE: se já foi iniciada, NÃO reinicia os timestamps nem a duração!
+  db.prepare(`
+    UPDATE participant_missions
+    SET status = 'Em andamento',
+        started_at_ms = COALESCE(started_at_ms, ?),
+        duration_seconds = COALESCE(duration_seconds, ?),
+        target_end_at_ms = COALESCE(target_end_at_ms, ?)
+    WHERE participant_id = ? AND mission_id = ?
+  `).run(nowMs, durationSeconds, targetEndAtMs, participantId, missionId);
+
+  const updatedPm = db
+    .prepare(
+      'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+    )
+    .get(participantId, missionId) as Record<string, unknown>;
+
+  const effectiveStartedAtMs = Number(updatedPm.started_at_ms || nowMs);
+  const effectiveDurationSeconds = Number(updatedPm.duration_seconds || durationSeconds);
+  const effectiveTargetEndAtMs = Number(updatedPm.target_end_at_ms || targetEndAtMs);
+  const elapsedSeconds = Math.max(0, Math.round((nowMs - effectiveStartedAtMs) / 1000));
+  const remainingSeconds = Math.max(0, Math.ceil((effectiveTargetEndAtMs - nowMs) / 1000));
+  const isExpired = remainingSeconds <= 0;
+  const potentialSpeedBonus = isExpired
+    ? 0
+    : Math.max(
+        0,
+        Math.min(50, Math.round(50 * (remainingSeconds / effectiveDurationSeconds)))
+      );
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    data: {
+      success: true,
+      missionId,
+      status: 'Em andamento' as const,
+      startedAtMs: effectiveStartedAtMs,
+      durationSeconds: effectiveDurationSeconds,
+      targetEndAtMs: effectiveTargetEndAtMs,
+      serverTimeMs: nowMs,
+      elapsedSeconds,
+      remainingSeconds,
+      potentialSpeedBonus,
+      isExpired,
+      message: `Missão "${missionRow.title}" iniciada! Tempo de execução: ${Math.round(effectiveDurationSeconds / 60)} min.`,
+    },
+  };
+}
+
+// Iniciação explícita da missão e do cronômetro (Etapa 3)
+app.post('/api/missions/:id/start', (req, res) => {
+  const { id } = req.params;
+  const currentParticipant = getCurrentParticipantFromDb(req);
+  const result = startMissionForParticipant(currentParticipant.id, id);
+
+  if (!result.ok) {
+    res.status(result.httpStatus).json({
+      success: false,
+      errorCode: result.errorCode,
+      error: result.error,
+    });
+    return;
+  }
+
+  res.json(result.data);
+});
+
+// Consulta do status em tempo real do cronômetro da missão
+app.get('/api/missions/:id/timer', (req, res) => {
+  const { id } = req.params;
+  const currentParticipant = getCurrentParticipantFromDb(req);
+
+  const pm = db
+    .prepare(
+      'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+    )
+    .get(currentParticipant.id, id) as Record<string, unknown> | undefined;
+
+  const nowMs = Date.now();
+  const durationSeconds = pm?.duration_seconds
+    ? Number(pm.duration_seconds)
+    : getMissionConfiguredDurationSeconds(id);
+
+  if (!pm || !pm.started_at_ms) {
+    res.json({
+      missionId: id,
+      status: pm ? String(pm.status) : 'Disponível',
+      startedAtMs: null,
+      durationSeconds,
+      targetEndAtMs: null,
+      serverTimeMs: nowMs,
+      elapsedSeconds: 0,
+      remainingSeconds: durationSeconds,
+      potentialSpeedBonus: 50,
+      speedBonusAwarded: 0,
+      isExpired: false,
+    });
+    return;
+  }
+
+  const startedAtMs = Number(pm.started_at_ms);
+  const targetEndAtMs = pm.target_end_at_ms
+    ? Number(pm.target_end_at_ms)
+    : startedAtMs + durationSeconds * 1000;
+  const isCompleted = String(pm.status) === 'Concluída';
+
+  let elapsedSeconds = 0;
+  let remainingSeconds = durationSeconds;
+
+  if (isCompleted && pm.completed_at_ms) {
+    elapsedSeconds = Math.max(0, Math.round((Number(pm.completed_at_ms) - startedAtMs) / 1000));
+    remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
+  } else {
+    elapsedSeconds = Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
+    remainingSeconds = Math.max(0, Math.ceil((targetEndAtMs - nowMs) / 1000));
+  }
+
+  const isExpired = remainingSeconds <= 0;
+  const potentialSpeedBonus = isCompleted
+    ? 0
+    : isExpired
+    ? 0
+    : Math.max(0, Math.min(50, Math.round(50 * (remainingSeconds / durationSeconds))));
+
+  res.json({
+    missionId: id,
+    status: String(pm.status),
+    startedAtMs,
+    durationSeconds,
+    targetEndAtMs,
+    serverTimeMs: nowMs,
+    elapsedSeconds,
+    remainingSeconds,
+    potentialSpeedBonus,
+    speedBonusAwarded: Number(pm.speed_bonus_awarded || 0),
+    isExpired,
+  });
+});
+
 app.patch('/api/missions/:id/status', (req, res) => {
   const { id } = req.params;
   const { status } = req.body as { status?: string };
@@ -1238,68 +1550,15 @@ app.patch('/api/missions/:id/status', (req, res) => {
     return;
   }
 
-  const missionRow = db
-    .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
-    .get(id) as Record<string, unknown> | undefined;
-  if (!missionRow || !missionRow.active || missionRow.sequence_order === null) {
-    res.status(404).json({ error: 'Missão não encontrada ou inativa.' });
-    return;
-  }
-
-  const seqOrder = Number(missionRow.sequence_order);
-
-  // Se for missão > 1, exige que a missão anterior esteja Concluída pelo participante
-  if (seqOrder > 1) {
-    const prevMission = db
-      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-      .get(seqOrder - 1) as { id: string; title: string } | undefined;
-
-    if (prevMission) {
-      const prevCompleteTx = db
-        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-        .get(`COMPLETE:${currentParticipant.id}:${prevMission.id}`) as
-        | { id: string }
-        | undefined;
-      const prevPm = db
-        .prepare(
-          'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
-        )
-        .get(currentParticipant.id, prevMission.id) as { status: string } | undefined;
-
-      const isPrevCompleted =
-        Boolean(prevCompleteTx) || (prevPm && String(prevPm.status) === 'Concluída');
-      if (!isPrevCompleted) {
-        res.status(403).json({
-          success: false,
-          errorCode: 'MISSION_LOCKED',
-          error: `Missão bloqueada: conclua primeiro a Missão 0${seqOrder - 1} ("${prevMission.title}") para desbloquear esta missão.`,
-        });
-        return;
-      }
-    }
-  }
-
-  const currentPm = db
-    .prepare(
-      'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
-    )
-    .get(currentParticipant.id, id) as { status: string } | undefined;
-
-  if (currentPm && String(currentPm.status) === 'Concluída') {
-    res.status(409).json({
+  const result = startMissionForParticipant(currentParticipant.id, id);
+  if (!result.ok) {
+    res.status(result.httpStatus).json({
       success: false,
-      errorCode: 'ALREADY_COMPLETED',
-      error: 'Esta missão já foi concluída anteriormente.',
+      errorCode: result.errorCode,
+      error: result.error,
     });
     return;
   }
-
-  db.prepare(`
-    UPDATE participant_missions
-    SET status = 'Em andamento',
-        started_at_ms = COALESCE(started_at_ms, ?)
-    WHERE participant_id = ? AND mission_id = ?
-  `).run(Date.now(), currentParticipant.id, id);
 
   const participantMissions = getParticipantMissionsFromDb(currentParticipant);
   const updated = participantMissions.find((m) => m.id === id) || null;
@@ -1332,6 +1591,7 @@ app.post('/api/missions/:id/complete', (req, res) => {
     status: 'VALIDATED',
     missionId: result.missionId,
     completionPointsAwarded: result.completionPointsAwarded,
+    speedBonusAwarded: result.speedBonusAwarded,
     unlockPointsAwarded: result.unlockPointsAwarded,
     pointsAwarded: result.pointsAwarded,
     nextMissionUnlocked: result.nextMissionUnlocked,
@@ -1629,6 +1889,7 @@ app.post('/api/qrcodes/scan', (req, res) => {
     status: 'VALIDATED',
     qrCode: mapQRCodeRow(updatedRow),
     completionPointsAwarded: result.completionPointsAwarded,
+    speedBonusAwarded: result.speedBonusAwarded,
     unlockPointsAwarded: result.unlockPointsAwarded,
     pointsAwarded: result.pointsAwarded,
     nextMissionUnlocked: result.nextMissionUnlocked,
@@ -1651,6 +1912,21 @@ app.get('/api/ranking/transactions', requireAdmin, (_req, res) => {
   res.json(rows.map(mapTransactionRow));
 });
 
+app.get('/api/ranking/reservation/:participantId', requireAdmin, (req, res) => {
+  const { participantId } = req.params;
+  const targetRow = db
+    .prepare('SELECT id FROM participants WHERE id = ? LIMIT 1')
+    .get(participantId);
+
+  if (!targetRow) {
+    res.status(404).json({ error: 'Participante não encontrado.' });
+    return;
+  }
+
+  ensureParticipantFirstMissionUnlockedInDb(participantId);
+  res.json(calculateParticipantReservedPoints(participantId));
+});
+
 app.post('/api/ranking/adjust', requireAdmin, (req, res) => {
   const { participantId, pointsDelta, reason } = req.body as {
     participantId: string;
@@ -1668,12 +1944,49 @@ app.post('/api/ranking/adjust', requireAdmin, (req, res) => {
   }
 
   const currentPoints = Number(targetRow.points || 0);
-  const numericDelta = Number(pointsDelta || 0);
+  const numericDelta = Math.trunc(Number(pointsDelta) || 0);
 
-  if (numericDelta > 0 && currentPoints >= MAX_PARTICIPANT_POINTS) {
+  if (numericDelta === 0) {
+    res.status(400).json({ error: 'Informe um delta de pontuação diferente de zero.' });
+    return;
+  }
+
+  // 1. Proteção dos pontos das missões contra ajustes positivos
+  if (numericDelta > 0) {
+    ensureParticipantFirstMissionUnlockedInDb(participantId);
+    const reservation = calculateParticipantReservedPoints(participantId);
+
+    if (currentPoints >= MAX_PARTICIPANT_POINTS) {
+      res.status(400).json({
+        error: `Limite global atingido: o participante já possui ${MAX_PARTICIPANT_POINTS} pontos (pontuação máxima permitida).`,
+        code: 'MAX_POINTS_LIMIT_REACHED',
+        currentPoints,
+        maxPoints: MAX_PARTICIPANT_POINTS,
+        reservation,
+      });
+      return;
+    }
+
+    if (numericDelta > reservation.freeMargin) {
+      res.status(400).json({
+        error: `Ajuste administrativo positivo bloqueado: existem ${reservation.totalReservedPoints} pontos reservados para as missões e bônus de velocidade planejados. Saldo livre disponível para ajustes: ${reservation.freeMargin} ponto(s) (máximo permitido: +${reservation.freeMargin}).`,
+        code: 'POINTS_RESERVED_FOR_MISSIONS',
+        currentPoints,
+        totalReservedPoints: reservation.totalReservedPoints,
+        freeMargin: reservation.freeMargin,
+        requestedDelta: numericDelta,
+        maxPoints: MAX_PARTICIPANT_POINTS,
+        reservation,
+      });
+      return;
+    }
+  }
+
+  // 2. Ajustes negativos: respeitam o piso mínimo de zero
+  if (numericDelta < 0 && currentPoints <= 0) {
     res.status(400).json({
-      error: `Limite global atingido: o participante já possui ${MAX_PARTICIPANT_POINTS} pontos (pontuação máxima permitida).`,
-      code: 'MAX_POINTS_LIMIT_REACHED',
+      error: 'O participante já possui 0 pontos. Ajustes negativos não podem reduzir o saldo abaixo de zero.',
+      code: 'MIN_POINTS_LIMIT_REACHED',
     });
     return;
   }
@@ -1700,6 +2013,7 @@ app.post('/api/ranking/adjust', requireAdmin, (req, res) => {
         unknown
       >[]
     ).map(mapTransactionRow),
+    reservation: calculateParticipantReservedPoints(participantId),
   });
 });
 
@@ -1730,11 +2044,20 @@ app.put('/api/admin/settings', requireAdmin, (req: RequestWithAuth, res) => {
   const current = mapEventSettingsRow(row);
   const u = req.body;
 
+  const defaultTimer =
+    u.defaultMissionTimerMinutes !== undefined
+      ? Math.max(
+          MIN_MISSION_TIMER_MINUTES,
+          Math.min(MAX_MISSION_TIMER_MINUTES, Math.trunc(Number(u.defaultMissionTimerMinutes)))
+        )
+      : Number(row.default_mission_timer_minutes || 5);
+
   db.prepare(`
     UPDATE event_settings
     SET event_name = ?, dates = ?, location = ?, city = ?,
         description = ?, active_period = ?, scoring_rules_json = ?,
-        tie_breaker_criteria_json = ?, rewards_enabled = ?, rewards_description = ?
+        tie_breaker_criteria_json = ?, rewards_enabled = ?, rewards_description = ?,
+        default_mission_timer_minutes = ?
     WHERE id = 1
   `).run(
     u.eventName ?? current.eventName,
@@ -1746,13 +2069,134 @@ app.put('/api/admin/settings', requireAdmin, (req: RequestWithAuth, res) => {
     JSON.stringify(u.scoringRules ?? current.scoringRules),
     JSON.stringify(u.tieBreakerCriteria ?? current.tieBreakerCriteria),
     (u.rewardsEnabled ?? current.rewardsEnabled) ? 1 : 0,
-    u.rewardsDescription ?? current.rewardsDescription
+    u.rewardsDescription ?? current.rewardsDescription,
+    defaultTimer
   );
 
   const updated = db
     .prepare('SELECT * FROM event_settings WHERE id = 1')
     .get() as Record<string, unknown>;
   res.json(mapEventSettingsRow(updated));
+});
+
+// Consulta de configurações globais e individuais de cronômetros (Etapa 3 - ADMIN ONLY)
+app.get('/api/admin/timers', requireAdmin, (_req, res) => {
+  const settingsRow = db
+    .prepare('SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1')
+    .get() as { default_mission_timer_minutes?: number } | undefined;
+  const defaultTimerMinutes = Number(settingsRow?.default_mission_timer_minutes || 5);
+
+  const missionsRows = db
+    .prepare(
+      'SELECT id, title, sequence_order, timer_minutes FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
+    )
+    .all() as {
+      id: string;
+      title: string;
+      sequence_order: number;
+      timer_minutes: number | null;
+    }[];
+
+  res.json({
+    defaultTimerMinutes,
+    minMinutes: MIN_MISSION_TIMER_MINUTES,
+    maxMinutes: MAX_MISSION_TIMER_MINUTES,
+    missions: missionsRows.map((m) => ({
+      id: m.id,
+      title: m.title,
+      sequenceOrder: m.sequence_order,
+      timerMinutes: m.timer_minutes !== null ? Number(m.timer_minutes) : null,
+      effectiveTimerMinutes:
+        m.timer_minutes !== null ? Number(m.timer_minutes) : defaultTimerMinutes,
+      source: m.timer_minutes !== null ? ('individual' as const) : ('global' as const),
+    })),
+  });
+});
+
+// Atualização de configurações de cronômetros com validação de 1 a 30 minutos (Etapa 3 - ADMIN ONLY)
+app.put('/api/admin/timers', requireAdmin, (req, res) => {
+  const body = req.body as {
+    defaultTimerMinutes?: number;
+    missionTimers?: Record<string, number | null>;
+  };
+
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    if (body.defaultTimerMinutes !== undefined) {
+      const defMin = Math.trunc(Number(body.defaultTimerMinutes));
+      if (isNaN(defMin) || defMin < MIN_MISSION_TIMER_MINUTES || defMin > MAX_MISSION_TIMER_MINUTES) {
+        db.exec('ROLLBACK;');
+        res.status(400).json({
+          error: `O tempo padrão deve ser um número inteiro entre ${MIN_MISSION_TIMER_MINUTES} e ${MAX_MISSION_TIMER_MINUTES} minutos.`,
+        });
+        return;
+      }
+      db.prepare(
+        'UPDATE event_settings SET default_mission_timer_minutes = ? WHERE id = 1'
+      ).run(defMin);
+    }
+
+    if (body.missionTimers && typeof body.missionTimers === 'object') {
+      const updateMissionTimer = db.prepare('UPDATE missions SET timer_minutes = ? WHERE id = ?');
+      for (const [mId, val] of Object.entries(body.missionTimers)) {
+        if (val === null || val === undefined || String(val) === '') {
+          updateMissionTimer.run(null, mId);
+        } else {
+          const numVal = Math.trunc(Number(val));
+          if (
+            isNaN(numVal) ||
+            numVal < MIN_MISSION_TIMER_MINUTES ||
+            numVal > MAX_MISSION_TIMER_MINUTES
+          ) {
+            db.exec('ROLLBACK;');
+            res.status(400).json({
+              error: `O tempo individual da missão ${mId} deve estar entre ${MIN_MISSION_TIMER_MINUTES} e ${MAX_MISSION_TIMER_MINUTES} minutos (ou nulo para herdar o padrão global).`,
+            });
+            return;
+          }
+          updateMissionTimer.run(numVal, mId);
+        }
+      }
+    }
+
+    db.exec('COMMIT;');
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
+
+  const settingsRow = db
+    .prepare('SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1')
+    .get() as { default_mission_timer_minutes?: number } | undefined;
+  const defaultTimerMinutes = Number(settingsRow?.default_mission_timer_minutes || 5);
+
+  const missionsRows = db
+    .prepare(
+      'SELECT id, title, sequence_order, timer_minutes FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
+    )
+    .all() as {
+      id: string;
+      title: string;
+      sequence_order: number;
+      timer_minutes: number | null;
+    }[];
+
+  res.json({
+    success: true,
+    message: 'Configurações de cronômetro atualizadas com sucesso!',
+    defaultTimerMinutes,
+    minMinutes: MIN_MISSION_TIMER_MINUTES,
+    maxMinutes: MAX_MISSION_TIMER_MINUTES,
+    missions: missionsRows.map((m) => ({
+      id: m.id,
+      title: m.title,
+      sequenceOrder: m.sequence_order,
+      timerMinutes: m.timer_minutes !== null ? Number(m.timer_minutes) : null,
+      effectiveTimerMinutes:
+        m.timer_minutes !== null ? Number(m.timer_minutes) : defaultTimerMinutes,
+      source: m.timer_minutes !== null ? ('individual' as const) : ('global' as const),
+    })),
+  });
 });
 
 app.get('/api/admin/governance', requireAdmin, (_req, res) => {
