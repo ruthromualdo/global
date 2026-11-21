@@ -281,20 +281,30 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const startMission = (missionId: string) => {
-    missionService.updateMissionStatus(missionId, 'Em andamento');
-    void apiRequest(`/missions/${missionId}/status`, {
+    void apiRequestWithStatus<Mission & { error?: string }>(`/missions/${missionId}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ status: 'Em andamento' }),
-    }).then(() => syncFromSqliteOrMemory());
-
-    const target = missions.find((m) => m.id === missionId);
-    if (target) {
-      notify(
-        'Missão Iniciada',
-        `A missão "${target.title}" agora está em andamento.`,
-        'info'
-      );
-    }
+    }).then(async (res) => {
+      if (res.ok) {
+        missionService.updateMissionStatus(missionId, 'Em andamento');
+        await syncFromSqliteOrMemory();
+        const target = missions.find((m) => m.id === missionId);
+        if (target) {
+          notify(
+            'Missão Iniciada',
+            `A missão "${target.title}" agora está em andamento.`,
+            'info'
+          );
+        }
+      } else {
+        await syncFromSqliteOrMemory();
+        notify(
+          'Missão Bloqueada',
+          res.error || 'Conclua a missão anterior na sequência antes de iniciar esta missão.',
+          'error'
+        );
+      }
+    });
   };
 
   const completeMissionInstant = (missionId: string) => {
@@ -304,33 +314,31 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       notify('Missão já concluída', 'Você já recebeu os pontos desta missão.', 'info');
       return;
     }
+    if (target.status === 'Bloqueada') {
+      notify(
+        'Bloqueio Sequencial',
+        'Conclua a missão anterior na sequência obrigatória antes de realizar esta missão.',
+        'error'
+      );
+      return;
+    }
 
     void apiRequestWithStatus<{
       success?: boolean;
       alreadyCompleted?: boolean;
+      completionPointsAwarded?: number;
+      unlockPointsAwarded?: number;
       pointsAwarded?: number;
+      nextMissionUnlocked?: string | null;
+      message?: string;
       error?: string;
     }>(`/missions/${missionId}/complete`, { method: 'POST' }).then(async (res) => {
       if (res.ok && res.data?.success) {
-        const prevPoints = participant.points;
-        missionService.updateMissionStatus(missionId, 'Concluída');
-        const updatedUser = participantService.addParticipantPoints(
-          target.points,
-          target.startupId
-        );
-        rankingService.recordPointsTransaction({
-          participantId: updatedUser.id,
-          participantName: updatedUser.name,
-          sourceType: 'Missão',
-          sourceTitle: target.title,
-          pointsDelta: target.points,
-          previousBalance: prevPoints,
-          newBalance: updatedUser.points,
-        });
+        const totalAwarded = res.data.pointsAwarded ?? target.points;
         await syncFromSqliteOrMemory();
         notify(
-          `+${target.points} Pontos Conquistados!`,
-          `Missão "${target.title}" concluída e gravada com sucesso.`,
+          `+${totalAwarded} Pontos Creditados!`,
+          res.data.message || `Missão "${target.title}" concluída e gravada com sucesso.`,
           'success'
         );
       } else if (res.status === 409 || res.data?.alreadyCompleted) {
@@ -341,9 +349,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           'info'
         );
       } else {
+        await syncFromSqliteOrMemory();
         notify(
-          'Não foi possível concluir a missão',
-          res.error || 'Verifique sua conexão com o servidor e tente novamente.',
+          'Operação Bloqueada',
+          res.data?.error || res.error || 'Conclua a missão anterior na sequência obrigatória.',
           'error'
         );
       }
@@ -607,32 +616,25 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     pointsDelta: number,
     reason: string
   ) => {
-    const target = allParticipants.find((p) => p.id === participantId);
-    if (!target) return;
-    const prev = target.points;
-    if (participantId === participant.id) {
-      participantService.addParticipantPoints(pointsDelta);
-    }
-    rankingService.recordPointsTransaction({
-      participantId: target.id,
-      participantName: target.name,
-      sourceType: 'Ajuste Administrativo',
-      sourceTitle: reason || 'Ajuste manual de auditoria',
-      pointsDelta,
-      previousBalance: prev,
-      newBalance: prev + pointsDelta,
-    });
-
-    void apiRequest('/ranking/adjust', {
+    void apiRequestWithStatus<{ error?: string }>('/ranking/adjust', {
       method: 'POST',
       body: JSON.stringify({ participantId, pointsDelta, reason }),
-    }).then(() => syncFromSqliteOrMemory());
-
-    notify(
-      'Registro de Pontuação',
-      `Transação gravada no histórico SQLite do ranking.`,
-      'success'
-    );
+    }).then(async (res) => {
+      await syncFromSqliteOrMemory();
+      if (res.ok) {
+        notify(
+          'Registro de Pontuação',
+          'Transação gravada no histórico SQLite respeitando o limite global de 1.000 pontos.',
+          'success'
+        );
+      } else {
+        notify(
+          'Limite Global de Pontuação',
+          res.error || 'O participante não pode ultrapassar o limite máximo de 1.000 pontos.',
+          'error'
+        );
+      }
+    });
   };
 
   const updateEventSettings = (updates: Partial<EventSettings>) => {

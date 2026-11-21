@@ -64,7 +64,11 @@ CREATE TABLE IF NOT EXISTS missions (
   startup_id TEXT NOT NULL,
   startup_name TEXT NOT NULL,
   category TEXT NOT NULL,
-  points INTEGER NOT NULL DEFAULT 0,
+  points INTEGER NOT NULL DEFAULT 180,
+  unlock_points INTEGER NOT NULL DEFAULT 20,
+  completion_points INTEGER NOT NULL DEFAULT 180,
+  max_speed_bonus INTEGER NOT NULL DEFAULT 50,
+  sequence_order INTEGER,
   estimated_time TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'Disponível',
   period TEXT NOT NULL,
@@ -73,6 +77,27 @@ CREATE TABLE IF NOT EXISTS missions (
   qr_code_required TEXT,
   quiz_questions_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS participant_missions (
+  id TEXT PRIMARY KEY,
+  participant_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL,
+  sequence_order INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Bloqueada',
+  unlocked_at_ms INTEGER,
+  started_at_ms INTEGER,
+  completed_at_ms INTEGER,
+  elapsed_seconds INTEGER,
+  unlock_points_awarded INTEGER NOT NULL DEFAULT 0,
+  completion_points_awarded INTEGER NOT NULL DEFAULT 0,
+  speed_bonus_awarded INTEGER NOT NULL DEFAULT 0,
+  total_points_awarded INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(participant_id, mission_id),
+  FOREIGN KEY (participant_id) REFERENCES participants(id) ON DELETE CASCADE,
+  FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_participant_missions_user ON participant_missions(participant_id, sequence_order);
 
 CREATE TABLE IF NOT EXISTS mission_completions (
   id TEXT PRIMARY KEY,
@@ -110,6 +135,8 @@ CREATE TABLE IF NOT EXISTS qr_scans (
   scanned_at TEXT NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_qr_scans_unique_participant ON qr_scans(qr_code_id, participant_id);
+
 CREATE TABLE IF NOT EXISTS points_transactions (
   id TEXT PRIMARY KEY,
   participant_id TEXT NOT NULL,
@@ -119,7 +146,9 @@ CREATE TABLE IF NOT EXISTS points_transactions (
   points_delta INTEGER NOT NULL,
   previous_balance INTEGER NOT NULL,
   new_balance INTEGER NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  event_key TEXT,
+  mission_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS achievements (

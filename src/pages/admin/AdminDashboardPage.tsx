@@ -106,18 +106,16 @@ export const AdminDashboardPage: React.FC = () => {
           return (
             <div
               key={idx}
-              className={`tutu-card p-4 sm:p-5 space-y-2 ${
-                item.highlight ? 'border-2 border-tutu-lime bg-tutu-secondary/25' : ''
-              }`}
+              className={`tutu-card p-4 sm:p-5 space-y-2 ${item.highlight ? 'border-2 border-tutu-lime bg-tutu-secondary/25' : ''
+                }`}
             >
               <div className="flex items-center justify-between text-xs text-tutu-light/75 font-medium gap-2">
                 <span>{item.label}</span>
                 <Icon className="w-4 h-4 text-tutu-lime shrink-0" />
               </div>
               <p
-                className={`font-display font-bold text-2xl sm:text-3xl ${
-                  item.highlight ? 'text-tutu-lime' : 'text-tutu-light'
-                }`}
+                className={`font-display font-bold text-2xl sm:text-3xl ${item.highlight ? 'text-tutu-lime' : 'text-tutu-light'
+                  }`}
               >
                 {item.value}
               </p>
@@ -141,47 +139,59 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
 
           <div className="space-y-4">
-            {adminMetrics.engagementByDay.map((day) => {
-              const scanPct = Math.min(100, Math.round((day.scans / Math.max(1, 1600)) * 100));
-              const missionPct = Math.min(100, Math.round((day.missions / Math.max(1, 1600)) * 100));
-              return (
-                <div
-                  key={day.day}
-                  className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2.5"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
-                    <span className="text-tutu-light">{day.day}</span>
-                    <span className="text-tutu-lime">{day.activeUsers} usuários ativos</span>
-                  </div>
-
-                  <div className="space-y-1.5 text-[11px]">
-                    <div className="flex justify-between text-tutu-light/80">
-                      <span>QR Codes Escaneados</span>
-                      <span className="font-bold">{day.scans}</span>
-                    </div>
-                    <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-tutu-lime rounded-full"
-                        style={{ width: `${scanPct}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5 text-[11px]">
-                    <div className="flex justify-between text-tutu-light/80">
-                      <span>Missões Concluídas</span>
-                      <span className="font-bold">{day.missions}</span>
-                    </div>
-                    <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-tutu-blue rounded-full"
-                        style={{ width: `${missionPct}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
+            {(() => {
+              const maxDayMetric = Math.max(
+                10,
+                ...adminMetrics.engagementByDay.map((d) => Math.max(d.scans, d.missions))
               );
-            })}
+              return adminMetrics.engagementByDay.map((day) => {
+                const scanPct =
+                  day.scans > 0
+                    ? Math.max(6, Math.min(100, Math.round((day.scans / maxDayMetric) * 100)))
+                    : 0;
+                const missionPct =
+                  day.missions > 0
+                    ? Math.max(6, Math.min(100, Math.round((day.missions / maxDayMetric) * 100)))
+                    : 0;
+                return (
+                  <div
+                    key={day.day}
+                    className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
+                      <span className="text-tutu-light">{day.day}</span>
+                      <span className="text-tutu-lime">{day.activeUsers} usuários ativos</span>
+                    </div>
+
+                    <div className="space-y-1.5 text-[11px]">
+                      <div className="flex justify-between text-tutu-light/80">
+                        <span>QR Codes Escaneados</span>
+                        <span className="font-bold">{day.scans}</span>
+                      </div>
+                      <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-tutu-lime rounded-full transition-all duration-300"
+                          style={{ width: `${scanPct}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 text-[11px]">
+                      <div className="flex justify-between text-tutu-light/80">
+                        <span>Missões Concluídas</span>
+                        <span className="font-bold">{day.missions}</span>
+                      </div>
+                      <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-tutu-blue rounded-full transition-all duration-300"
+                          style={{ width: `${missionPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
 
@@ -197,36 +207,48 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
 
           <div className="space-y-4">
-            {adminMetrics.participationByStartup.map((st) => {
-              const pct = Math.min(100, Math.round((st.missionsCompleted / Math.max(1, 1500)) * 100));
-              return (
-                <div
-                  key={st.startupName}
-                  className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-display font-bold text-sm text-tutu-light break-words">
-                      {st.startupName}
-                    </span>
-                    <span className="text-tutu-lime font-bold">
-                      {formatNumber(st.pointsIssued)} pts emitidos
-                    </span>
-                  </div>
-
-                  <div className="w-full h-3 bg-tutu-dark rounded-full overflow-hidden p-0.5 border border-tutu-secondary/50">
-                    <div
-                      className="h-full bg-tutu-lime rounded-full"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-tutu-light/75">
-                    <span>{formatNumber(st.visits)} visitas registradas</span>
-                    <span>{formatNumber(st.missionsCompleted)} missões concluídas</span>
-                  </div>
-                </div>
+            {(() => {
+              const maxStartupMissions = Math.max(
+                5,
+                ...adminMetrics.participationByStartup.map((s) => s.missionsCompleted)
               );
-            })}
+              return adminMetrics.participationByStartup.map((st) => {
+                const pct =
+                  st.missionsCompleted > 0
+                    ? Math.max(
+                        6,
+                        Math.min(100, Math.round((st.missionsCompleted / maxStartupMissions) * 100))
+                      )
+                    : 0;
+                return (
+                  <div
+                    key={st.startupName}
+                    className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="font-display font-bold text-sm text-tutu-light break-words">
+                        {st.startupName}
+                      </span>
+                      <span className="text-tutu-lime font-bold">
+                        {formatNumber(st.pointsIssued)} pts emitidos
+                      </span>
+                    </div>
+
+                    <div className="w-full h-3 bg-tutu-dark rounded-full overflow-hidden p-0.5 border border-tutu-secondary/50">
+                      <div
+                        className="h-full bg-tutu-lime rounded-full transition-all duration-300"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-tutu-light/75">
+                      <span>{formatNumber(st.visits)} visitas registradas</span>
+                      <span>{formatNumber(st.missionsCompleted)} missões concluídas</span>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
       </div>

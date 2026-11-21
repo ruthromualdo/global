@@ -74,10 +74,9 @@ export const AdminLayout: React.FC = () => {
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                    isActive
-                      ? 'bg-tutu-blue text-tutu-light shadow-sm border border-tutu-lime/40'
-                      : 'text-tutu-light/80 hover:bg-tutu-secondary/25 hover:text-tutu-light'
+                  `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive
+                    ? 'bg-tutu-blue text-tutu-light shadow-sm border border-tutu-lime/40'
+                    : 'text-tutu-light/80 hover:bg-tutu-secondary/25 hover:text-tutu-light'
                   }`
                 }
               >
@@ -135,10 +134,30 @@ export const AdminLayout: React.FC = () => {
         </button>
       </div>
 
-      {/* Mobile & Tablet Drawer */}
+      {/* Mobile & Tablet Drawer + Backdrop */}
       {mobileMenuOpen && (
-        <div className="lg:hidden fixed inset-0 top-16 z-40 bg-tutu-dark/98 p-4 overflow-y-auto">
-          <div className="max-w-lg mx-auto space-y-4 pb-8">
+        <div
+          className="lg:hidden fixed inset-0 top-16 z-40 bg-tutu-dark/80 backdrop-blur-sm overflow-y-auto"
+          onClick={() => setMobileMenuOpen(false)}
+        >
+          <div
+            className="max-w-lg mx-auto bg-tutu-dark border-b border-tutu-secondary/50 p-4 space-y-4 pb-8 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-tutu-secondary/30">
+              <span className="text-xs font-bold uppercase tracking-wider text-tutu-lime">
+                Navegação Administrativa
+              </span>
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-tutu-secondary/30 text-xs text-tutu-light/85 hover:text-tutu-light inline-flex items-center gap-1.5"
+              >
+                <X className="w-4 h-4 text-tutu-lime" />
+                <span>Fechar</span>
+              </button>
+            </div>
+
             <nav className="space-y-1.5" aria-label="Menu administrativo móvel">
               {navItems.map((item) => {
                 const Icon = item.icon;
@@ -148,10 +167,9 @@ export const AdminLayout: React.FC = () => {
                     to={item.to}
                     onClick={() => setMobileMenuOpen(false)}
                     className={({ isActive }) =>
-                      `min-h-[48px] flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium ${
-                        isActive
-                          ? 'bg-tutu-blue text-tutu-light border border-tutu-lime/40'
-                          : 'text-tutu-light/85 hover:bg-tutu-secondary/30'
+                      `min-h-[48px] flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium ${isActive
+                        ? 'bg-tutu-blue text-tutu-light border border-tutu-lime/40'
+                        : 'text-tutu-light/85 hover:bg-tutu-secondary/30'
                       }`
                     }
                   >

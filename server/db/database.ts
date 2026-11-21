@@ -34,6 +34,138 @@ const SCHEMA_FILE_PATH = path.join(__dirname, 'schema.sql');
 
 export const db = new DatabaseSync(DB_FILE_PATH);
 
+export const MAX_PARTICIPANT_POINTS = 1000;
+export const MISSION_UNLOCK_POINTS = 20;
+export const MISSION_COMPLETION_POINTS = 180;
+export const MISSION_MAX_SPEED_BONUS = 50;
+export const SEQUENTIAL_MISSION_IDS = ['ms-01', 'ms-04', 'ms-06', 'ms-08'] as const;
+
+function ensureColumnExists(tableName: string, columnName: string, columnDefinition: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
+  const exists = cols.some((c) => c.name.toLowerCase() === columnName.toLowerCase());
+  if (!exists) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition};`);
+  }
+}
+
+/**
+ * Garante de forma idempotente e atômica que o participante tenha as 4 missões sequenciais
+ * inicializadas em participant_missions, com a Missão 1 desbloqueada e seus +20 pontos
+ * creditados exatamente uma única vez.
+ */
+export function ensureParticipantFirstMissionUnlockedInDb(participantId: string): void {
+  const partRow = db
+    .prepare("SELECT * FROM participants WHERE id = ? AND UPPER(role) = 'PARTICIPANT' LIMIT 1")
+    .get(participantId) as Record<string, unknown> | undefined;
+  if (!partRow) return;
+
+  const seqMissions = db
+    .prepare(
+      'SELECT * FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
+    )
+    .all() as Record<string, unknown>[];
+  if (seqMissions.length === 0) return;
+
+  const nowMs = Date.now();
+  const nowStr = new Date().toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  for (const mRow of seqMissions) {
+    const mId = String(mRow.id);
+    const mTitle = String(mRow.title);
+    const seqOrder = Number(mRow.sequence_order);
+
+    const existingPm = db
+      .prepare(
+        'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+      )
+      .get(participantId, mId) as Record<string, unknown> | undefined;
+
+    if (seqOrder === 1) {
+      const unlockEventKey = `UNLOCK:${participantId}:${mId}`;
+      const existingUnlockTx = db
+        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+        .get(unlockEventKey) as { id: string } | undefined;
+
+      let awardedUnlockPts = existingPm ? Number(existingPm.unlock_points_awarded || 20) : 0;
+
+      if (!existingUnlockTx) {
+        const freshPart = db
+          .prepare('SELECT id, name, points FROM participants WHERE id = ?')
+          .get(participantId) as { id: string; name: string; points: number };
+        const prevBalance = Math.max(0, Math.min(MAX_PARTICIPANT_POINTS, Number(freshPart.points)));
+        const remainingCap = Math.max(0, MAX_PARTICIPANT_POINTS - prevBalance);
+        const delta = Math.min(MISSION_UNLOCK_POINTS, remainingCap);
+        const newBalance = prevBalance + delta;
+        awardedUnlockPts = delta;
+
+        db.prepare('UPDATE participants SET points = ? WHERE id = ?').run(
+          newBalance,
+          participantId
+        );
+
+        const txId = `tx-unlock-${nowMs}-${Math.random().toString(36).slice(2, 7)}`;
+        db.prepare(`
+          INSERT OR IGNORE INTO points_transactions (
+            id, participant_id, participant_name, source_type, source_title,
+            points_delta, previous_balance, new_balance, created_at, event_key, mission_id
+          ) VALUES (?, ?, ?, 'Missão', ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          txId,
+          participantId,
+          String(freshPart.name),
+          `Desbloqueio: ${mTitle}`,
+          delta,
+          prevBalance,
+          newBalance,
+          nowStr,
+          unlockEventKey,
+          mId
+        );
+      }
+
+      if (!existingPm) {
+        db.prepare(`
+          INSERT OR IGNORE INTO participant_missions (
+            id, participant_id, mission_id, sequence_order, status,
+            unlocked_at_ms, unlock_points_awarded, completion_points_awarded,
+            speed_bonus_awarded, total_points_awarded
+          ) VALUES (?, ?, ?, 1, 'Disponível', ?, ?, 0, 0, ?)
+        `).run(
+          `pm-${participantId}-${mId}`,
+          participantId,
+          mId,
+          nowMs,
+          awardedUnlockPts,
+          awardedUnlockPts
+        );
+      } else if (String(existingPm.status) === 'Bloqueada') {
+        db.prepare(`
+          UPDATE participant_missions
+          SET status = 'Disponível',
+              unlocked_at_ms = COALESCE(unlocked_at_ms, ?),
+              unlock_points_awarded = ?,
+              total_points_awarded = ? + completion_points_awarded + speed_bonus_awarded
+          WHERE participant_id = ? AND mission_id = ?
+        `).run(nowMs, awardedUnlockPts, awardedUnlockPts, participantId, mId);
+      }
+    } else if (!existingPm) {
+      db.prepare(`
+        INSERT OR IGNORE INTO participant_missions (
+          id, participant_id, mission_id, sequence_order, status,
+          unlock_points_awarded, completion_points_awarded,
+          speed_bonus_awarded, total_points_awarded
+        ) VALUES (?, ?, ?, ?, 'Bloqueada', 0, 0, 0, 0)
+      `).run(`pm-${participantId}-${mId}`, participantId, mId, seqOrder);
+    }
+  }
+}
+
 /**
  * Inicializa o schema, executa migração compatível de RBAC (PARTICIPANT / ADMIN)
  * e garante os catálogos essenciais do sistema.
@@ -277,6 +409,117 @@ export function initializeDatabase(): void {
         );
       }
     }
+
+    // 7. Migração Etapa 2 — Desbloqueio Sequencial (4 Startups, 4 Missões, Teto Global 1.000 pts)
+    ensureColumnExists('missions', 'unlock_points', 'INTEGER NOT NULL DEFAULT 20');
+    ensureColumnExists('missions', 'completion_points', 'INTEGER NOT NULL DEFAULT 180');
+    ensureColumnExists('missions', 'max_speed_bonus', 'INTEGER NOT NULL DEFAULT 50');
+    ensureColumnExists('missions', 'sequence_order', 'INTEGER');
+
+    ensureColumnExists('points_transactions', 'event_key', 'TEXT');
+    ensureColumnExists('points_transactions', 'mission_id', 'TEXT');
+
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_points_tx_unique_event
+      ON points_transactions(event_key)
+      WHERE event_key IS NOT NULL;
+    `);
+
+    // Remove eventuais duplicatas históricas em qr_scans antes de aplicar índice único
+    db.exec(`
+      DELETE FROM qr_scans
+      WHERE rowid NOT IN (
+        SELECT MIN(rowid)
+        FROM qr_scans
+        GROUP BY qr_code_id, participant_id
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_qr_scans_unique_participant
+      ON qr_scans(qr_code_id, participant_id);
+    `);
+
+    // Configura as 4 Startups com teto de 250 pontos cada (4 x 250 = 1.000 pts)
+    db.prepare(
+      "UPDATE startups SET available_points = 250 WHERE id IN ('st-tutu', 'st-escrevelab', 'st-futurize', 'st-convidada')"
+    ).run();
+
+    // Configura as 4 Missões Principais Sequenciais (20 desbloqueio + 180 conclusão + até 50 bônus na Etapa 3)
+    const sequentialMissionsConfig = [
+      {
+        id: 'ms-01',
+        seq: 1,
+        status: 'Disponível',
+        criteria: 'Missão 01/04 • Desbloqueio: +20 pts | Conclusão (QR Code TUTU-2026): +180 pts.',
+      },
+      {
+        id: 'ms-04',
+        seq: 2,
+        status: 'Bloqueada',
+        criteria:
+          'Missão 02/04 • Desbloqueada após concluir a Missão 01 (+20 pts) | Conclusão (QR Code ESCREVE-PITCH): +180 pts.',
+      },
+      {
+        id: 'ms-06',
+        seq: 3,
+        status: 'Bloqueada',
+        criteria:
+          'Missão 03/04 • Desbloqueada após concluir a Missão 02 (+20 pts) | Conclusão (QR Code FUTURIZE-2030): +180 pts.',
+      },
+      {
+        id: 'ms-08',
+        seq: 4,
+        status: 'Bloqueada',
+        criteria:
+          'Missão 04/04 • Desbloqueada após concluir a Missão 03 (+20 pts) | Conclusão (QR Code SUMMIT-SURPRESA): +180 pts.',
+      },
+    ];
+
+    for (const cfg of sequentialMissionsConfig) {
+      db.prepare(`
+        UPDATE missions
+        SET sequence_order = ?,
+            points = ?,
+            unlock_points = ?,
+            completion_points = ?,
+            max_speed_bonus = ?,
+            status = ?,
+            completion_criteria = ?,
+            active = 1
+        WHERE id = ?
+      `).run(
+        cfg.seq,
+        MISSION_COMPLETION_POINTS,
+        MISSION_UNLOCK_POINTS,
+        MISSION_COMPLETION_POINTS,
+        MISSION_MAX_SPEED_BONUS,
+        cfg.status,
+        cfg.criteria,
+        cfg.id
+      );
+    }
+
+    // Mantém missões legadas secundárias preservadas no banco, porém fora da trilha principal de 4 missões
+    db.prepare(
+      "UPDATE missions SET sequence_order = NULL, active = 0 WHERE id IN ('ms-02', 'ms-03', 'ms-05', 'ms-07')"
+    ).run();
+
+    // Sincroniza pontuação de conclusão (180 pts) nos QR Codes e vincula qr-02 à Missão 1 (ms-01)
+    db.prepare('UPDATE qr_codes SET points = ?').run(MISSION_COMPLETION_POINTS);
+    db.prepare(
+      "UPDATE qr_codes SET mission_id = 'ms-01', mission_title = 'Check-in no Estande Tutu (Ex Devedor)' WHERE id = 'qr-02'"
+    ).run();
+
+    // Garante o limite global de 1.000 pontos e o desbloqueio inicial da Missão 1 (+20 pts) para participantes existentes
+    db.prepare('UPDATE participants SET points = ? WHERE points > ?').run(
+      MAX_PARTICIPANT_POINTS,
+      MAX_PARTICIPANT_POINTS
+    );
+    const existingParticipants = db
+      .prepare("SELECT id FROM participants WHERE UPPER(role) = 'PARTICIPANT'")
+      .all() as { id: string }[];
+    for (const p of existingParticipants) {
+      ensureParticipantFirstMissionUnlockedInDb(p.id);
+    }
+    recalculateRankingsInDb();
 
     db.exec('COMMIT;');
   } catch (err) {
