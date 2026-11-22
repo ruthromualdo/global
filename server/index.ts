@@ -666,7 +666,7 @@ app.get('/api/bootstrap', (req, res) => {
     db.prepare('SELECT * FROM qr_codes').all() as Record<string, unknown>[]
   ).map(mapQRCodeRow);
 
-  const publicRanking = getPublicRankingFromDb();
+  const publicRanking = getPublicRankingFromDb(participant?.id);
 
   const settingsRow = db
     .prepare('SELECT * FROM event_settings WHERE id = 1')
@@ -1901,8 +1901,9 @@ app.post('/api/qrcodes/scan', (req, res) => {
 // 7. RANKING, CONQUISTAS E TRANSAÇÕES (AJUSTES PROTEGIDOS POR ADMIN)
 // ============================================================================
 
-app.get('/api/ranking/public', (_req, res) => {
-  res.json(getPublicRankingFromDb());
+app.get('/api/ranking/public', (req, res) => {
+  const currentParticipant = getCurrentParticipantFromDb(req);
+  res.json(getPublicRankingFromDb(currentParticipant?.id));
 });
 
 app.get('/api/ranking/transactions', requireAdmin, (_req, res) => {

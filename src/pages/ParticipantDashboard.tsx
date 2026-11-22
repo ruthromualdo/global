@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
 import { CategoryPill, MissionStatusBadge, AchievementIcon } from '../components/UI';
+import { GlobalPointsIndicator } from '../components/GlobalPointsIndicator';
 import { formatPoints } from '../utils/formatters';
 
 export const ParticipantDashboard: React.FC = () => {
@@ -67,6 +68,9 @@ export const ParticipantDashboard: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      {/* Indicador Global de Pontuação (Etapa 4) */}
+      <GlobalPointsIndicator variant="hero" />
 
       {/* Key Indicator Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
@@ -139,17 +143,17 @@ export const ParticipantDashboard: React.FC = () => {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-tutu-lime">
-                Progresso da Jornada
+                Missões Realizadas
               </span>
               <span className="font-display font-bold text-xl text-tutu-lime">
-                {progressPercentage}%
+                {completedMissionsCount} de {activeMissions.length}
               </span>
             </div>
             <h2 className="font-display font-bold text-xl text-tutu-light">
-              Rumo à Medalha Desbravador
+              Circuito Oficial de Missões
             </h2>
             <p className="text-xs text-tutu-light/75 leading-relaxed">
-              Complete as missões pendentes das startups para liberar a Missão Surpresa de 500 pontos.
+              Complete as 4 missões sequenciais das startups expositoras para conquistar todas as insígnias e maximizar seus pontos.
             </p>
           </div>
 
@@ -161,8 +165,8 @@ export const ParticipantDashboard: React.FC = () => {
               />
             </div>
             <div className="flex justify-between text-xs text-tutu-light/70">
-              <span>{completedMissionsCount} concluídas</span>
-              <span>{Math.max(0, activeMissions.length - completedMissionsCount)} restantes</span>
+              <span>{completedMissionsCount} concluída(s)</span>
+              <span>{Math.max(0, activeMissions.length - completedMissionsCount)} restante(s)</span>
             </div>
           </div>
 

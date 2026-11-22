@@ -932,7 +932,7 @@ export function mapGovernancePlanRow(row: Record<string, unknown>): GovernancePl
 export function recalculateRankingsInDb(): void {
   const rows = db
     .prepare(
-      "SELECT id FROM participants WHERE UPPER(role) = 'PARTICIPANT' ORDER BY points DESC, registered_at ASC"
+      "SELECT id FROM participants WHERE UPPER(role) = 'PARTICIPANT' ORDER BY points DESC, completed_missions_count DESC, registered_at ASC"
     )
     .all() as { id: string }[];
   const updateRank = db.prepare('UPDATE participants SET ranking_position = ? WHERE id = ?');
@@ -941,24 +941,27 @@ export function recalculateRankingsInDb(): void {
   });
 }
 
-export function getPublicRankingFromDb(): PublicRankingEntry[] {
+export function getPublicRankingFromDb(currentUserId?: string): PublicRankingEntry[] {
   recalculateRankingsInDb();
   const rows = db
     .prepare(
-      "SELECT * FROM participants WHERE status = 'Ativo' AND UPPER(role) = 'PARTICIPANT' ORDER BY points DESC, ranking_position ASC"
+      "SELECT * FROM participants WHERE status = 'Ativo' AND UPPER(role) = 'PARTICIPANT' ORDER BY ranking_position ASC"
     )
     .all() as Record<string, unknown>[];
-  return rows.map((row, idx) => {
+  return rows.map((row) => {
     const p = mapParticipantRow(row);
+    const isCurrentUser = currentUserId
+      ? p.id === currentUserId
+      : Boolean(row.is_current_session);
     return {
-      position: idx + 1,
+      position: p.rankingPosition,
       participantId: p.id,
       displayName: p.privacyPreferences.showNicknameInPublicRanking ? p.nickname : p.name,
       avatar: p.avatar,
       points: p.points,
       medalsCount: p.unlockedAchievementIds.length,
       completedMissionsCount: p.completedMissionsCount,
-      isCurrentUser: Boolean(row.is_current_session),
+      isCurrentUser,
     };
   });
 }

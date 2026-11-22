@@ -16,6 +16,7 @@ import { useAppStore } from '../hooks/useAppStore';
 import { Mission, MissionCategory, MissionStatus } from '../types';
 import { CategoryPill, MissionStatusBadge } from '../components/UI';
 import { MissionTimer } from '../components/MissionTimer';
+import { GlobalPointsIndicator } from '../components/GlobalPointsIndicator';
 import { formatPoints } from '../utils/formatters';
 
 const CATEGORIES: ('Todas' | MissionCategory)[] = [
@@ -148,6 +149,9 @@ export const MissionsCenterPage: React.FC = () => {
           </p>
         </div>
       </div>
+
+      {/* Indicador Global de Pontuação (Etapa 4) */}
+      <GlobalPointsIndicator variant="compact" className="tutu-card p-4 sm:p-5" />
 
       {/* Filters Bar */}
       <div className="tutu-card p-4 sm:p-5 space-y-4">

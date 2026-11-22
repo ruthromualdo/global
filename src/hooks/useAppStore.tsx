@@ -125,6 +125,8 @@ interface AppStoreContextValue {
   adjustParticipantPointsAdmin: (participantId: string, pointsDelta: number, reason: string) => void;
   updateEventSettings: (updates: Partial<EventSettings>) => void;
   updateGovernancePlan: (id: string, updates: Partial<GovernancePlan>) => void;
+  refreshRanking: () => Promise<void>;
+  isRefreshingRanking: boolean;
 }
 
 const AppStoreContext = createContext<AppStoreContextValue | undefined>(undefined);
@@ -223,6 +225,17 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setEventSettings(adminService.getEventSettings());
     setGovernancePlans(governanceService.getGovernancePlans());
   }, []);
+
+  const [isRefreshingRanking, setIsRefreshingRanking] = useState<boolean>(false);
+
+  const refreshRanking = useCallback(async () => {
+    setIsRefreshingRanking(true);
+    try {
+      await syncFromSqliteOrMemory();
+    } finally {
+      setIsRefreshingRanking(false);
+    }
+  }, [syncFromSqliteOrMemory]);
 
   useEffect(() => {
     void syncFromSqliteOrMemory();
@@ -703,6 +716,8 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         adjustParticipantPointsAdmin,
         updateEventSettings,
         updateGovernancePlan,
+        refreshRanking,
+        isRefreshingRanking,
       }}
     >
       {children}
