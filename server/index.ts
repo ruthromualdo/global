@@ -703,7 +703,7 @@ app.get('/api/bootstrap', (req, res) => {
     ? (
         db
           .prepare(
-            'SELECT * FROM missions WHERE sequence_order IS NOT NULL ORDER BY sequence_order ASC'
+            'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
           )
           .all() as Record<string, unknown>[]
       ).map(mapMissionRow)
@@ -1300,7 +1300,7 @@ app.get('/api/missions', (req, res) => {
   if (session?.role === 'ADMIN') {
     const rows = db
       .prepare(
-        'SELECT * FROM missions WHERE sequence_order IS NOT NULL ORDER BY sequence_order ASC'
+        'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
       )
       .all() as Record<string, unknown>[];
     res.json(rows.map(mapMissionRow));
@@ -1312,13 +1312,60 @@ app.get('/api/missions', (req, res) => {
 
 app.post('/api/missions', requireAdmin, (req, res) => {
   const p = req.body;
+
+  // Determina se é missão do circuito oficial ou missão extra
+  const isOfficial =
+    p.missionType === 'official' ||
+    (p.missionType !== 'extra' &&
+      p.sequenceOrder !== null &&
+      p.sequenceOrder !== undefined &&
+      p.sequenceOrder !== '');
+
+  let sequenceOrder: number | null = null;
+  if (isOfficial) {
+    const parsedSeq = Number(p.sequenceOrder);
+    if (!Number.isInteger(parsedSeq) || parsedSeq < 1) {
+      res.status(400).json({
+        error: 'A ordem sequencial é obrigatória e deve ser um número inteiro positivo para missões do circuito oficial.',
+        code: 'INVALID_SEQUENCE_ORDER',
+      });
+      return;
+    }
+
+    // Validação de unicidade da ordem sequencial
+    const existingSeq = db
+      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? LIMIT 1')
+      .get(parsedSeq) as { id: string; title: string } | undefined;
+
+    if (existingSeq) {
+      res.status(409).json({
+        error: `A posição ${parsedSeq} já está ocupada pela missão "${existingSeq.title}". Escolha outra ordem sequencial.`,
+        code: 'SEQUENCE_ORDER_DUPLICATE',
+      });
+      return;
+    }
+
+    sequenceOrder = parsedSeq;
+  }
+
+  const parsedTimerMinutes =
+    p.timerMinutes !== null && p.timerMinutes !== undefined && p.timerMinutes !== ''
+      ? Math.max(1, Math.min(30, Math.trunc(Number(p.timerMinutes))))
+      : null;
+
+  const points = Number(p.points || (isOfficial ? 180 : 200));
+  const unlockPoints = isOfficial ? Number(p.unlockPoints || 20) : 0;
+  const completionPoints = isOfficial ? Number(p.completionPoints || 180) : points;
+  const maxSpeedBonus = isOfficial ? Number(p.maxSpeedBonus ?? 50) : 0;
+
   const newId = `ms-${Date.now()}`;
   db.prepare(`
     INSERT INTO missions (
       id, title, description, startup_id, startup_name, category,
       points, estimated_time, status, period, completion_criteria,
-      active, qr_code_required, quiz_questions_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      active, qr_code_required, quiz_questions_json,
+      sequence_order, timer_minutes, unlock_points, completion_points, max_speed_bonus
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     newId,
     p.title,
@@ -1326,14 +1373,19 @@ app.post('/api/missions', requireAdmin, (req, res) => {
     p.startupId,
     p.startupName,
     p.category,
-    Number(p.points || 200),
+    points,
     p.estimatedTime || '4 min',
     p.status || 'Disponível',
     p.period || '24 a 26/11/2026',
     p.completionCriteria || '',
     p.active === false ? 0 : 1,
     p.qrCodeRequired || null,
-    p.quizQuestions ? JSON.stringify(p.quizQuestions) : null
+    p.quizQuestions ? JSON.stringify(p.quizQuestions) : null,
+    sequenceOrder,
+    parsedTimerMinutes,
+    unlockPoints,
+    completionPoints,
+    maxSpeedBonus
   );
 
   const created = db
@@ -1354,11 +1406,47 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
   const current = mapMissionRow(row);
   const u = req.body;
 
+  let newSequenceOrder: number | null = current.sequenceOrder ?? null;
+  if (u.missionType === 'extra') {
+    newSequenceOrder = null;
+  } else if (
+    u.missionType === 'official' ||
+    (u.sequenceOrder !== undefined && u.sequenceOrder !== null && u.sequenceOrder !== '')
+  ) {
+    const parsedSeq = Number(u.sequenceOrder);
+    if (!Number.isInteger(parsedSeq) || parsedSeq < 1) {
+      res.status(400).json({
+        error: 'A ordem sequencial deve ser um número inteiro positivo para missões do circuito oficial.',
+        code: 'INVALID_SEQUENCE_ORDER',
+      });
+      return;
+    }
+    const duplicate = db
+      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND id != ? LIMIT 1')
+      .get(parsedSeq, id) as { id: string; title: string } | undefined;
+    if (duplicate) {
+      res.status(409).json({
+        error: `A posição ${parsedSeq} já está ocupada pela missão "${duplicate.title}". Escolha outra ordem sequencial.`,
+        code: 'SEQUENCE_ORDER_DUPLICATE',
+      });
+      return;
+    }
+    newSequenceOrder = parsedSeq;
+  }
+
+  const parsedTimerMinutes =
+    u.timerMinutes !== undefined
+      ? u.timerMinutes !== null && u.timerMinutes !== ''
+        ? Math.max(1, Math.min(30, Math.trunc(Number(u.timerMinutes))))
+        : null
+      : (current.timerMinutes ?? null);
+
   db.prepare(`
     UPDATE missions
     SET title = ?, description = ?, startup_id = ?, startup_name = ?,
         category = ?, points = ?, estimated_time = ?, status = ?,
-        period = ?, completion_criteria = ?, active = ?
+        period = ?, completion_criteria = ?, active = ?,
+        sequence_order = ?, timer_minutes = ?
     WHERE id = ?
   `).run(
     u.title ?? current.title,
@@ -1372,10 +1460,16 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
     u.period ?? current.period,
     u.completionCriteria ?? current.completionCriteria,
     (u.active ?? current.active) ? 1 : 0,
+    newSequenceOrder,
+    parsedTimerMinutes,
     id
   );
 
-  const rows = db.prepare('SELECT * FROM missions').all() as Record<string, unknown>[];
+  const rows = db
+    .prepare(
+      'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+    )
+    .all() as Record<string, unknown>[];
   res.json(rows.map(mapMissionRow));
 });
 
@@ -1661,14 +1755,22 @@ app.patch('/api/missions/:id/toggle', requireAdmin, (req, res) => {
   db.prepare('UPDATE missions SET active = CASE WHEN active = 1 THEN 0 ELSE 1 END WHERE id = ?').run(
     id
   );
-  const rows = db.prepare('SELECT * FROM missions').all() as Record<string, unknown>[];
+  const rows = db
+    .prepare(
+      'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+    )
+    .all() as Record<string, unknown>[];
   res.json(rows.map(mapMissionRow));
 });
 
 app.delete('/api/missions/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
   db.prepare('DELETE FROM missions WHERE id = ?').run(id);
-  const rows = db.prepare('SELECT * FROM missions').all() as Record<string, unknown>[];
+  const rows = db
+    .prepare(
+      'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+    )
+    .all() as Record<string, unknown>[];
   res.json(rows.map(mapMissionRow));
 });
 
@@ -2146,12 +2248,12 @@ app.get('/api/admin/timers', requireAdmin, (_req, res) => {
 
   const missionsRows = db
     .prepare(
-      'SELECT id, title, sequence_order, timer_minutes FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
+      'SELECT id, title, sequence_order, timer_minutes FROM missions WHERE active = 1 ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
     )
     .all() as {
       id: string;
       title: string;
-      sequence_order: number;
+      sequence_order: number | null;
       timer_minutes: number | null;
     }[];
 
@@ -2230,12 +2332,12 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
 
   const missionsRows = db
     .prepare(
-      'SELECT id, title, sequence_order, timer_minutes FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
+      'SELECT id, title, sequence_order, timer_minutes FROM missions WHERE active = 1 ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
     )
     .all() as {
       id: string;
       title: string;
-      sequence_order: number;
+      sequence_order: number | null;
       timer_minutes: number | null;
     }[];
 

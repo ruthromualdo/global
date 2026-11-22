@@ -44,6 +44,14 @@ export const AdminMissionsPage: React.FC = () => {
   const [completionCriteria, setCompletionCriteria] = useState('');
   const [status, setStatus] = useState<MissionStatus>('Disponível');
   const [timerMinutes, setTimerMinutes] = useState<string>('');
+  const [missionType, setMissionType] = useState<'official' | 'extra'>('official');
+  const [sequenceOrder, setSequenceOrder] = useState<number | ''>(5);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  const maxSequence = missions
+    .filter((m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined)
+    .reduce((max, m) => Math.max(max, Number(m.sequenceOrder) || 0), 0);
+  const nextSuggestedSequence = maxSequence + 1;
 
   // Estados da Configuração de Cronômetros (Etapa 3)
   const [defaultTimerMinutes, setDefaultTimerMinutes] = useState<number>(5);
@@ -115,6 +123,8 @@ export const AdminMissionsPage: React.FC = () => {
     setCompletionCriteria('Leitura do QR Code no estande ou validação pela equipe.');
     setStatus('Disponível');
     setTimerMinutes('');
+    setMissionType('official');
+    setSequenceOrder(nextSuggestedSequence);
     setShowForm(true);
   };
 
@@ -130,46 +140,79 @@ export const AdminMissionsPage: React.FC = () => {
     setCompletionCriteria(m.completionCriteria);
     setStatus(m.status);
     setTimerMinutes(m.timerMinutes !== null && m.timerMinutes !== undefined ? String(m.timerMinutes) : '');
+    if (m.sequenceOrder !== null && m.sequenceOrder !== undefined) {
+      setMissionType('official');
+      setSequenceOrder(m.sequenceOrder);
+    } else {
+      setMissionType('extra');
+      setSequenceOrder('');
+    }
     setShowForm(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const chosenStartup = startups.find((s) => s.id === startupId);
     const startupName = chosenStartup ? chosenStartup.name : 'Tutu (Ex Devedor)';
-    const parsedTimerMinutes = timerMinutes.trim() === '' ? null : Math.max(1, Math.min(30, Number(timerMinutes)));
+    const parsedTimerMinutes =
+      timerMinutes.trim() === '' ? null : Math.max(1, Math.min(30, Number(timerMinutes)));
 
-    if (editingId) {
-      updateMission(editingId, {
-        title,
-        description,
-        startupId,
-        startupName,
-        category,
-        points: Number(points),
-        estimatedTime,
-        period,
-        completionCriteria,
-        status,
-        timerMinutes: parsedTimerMinutes,
-      });
-    } else {
-      createMission({
-        title,
-        description,
-        startupId,
-        startupName,
-        category,
-        points: Number(points),
-        estimatedTime,
-        period,
-        completionCriteria,
-        status,
-        active: true,
-        timerMinutes: parsedTimerMinutes,
-      });
+    if (missionType === 'official') {
+      if (sequenceOrder === '' || Number(sequenceOrder) < 1) {
+        notify(
+          'Ordem Sequencial Obrigatória',
+          'Informe a posição da missão no circuito oficial (número inteiro positivo).',
+          'error'
+        );
+        return;
+      }
+      const orderNum = Number(sequenceOrder);
+      const duplicate = missions.find(
+        (m) => m.id !== editingId && m.sequenceOrder === orderNum
+      );
+      if (duplicate) {
+        notify(
+          'Posição Já Ocupada',
+          `A posição ${orderNum} do circuito já está ocupada pela missão "${duplicate.title}". Escolha outro número ou selecione "Missão Extra".`,
+          'error'
+        );
+        return;
+      }
     }
-    setShowForm(false);
+
+    const payload = {
+      title,
+      description,
+      startupId,
+      startupName,
+      category,
+      points: Number(points),
+      estimatedTime,
+      period,
+      completionCriteria,
+      status,
+      active: true,
+      timerMinutes: parsedTimerMinutes,
+      missionType,
+      sequenceOrder: missionType === 'official' ? Number(sequenceOrder) : undefined,
+    };
+
+    setIsSubmitting(true);
+    try {
+      if (editingId) {
+        const res = await updateMission(editingId, payload);
+        if (res.ok) {
+          setShowForm(false);
+        }
+      } else {
+        const res = await createMission(payload);
+        if (res.ok) {
+          setShowForm(false);
+        }
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -203,7 +246,7 @@ export const AdminMissionsPage: React.FC = () => {
         >
           <div className="flex items-center justify-between gap-2">
             <h2 className="font-display font-bold text-xl sm:text-2xl text-tutu-light">
-              {editingId ? 'Editar Missão' : 'Nova Missão Oficial'}
+              {editingId ? 'Editar Missão' : 'Nova Missão'}
             </h2>
             <button
               type="button"
@@ -212,6 +255,106 @@ export const AdminMissionsPage: React.FC = () => {
             >
               Cancelar
             </button>
+          </div>
+
+          {/* Campo Obrigatório: Tipo de Missão (Circuito Oficial vs. Missão Extra) */}
+          <div className="p-4 rounded-xl bg-tutu-secondary/20 border border-tutu-secondary/40 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-tutu-lime">
+                Tipo de Missão *
+              </label>
+              <span className="text-[11px] text-tutu-muted">
+                {missionType === 'official' ? 'Participa do Circuito Oficial' : 'Missão Extra / Fora do Circuito'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setMissionType('official');
+                  if (sequenceOrder === '') setSequenceOrder(nextSuggestedSequence);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all flex items-start gap-3 ${
+                  missionType === 'official'
+                    ? 'bg-tutu-lime/15 border-tutu-lime text-[#FFFFFF] shadow-sm'
+                    : 'bg-tutu-dark/70 border-tutu-secondary/50 text-tutu-muted hover:border-tutu-lime/40'
+                }`}
+              >
+                <div
+                  className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                    missionType === 'official' ? 'border-tutu-lime bg-tutu-lime' : 'border-tutu-secondary'
+                  }`}
+                >
+                  {missionType === 'official' && <div className="w-2 h-2 rounded-full bg-[#071812]" />}
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-[#FFFFFF]">Circuito Oficial</div>
+                  <div className="text-[11px] text-tutu-muted mt-0.5">
+                    Participa da jornada sequencial progressiva de 4+ missões das startups expositoras.
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMissionType('extra');
+                  setSequenceOrder('');
+                }}
+                className={`p-3 rounded-xl border text-left transition-all flex items-start gap-3 ${
+                  missionType === 'extra'
+                    ? 'bg-tutu-lime/15 border-tutu-lime text-[#FFFFFF] shadow-sm'
+                    : 'bg-tutu-dark/70 border-tutu-secondary/50 text-tutu-muted hover:border-tutu-lime/40'
+                }`}
+              >
+                <div
+                  className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                    missionType === 'extra' ? 'border-tutu-lime bg-tutu-lime' : 'border-tutu-secondary'
+                  }`}
+                >
+                  {missionType === 'extra' && <div className="w-2 h-2 rounded-full bg-[#071812]" />}
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-[#FFFFFF]">Missão Extra</div>
+                  <div className="text-[11px] text-tutu-muted mt-0.5">
+                    Desafio independente. Não entra no circuito sequencial nem altera a reserva de pontos.
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            {/* Configuração Condicional da Posição Sequencial */}
+            {missionType === 'official' ? (
+              <div className="pt-2 border-t border-tutu-secondary/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-tutu-lime">
+                    Ordem Sequencial no Circuito *
+                  </label>
+                  <span className="text-[11px] text-tutu-muted">
+                    Próxima posição sugerida: <strong>{nextSuggestedSequence}</strong>. Não pode duplicar posições existentes.
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    value={sequenceOrder}
+                    onChange={(e) =>
+                      setSequenceOrder(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))
+                    }
+                    className="input-tutu text-xs w-24 text-center font-bold text-tutu-lime"
+                  />
+                  <span className="text-xs text-tutu-muted">º na sequência</span>
+                </div>
+              </div>
+            ) : (
+              <div className="p-2.5 rounded-lg bg-tutu-dark/50 border border-tutu-secondary/30 text-[11px] text-tutu-muted flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-tutu-lime/60 shrink-0" />
+                <span>Esta missão não recebe ordem sequencial (sequence_order = NULL) e fica sob gestão administrativa.</span>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -344,9 +487,10 @@ export const AdminMissionsPage: React.FC = () => {
             </button>
             <button
               type="submit"
-              className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs"
+              disabled={isSubmitting}
+              className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs font-semibold disabled:opacity-50"
             >
-              {editingId ? 'Salvar Missão' : 'Adicionar Missão'}
+              {isSubmitting ? 'Salvando...' : editingId ? 'Salvar Missão' : 'Adicionar Missão'}
             </button>
           </div>
         </form>
@@ -416,7 +560,14 @@ export const AdminMissionsPage: React.FC = () => {
                     className="p-3 rounded-xl bg-tutu-secondary/10 border border-tutu-secondary/20 flex items-center justify-between gap-2"
                   >
                     <div className="min-w-0 pr-2">
-                      <div className="text-xs font-medium text-tutu-light truncate">{m.title}</div>
+                      <div className="text-xs font-medium text-tutu-light truncate flex items-center gap-1.5">
+                        <span className="truncate">{m.title}</span>
+                        {m.sequenceOrder ? (
+                          <span className="text-[10px] text-tutu-lime shrink-0">#{m.sequenceOrder}</span>
+                        ) : (
+                          <span className="text-[10px] text-tutu-muted shrink-0">(Extra)</span>
+                        )}
+                      </div>
                       <div className="text-[10px] text-tutu-light/50 flex items-center gap-1">
                         <span>Efetivo: <strong className="text-tutu-lime">{effective} min</strong></span>
                         <span>•</span>
@@ -470,6 +621,17 @@ export const AdminMissionsPage: React.FC = () => {
           >
             <div className="space-y-2 max-w-3xl min-w-0">
               <div className="flex flex-wrap items-center gap-2">
+                {m.sequenceOrder !== null && m.sequenceOrder !== undefined ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-tutu-lime/15 border border-tutu-lime/40 text-tutu-lime text-[11px] font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-tutu-lime" />
+                    <span>Circuito Oficial • Etapa {String(m.sequenceOrder).padStart(2, '0')}</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-tutu-secondary/30 border border-tutu-secondary/50 text-[#D0DED4] text-[11px] font-semibold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-tutu-secondary" />
+                    <span>Missão Extra</span>
+                  </span>
+                )}
                 <CategoryPill category={m.category} />
                 <MissionStatusBadge status={m.status} />
                 <span className="text-xs text-tutu-light/75 font-semibold">• {m.startupName}</span>

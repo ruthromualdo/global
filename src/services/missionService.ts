@@ -35,10 +35,10 @@ export const missionService = {
     return updated;
   },
 
-  createMission(payload: Omit<Mission, 'id'>): Mission {
+  createMission(payload: Omit<Mission, 'id'> & { id?: string }): Mission {
     const created: Mission = {
       ...payload,
-      id: `ms-${Date.now()}`,
+      id: payload.id || `ms-${Date.now()}`,
     };
     missionsStore = [created, ...missionsStore];
     return { ...created };

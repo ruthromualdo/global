@@ -114,8 +114,13 @@ interface AppStoreContextValue {
   updateStartup: (id: string, updates: Partial<Startup>) => void;
   toggleStartupActive: (id: string) => void;
   deleteStartup: (id: string) => void;
-  createMission: (payload: Omit<Mission, 'id'>) => void;
-  updateMission: (id: string, updates: Partial<Mission>) => void;
+  createMission: (
+    payload: Omit<Mission, 'id'> & { missionType?: 'official' | 'extra' }
+  ) => Promise<{ ok: boolean; data?: Mission; error?: string }>;
+  updateMission: (
+    id: string,
+    updates: Partial<Mission> & { missionType?: 'official' | 'extra' }
+  ) => Promise<{ ok: boolean; error?: string }>;
   toggleMissionActive: (id: string) => void;
   deleteMission: (id: string) => void;
   createQRCode: (payload: Omit<QRCode, 'id' | 'scansCount' | 'createdAt'>) => void;
@@ -549,22 +554,43 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     notify('Startup Removida', 'Registro removido do banco SQLite.', 'info');
   };
 
-  const createMission = (payload: Omit<Mission, 'id'>) => {
-    const created = missionService.createMission(payload);
-    void apiRequest('/missions', {
+  const createMission = async (
+    payload: Omit<Mission, 'id'> & { missionType?: 'official' | 'extra' }
+  ): Promise<{ ok: boolean; data?: Mission; error?: string }> => {
+    const res = await apiRequestWithStatus<Mission>('/missions', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }).then(() => syncFromSqliteOrMemory());
-    notify('Missão Criada', `"${created.title}" adicionada à Central de Missões.`, 'success');
+    });
+
+    if (res.ok && res.data) {
+      missionService.createMission(res.data);
+      await syncFromSqliteOrMemory();
+      notify('Missão Criada', `"${res.data.title}" adicionada com sucesso.`, 'success');
+      return { ok: true, data: res.data };
+    }
+
+    const errorMsg = res.error || 'Falha ao cadastrar a missão no servidor.';
+    notify('Erro ao Criar Missão', errorMsg, 'error');
+    return { ok: false, error: errorMsg };
   };
 
-  const updateMission = (id: string, updates: Partial<Mission>) => {
+  const updateMission = async (
+    id: string,
+    updates: Partial<Mission> & { missionType?: 'official' | 'extra' }
+  ): Promise<{ ok: boolean; error?: string }> => {
     missionService.updateMission(id, updates);
-    void apiRequest(`/missions/${id}`, {
+    const res = await apiRequestWithStatus<Mission[]>(`/missions/${id}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
-    }).then(() => syncFromSqliteOrMemory());
-    notify('Missão Atualizada', 'Configurações da missão salvas no SQLite.', 'success');
+    });
+    await syncFromSqliteOrMemory();
+    if (res.ok) {
+      notify('Missão Atualizada', 'Configurações da missão salvas no SQLite.', 'success');
+      return { ok: true };
+    }
+    const errorMsg = res.error || 'Falha ao salvar alterações da missão.';
+    notify('Erro ao Atualizar', errorMsg, 'error');
+    return { ok: false, error: errorMsg };
   };
 
   const toggleMissionActive = (id: string) => {
