@@ -2,21 +2,12 @@ import React from 'react';
 import { Sparkles, Feather, Cpu, Orbit } from 'lucide-react';
 
 export const TutuBrandMark: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 'md' }) => {
-  const pillDimensions =
-    size === 'sm'
-      ? 'h-8 px-2.5 text-xs'
-      : size === 'lg'
-      ? 'h-11 px-4 text-base'
-      : 'h-9 px-3 text-sm';
-
   return (
-    <div className="inline-flex items-center gap-2 sm:gap-2.5 select-none">
-      <div
-        className={`${pillDimensions} rounded-xl bg-tutu-secondary border border-tutu-blue/60 flex items-center justify-center font-display font-bold tracking-wide text-[#FFFFFF] shadow-sm`}
-      >
-        <span className="mr-1.5 w-2 h-2 rounded-full bg-[#C8FFD2] inline-block shadow-sm" />
-        <span>DESAFIO GLOBAL 2026</span>
-      </div>
+    <div className="inline-flex items-center gap-2 select-none">
+      <Sparkles className="w-4 h-4 text-tutu-lime shrink-0" />
+      <span className="font-display font-bold text-sm sm:text-base tracking-wider text-[#FFFFFF]">
+        DESAFIO GLOBAL 2026
+      </span>
     </div>
   );
 };
