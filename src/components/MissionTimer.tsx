@@ -21,7 +21,6 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
   serverTimeMs,
   speedBonusAwarded = 0,
 }) => {
-  // Calcula o offset inicial entre o relógio local do navegador e o servidor
   const [clientOffset] = useState(() => (serverTimeMs ? serverTimeMs - Date.now() : 0));
 
   const calculateRemainingSeconds = (): number => {
@@ -58,19 +57,19 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
   // 1. Missão Concluída
   if (status === 'Concluída') {
     return (
-      <div className="p-3 rounded-xl bg-tutu-dark/80 border border-tutu-lime/30 space-y-1">
+      <div className="p-3 rounded-xl bg-tutu-dark border border-[#C8FFD2]/40 space-y-1">
         <div className="flex items-center justify-between gap-2 text-xs">
-          <span className="flex items-center gap-1.5 text-tutu-lime font-bold">
+          <span className="flex items-center gap-1.5 text-[#C8FFD2] font-bold">
             <CheckCircle className="w-3.5 h-3.5 shrink-0" />
             Missão Concluída
           </span>
           {speedBonusAwarded > 0 ? (
-            <span className="inline-flex items-center gap-1 text-xs font-bold text-tutu-lime px-2 py-0.5 rounded-md bg-tutu-lime/10 border border-tutu-lime/20">
+            <span className="inline-flex items-center gap-1 text-xs font-bold text-[#C8FFD2] px-2 py-0.5 rounded-md bg-[#C8FFD2]/15 border border-[#C8FFD2]/30">
               <Zap className="w-3 h-3 shrink-0" />
               +{speedBonusAwarded} pts bônus
             </span>
           ) : (
-            <span className="text-[11px] text-tutu-light/60">Sem bônus de velocidade</span>
+            <span className="text-[11px] text-[#D0DED4]">Sem bônus de velocidade</span>
           )}
         </div>
       </div>
@@ -80,12 +79,12 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
   // 2. Missão Bloqueada
   if (status === 'Bloqueada') {
     return (
-      <div className="p-2.5 rounded-xl bg-tutu-dark/50 border border-tutu-secondary/20 text-xs text-tutu-light/50 flex items-center justify-between">
+      <div className="p-2.5 rounded-xl bg-tutu-dark border border-tutu-blue/20 text-xs text-[#D0DED4] flex items-center justify-between">
         <span className="flex items-center gap-1.5">
           <Clock className="w-3.5 h-3.5 shrink-0" />
-          Tempo previsto: {Math.round(durationSeconds / 60)} min
+          Cronômetro bloqueado
         </span>
-        <span className="text-[11px]">Bônus de até +50 pts</span>
+        <span className="text-[11px] opacity-75">Aguardando desbloqueio</span>
       </div>
     );
   }
@@ -93,18 +92,18 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
   // 3. Missão Disponível (Ainda não iniciada)
   if (status === 'Disponível' && !startedAtMs) {
     return (
-      <div className="p-3 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/30 space-y-1">
+      <div className="p-3 rounded-xl bg-tutu-dark border border-tutu-blue/30 space-y-1">
         <div className="flex items-center justify-between gap-2 text-xs">
-          <span className="flex items-center gap-1.5 text-tutu-light/80">
-            <Clock className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
-            Duração: <strong className="text-tutu-light">{Math.round(durationSeconds / 60)} min</strong>
+          <span className="flex items-center gap-1.5 text-[#FFFFFF]">
+            <Clock className="w-3.5 h-3.5 text-[#C8FFD2] shrink-0" />
+            Duração: <strong className="text-[#FFFFFF]">{Math.round(durationSeconds / 60)} min</strong>
           </span>
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-tutu-lime">
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#DDF8E4]">
             <Zap className="w-3 h-3 shrink-0" />
             Até +50 pts de bônus
           </span>
         </div>
-        <p className="text-[11px] text-tutu-light/60">
+        <p className="text-[11px] text-[#D0DED4]">
           O cronômetro iniciará apenas quando você clicar em iniciar missão.
         </p>
       </div>
@@ -123,29 +122,29 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
     <div
       className={`p-3 rounded-xl border transition-all ${
         isExpired
-          ? 'bg-amber-950/20 border-amber-500/30 text-amber-200/90'
-          : 'bg-tutu-dark/90 border-tutu-lime/40 text-tutu-light'
+          ? 'bg-tutu-dark border-tutu-blue/40 text-[#D0DED4]'
+          : 'bg-tutu-dark border-[#C8FFD2]/50 text-[#FFFFFF]'
       } space-y-2`}
     >
       <div className="flex items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2">
           <Clock
             className={`w-4 h-4 shrink-0 ${
-              isExpired ? 'text-amber-400' : 'text-tutu-lime animate-pulse'
+              isExpired ? 'text-[#D0DED4]' : 'text-[#C8FFD2] animate-pulse'
             }`}
           />
-          <span className="font-mono font-bold text-sm tracking-wider">
+          <span className="font-mono font-bold text-sm tracking-wider text-[#FFFFFF]">
             {formatMMSS(remainingSeconds)}
           </span>
         </div>
 
         {isExpired ? (
-          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-300 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20">
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#D0DED4] px-2 py-0.5 rounded-md bg-tutu-secondary border border-tutu-blue/40">
             <AlertCircle className="w-3 h-3 shrink-0" />
             Tempo esgotado
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-tutu-lime px-2 py-0.5 rounded-md bg-tutu-lime/10 border border-tutu-lime/20">
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#071812] px-2 py-0.5 rounded-md bg-[#C8FFD2] border border-[#C8FFD2]">
             <Zap className="w-3 h-3 shrink-0" />
             Bônus atual: +{potentialBonus} pts
           </span>
@@ -154,21 +153,21 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
 
       {/* Barra de progresso discreta e serena */}
       {!isExpired && (
-        <div className="w-full h-1.5 bg-tutu-secondary/30 rounded-full overflow-hidden">
+        <div className="w-full h-1.5 bg-tutu-secondary rounded-full overflow-hidden border border-tutu-blue/30">
           <div
-            className="h-full bg-tutu-lime transition-all duration-1000 ease-linear rounded-full"
+            className="h-full bg-[#C8FFD2] transition-all duration-1000 ease-linear rounded-full"
             style={{ width: `${progressPercent}%` }}
           />
         </div>
       )}
 
       {isExpired ? (
-        <p className="text-[11px] text-amber-200/70 leading-tight">
+        <p className="text-[11px] text-[#D0DED4] leading-tight">
           Bônus de velocidade indisponível. Conclua a missão para receber os 180 pontos normais.
         </p>
       ) : (
-        <p className="text-[11px] text-tutu-light/65 leading-tight">
-          Complete a atividade no estande antes do término para garantir o bônus de velocidade.
+        <p className="text-[11px] text-[#D0DED4] leading-tight">
+          Complete a missão dentro do prazo para garantir pontuação máxima de velocidade!
         </p>
       )}
     </div>

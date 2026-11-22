@@ -473,6 +473,53 @@ function completeSequentialMissionInSql(params: {
       }
     }
 
+    // Etapa 6: Se for a Missão 1 (seqOrder === 1), credita os 20 pontos de desbloqueio
+    // SOMENTE AGORA, no momento da conclusão/validação efetiva da missão!
+    let awardedUnlockPoints = 0;
+    if (seqOrder === 1) {
+      const legacyUnlockTx = db
+        .prepare('SELECT id, points_delta FROM points_transactions WHERE event_key = ? LIMIT 1')
+        .get(`UNLOCK:${params.participantId}:${mission.id}`) as { id: string; points_delta: number } | undefined;
+      const reversalTx = db
+        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+        .get(`REVERSAL:${params.participantId}:${mission.id}`) as { id: string } | undefined;
+      const validatedUnlockTx = db
+        .prepare('SELECT id, points_delta FROM points_transactions WHERE event_key = ? LIMIT 1')
+        .get(`UNLOCK_VALIDATED:${params.participantId}:${mission.id}`) as { id: string; points_delta: number } | undefined;
+
+      const hasEffectiveUnlock =
+        (Boolean(legacyUnlockTx) && !Boolean(reversalTx)) || Boolean(validatedUnlockTx);
+
+      if (!hasEffectiveUnlock) {
+        // Se já houve estorno da transação legada antiga, usa a chave UNLOCK_VALIDATED para respeitar o índice único
+        const unlockEventKey = Boolean(reversalTx)
+          ? `UNLOCK_VALIDATED:${params.participantId}:${mission.id}`
+          : `UNLOCK:${params.participantId}:${mission.id}`;
+
+        const unlockCredit = creditPointsInSql({
+          participantId: params.participantId,
+          pointsDelta: MISSION_UNLOCK_POINTS,
+          sourceType: 'Missão',
+          sourceTitle: `Desbloqueio: ${mission.title}`,
+          incrementMissionCount: false,
+          eventKey: unlockEventKey,
+          missionId: mission.id,
+        });
+        awardedUnlockPoints = unlockCredit?.effectiveDelta ?? 0;
+      } else {
+        awardedUnlockPoints = validatedUnlockTx
+          ? Number(validatedUnlockTx.points_delta)
+          : Number(legacyUnlockTx?.points_delta || MISSION_UNLOCK_POINTS);
+      }
+    } else {
+      const existingUnlockTx = db
+        .prepare('SELECT points_delta FROM points_transactions WHERE event_key = ? LIMIT 1')
+        .get(`UNLOCK:${params.participantId}:${mission.id}`) as { points_delta: number } | undefined;
+      awardedUnlockPoints = existingUnlockTx
+        ? Number(existingUnlockTx.points_delta)
+        : Number(pmRow?.unlock_points_awarded || MISSION_UNLOCK_POINTS);
+    }
+
     // 1. Concede 180 pontos pela conclusão válida da missão
     const completionCredit = creditPointsInSql({
       participantId: params.participantId,
@@ -508,15 +555,18 @@ function completeSequentialMissionInSql(params: {
       SET status = 'Concluída',
           completed_at_ms = ?,
           elapsed_seconds = ?,
+          unlock_points_awarded = ?,
           completion_points_awarded = ?,
           speed_bonus_awarded = ?,
-          total_points_awarded = unlock_points_awarded + ? + ?
+          total_points_awarded = ? + ? + ?
       WHERE participant_id = ? AND mission_id = ?
     `).run(
       nowMs,
       elapsedSeconds,
+      awardedUnlockPoints,
       awardedCompletionPoints,
       awardedSpeedBonus,
+      awardedUnlockPoints,
       awardedCompletionPoints,
       awardedSpeedBonus,
       params.participantId,
@@ -594,10 +644,17 @@ function completeSequentialMissionInSql(params: {
       completionPointsAwarded: awardedCompletionPoints,
       speedBonusAwarded: awardedSpeedBonus,
       unlockPointsAwarded: awardedNextUnlockPoints,
-      pointsAwarded: awardedCompletionPoints + awardedSpeedBonus + awardedNextUnlockPoints,
+      initialUnlockPointsAwarded: seqOrder === 1 ? awardedUnlockPoints : 0,
+      pointsAwarded:
+        (seqOrder === 1 ? awardedUnlockPoints : 0) +
+        awardedCompletionPoints +
+        awardedSpeedBonus +
+        awardedNextUnlockPoints,
       nextMissionUnlocked: nextMissionUnlockedTitle,
       participant: mapParticipantRow(updatedParticipant),
-      message: `Missão "${mission.title}" concluída (+${awardedCompletionPoints} pts)${bonusMsg}${unlockMsg}`,
+      message: `Missão "${mission.title}" concluída (+${awardedCompletionPoints} pts)${
+        seqOrder === 1 && awardedUnlockPoints > 0 ? ` +${awardedUnlockPoints} pts de desbloqueio` : ''
+      }${bonusMsg}${unlockMsg}`,
     };
   } catch (err) {
     try {

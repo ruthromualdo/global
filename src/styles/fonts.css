@@ -1,68 +1,9 @@
 /* ==========================================================================
-   TIPOGRAFIA OFICIAL — DESAFIO GLOBAL SUMMIT 2026 (IDENTIDADE TUTU)
+   TIPOGRAFIA OFICIAL — DESAFIO GLOBAL SUMMIT 2026 (DARK PREMIUM TECH)
    ==========================================================================
-   Nota técnica: As pastas /public/fonts/bogart e /public/fonts/dm-sans encontram-se
-   estruturadas no projeto. As regras @font-face para a família Bogart estão
-   configuradas abaixo e prontas para carregar os arquivos .woff2 / .woff / .ttf
-   assim que os arquivos originais da fonte Bogart forem depositados em /public/fonts/bogart/.
-   Para DM Sans, há suporte simultâneo via arquivos locais em /public/fonts/dm-sans/
-   e Google Fonts configurado no index.html.
+   Tipografia principal: DM Sans (Regular, Medium, SemiBold, Bold, ExtraBold)
+   Aproveitamento dos arquivos locais existentes no projeto e Google Fonts.
    ========================================================================== */
-
-@font-face {
-  font-family: 'Bogart';
-  src: local('Bogart Regular'), local('Bogart-Regular'),
-       url('/fonts/bogart/Bogart-Regular.woff2') format('woff2'),
-       url('/fonts/bogart/Bogart-Regular.woff') format('woff'),
-       url('/fonts/bogart/Bogart-Regular.ttf') format('truetype');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Bogart';
-  src: local('Bogart Medium'), local('Bogart-Medium'),
-       url('/fonts/bogart/Bogart-Medium.woff2') format('woff2'),
-       url('/fonts/bogart/Bogart-Medium.woff') format('woff'),
-       url('/fonts/bogart/Bogart-Medium.ttf') format('truetype');
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Bogart';
-  src: local('Bogart SemiBold'), local('Bogart-SemiBold'),
-       url('/fonts/bogart/Bogart-SemiBold.woff2') format('woff2'),
-       url('/fonts/bogart/Bogart-SemiBold.woff') format('woff'),
-       url('/fonts/bogart/Bogart-SemiBold.ttf') format('truetype');
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Bogart';
-  src: local('Bogart Bold'), local('Bogart-Bold'),
-       url('/fonts/bogart/Bogart-Bold.woff2') format('woff2'),
-       url('/fonts/bogart/Bogart-Bold.woff') format('woff'),
-       url('/fonts/bogart/Bogart-Bold.ttf') format('truetype');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Bogart';
-  src: local('Bogart ExtraBold'), local('Bogart-ExtraBold'),
-       url('/fonts/bogart/Bogart-ExtraBold.woff2') format('woff2'),
-       url('/fonts/bogart/Bogart-ExtraBold.woff') format('woff'),
-       url('/fonts/bogart/Bogart-ExtraBold.ttf') format('truetype');
-  font-weight: 800;
-  font-style: normal;
-  font-display: swap;
-}
 
 @font-face {
   font-family: 'DM Sans';

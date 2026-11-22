@@ -1,5 +1,5 @@
 import React from 'react';
-import { Award, CheckCircle2, ChevronRight, Sparkles, Trophy, Zap } from 'lucide-react';
+import { CheckCircle2, Trophy, Zap } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
 import { formatPoints } from '../utils/formatters';
 
@@ -52,18 +52,18 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
     return (
       <div className={`space-y-1.5 ${className}`}>
         <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold text-tutu-light flex items-center gap-1.5">
-            <Zap className="w-3.5 h-3.5 text-tutu-lime fill-tutu-lime shrink-0" />
+          <span className="font-semibold text-[#FFFFFF] flex items-center gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-[#C8FFD2] fill-[#C8FFD2] shrink-0" />
             <span>Pontuação Global</span>
           </span>
-          <span className="font-display font-bold text-tutu-lime">
+          <span className="font-display font-bold text-[#C8FFD2]">
             {formatPoints(currentPoints)}{' '}
-            <span className="text-tutu-light/60 font-sans font-normal text-[11px]">/ 1.000</span>
+            <span className="text-[#D0DED4] font-sans font-normal text-[11px]">/ 1.000</span>
           </span>
         </div>
         <div className="w-full h-2 bg-tutu-dark rounded-full overflow-hidden border border-tutu-secondary/60">
           <div
-            className="h-full bg-gradient-to-r from-tutu-blue via-tutu-lime to-tutu-lime rounded-full transition-all duration-700 ease-out"
+            className="h-full bg-[#C8FFD2] rounded-full transition-all duration-700 ease-out"
             style={{ width: `${progressPercentage}%` }}
           />
         </div>
@@ -73,33 +73,33 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
 
   return (
     <div
-      className={`tutu-card p-5 sm:p-6 space-y-4 sm:space-y-5 border-2 ${
+      className={`tutu-card p-5 sm:p-6 space-y-4 sm:space-y-5 border ${
         isMaxReached
-          ? 'border-tutu-lime bg-tutu-secondary/30 shadow-xl'
-          : 'border-tutu-blue/60 bg-tutu-secondary/15'
+          ? 'border-[#C8FFD2]/70 bg-tutu-secondary shadow-lg'
+          : 'border-tutu-blue/40 bg-tutu-secondary'
       } ${className}`}
     >
       {/* Top Banner & Status */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-tutu-dark/80 border border-tutu-lime/40 text-[11px] font-bold uppercase tracking-wider text-tutu-lime">
-              <Zap className="w-3 h-3 text-tutu-lime fill-tutu-lime shrink-0" />
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-tutu-dark border border-tutu-blue/50 text-[11px] font-semibold uppercase tracking-wider text-[#DDF8E4]">
+              <Zap className="w-3 h-3 text-[#C8FFD2] fill-[#C8FFD2] shrink-0" />
               <span>Indicador Global de Pontuação</span>
             </span>
             {isMaxReached && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-tutu-lime text-tutu-dark text-[11px] font-bold">
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#C8FFD2] text-[#071812] text-[11px] font-bold">
                 <Trophy className="w-3 h-3 shrink-0" />
                 <span>Teto Máximo Atingido!</span>
               </span>
             )}
           </div>
-          <h2 className="font-display font-bold text-xl sm:text-2xl text-tutu-light">
+          <h2 className="font-display font-bold text-xl sm:text-2xl text-[#FFFFFF]">
             {isMaxReached
               ? 'Parabéns! Você alcançou os 1.000 pontos'
-              : 'Evolução rumo ao teto de 1.000 pontos'}
+              : 'Acompanhe sua evolução'}
           </h2>
-          <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed">
+          <p className="text-xs sm:text-sm text-[#D0DED4] leading-relaxed">
             {isMaxReached
               ? 'Você completou a jornada com a pontuação máxima possível do circuito oficial.'
               : `Você acumulou ${currentPoints.toLocaleString('pt-BR')} pontos de um total possível de 1.000 pontos.`}
@@ -107,30 +107,30 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
         </div>
 
         {/* Counter Badge */}
-        <div className="p-3 sm:p-3.5 rounded-2xl bg-tutu-dark/90 border border-tutu-secondary/60 flex items-center justify-between sm:flex-col sm:items-end gap-1.5 shrink-0 self-start sm:self-auto min-w-[140px]">
-          <span className="text-[11px] text-tutu-light/65 uppercase tracking-wider font-semibold">
+        <div className="p-3 sm:p-3.5 rounded-2xl bg-tutu-dark border border-tutu-blue/40 flex items-center justify-between sm:flex-col sm:items-end gap-1.5 shrink-0 self-start sm:self-auto min-w-[140px]">
+          <span className="text-[11px] text-[#D0DED4] uppercase tracking-wider font-semibold">
             Progresso Geral
           </span>
           <div className="flex items-baseline gap-1">
-            <span className="font-display font-bold text-2xl sm:text-3xl text-tutu-lime">
+            <span className="font-display font-bold text-2xl sm:text-3xl text-[#C8FFD2]">
               {progressPercentage}%
             </span>
           </div>
-          <span className="text-[11px] text-tutu-light/75 font-mono">
-            <strong>{currentPoints}</strong> / 1.000 pts
+          <span className="text-[11px] text-[#D0DED4] font-mono">
+            <strong className="text-[#FFFFFF]">{currentPoints}</strong> / 1.000 pts
           </span>
         </div>
       </div>
 
       {/* Main Visual Progress Bar */}
       <div className="space-y-2">
-        <div className="w-full h-4 sm:h-5 bg-tutu-dark rounded-full overflow-hidden border border-tutu-secondary/70 p-0.5 relative shadow-inner">
+        <div className="w-full h-4 sm:h-5 bg-tutu-dark rounded-full overflow-hidden border border-tutu-blue/40 p-0.5 relative shadow-inner">
           <div
-            className="h-full bg-gradient-to-r from-tutu-blue via-tutu-lime to-tutu-lime rounded-full transition-all duration-700 ease-out shadow-sm relative flex items-center justify-end"
+            className="h-full bg-[#C8FFD2] rounded-full transition-all duration-700 ease-out shadow-sm relative flex items-center justify-end"
             style={{ width: `${Math.max(3, progressPercentage)}%` }}
           >
             {progressPercentage >= 15 && (
-              <span className="text-[10px] font-bold text-tutu-dark pr-2 drop-shadow-sm select-none">
+              <span className="text-[10px] font-bold text-[#071812] pr-2 select-none">
                 {progressPercentage}%
               </span>
             )}
@@ -147,21 +147,21 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
                   key={m.target}
                   className={`p-2 rounded-xl text-center border transition-all ${
                     reached
-                      ? 'bg-tutu-lime/10 border-tutu-lime/50 text-tutu-lime'
-                      : 'bg-tutu-dark/50 border-tutu-secondary/30 text-tutu-light/50'
+                      ? 'bg-[#C8FFD2]/15 border-[#C8FFD2]/60 text-[#C8FFD2]'
+                      : 'bg-tutu-dark/70 border-tutu-blue/30 text-[#D0DED4]/60'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-1">
                     {reached ? (
-                      <CheckCircle2 className="w-3 h-3 text-tutu-lime shrink-0" />
+                      <CheckCircle2 className="w-3 h-3 text-[#C8FFD2] shrink-0" />
                     ) : (
-                      <span className="w-1.5 h-1.5 rounded-full bg-tutu-light/40 shrink-0" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#D0DED4]/40 shrink-0" />
                     )}
                     <span className="font-display font-bold text-xs sm:text-sm">
                       {m.target} pts
                     </span>
                   </div>
-                  <span className="text-[10px] hidden sm:block truncate opacity-80 mt-0.5">
+                  <span className="text-[10px] hidden sm:block truncate opacity-80 mt-0.5 text-[#D0DED4]">
                     {m.label}
                   </span>
                 </div>
@@ -172,27 +172,25 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
       </div>
 
       {/* Contextual Info Banner */}
-      <div className="p-3 sm:p-4 rounded-xl bg-tutu-dark/60 border border-tutu-secondary/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+      <div className="p-3 sm:p-4 rounded-xl bg-tutu-dark border border-tutu-blue/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
         <div className="flex items-center gap-2 min-w-0">
-          <Sparkles className="w-4 h-4 text-tutu-lime shrink-0" />
-          <span className="text-tutu-light/90 leading-snug">
+          <Zap className="w-4 h-4 text-[#C8FFD2] shrink-0" />
+          <span className="text-[#FFFFFF] leading-snug">
             {isMaxReached ? (
-              <strong className="text-tutu-lime">
-                Meta alcançada! Todos os 1.000 pontos do circuito foram conquistados.
+              <strong className="text-[#C8FFD2]">
+                Teto oficial de 1.000 pontos atingido com sucesso!
               </strong>
             ) : (
-              <span>
-                Restam <strong className="text-tutu-lime">{remainingPoints} pontos</strong> para
+              <>
+                Restam <strong className="text-[#DDF8E4]">{remainingPoints} pontos</strong> para
                 atingir o limite de 1.000 pontos.
-              </span>
+              </>
             )}
           </span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 text-[11px] text-tutu-light/70 border-t sm:border-t-0 pt-2 sm:pt-0 border-tutu-secondary/30">
-          <span>4 missões • Até 250 pts cada</span>
-          <span className="hidden sm:inline">•</span>
-          <span className="text-tutu-lime">Velocidade: até +50 pts</span>
+        <div className="flex items-center gap-2 shrink-0 text-[11px] text-[#D0DED4]">
+          <span>{milestones.filter((m) => currentPoints >= m.target).length} de 4 marcos</span>
         </div>
       </div>
     </div>

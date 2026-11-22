@@ -30,32 +30,32 @@ export const ToastContainer: React.FC = () => {
           key={toast.id}
           className={`pointer-events-auto rounded-2xl p-3.5 sm:p-4 border shadow-xl transition-all flex items-start gap-3 ${
             toast.type === 'success'
-              ? 'bg-tutu-dark border-tutu-lime text-tutu-light'
+              ? 'bg-[#10271D] border-[#C8FFD2] text-[#FFFFFF]'
               : toast.type === 'error'
-              ? 'bg-tutu-dark border-tutu-blue text-tutu-light'
-              : 'bg-tutu-secondary border-tutu-light/30 text-tutu-light'
+              ? 'bg-[#10271D] border-[#397B55] text-[#FFFFFF]'
+              : 'bg-[#10271D] border-[#397B55]/60 text-[#FFFFFF]'
           }`}
         >
           {toast.type === 'success' && (
-            <CheckCircle2 className="w-5 h-5 text-tutu-lime shrink-0 mt-0.5" />
+            <CheckCircle2 className="w-5 h-5 text-[#C8FFD2] shrink-0 mt-0.5" />
           )}
           {toast.type === 'error' && (
-            <AlertCircle className="w-5 h-5 text-tutu-lime shrink-0 mt-0.5" />
+            <AlertCircle className="w-5 h-5 text-[#C8FFD2] shrink-0 mt-0.5" />
           )}
           {toast.type === 'info' && (
-            <Info className="w-5 h-5 text-tutu-lime shrink-0 mt-0.5" />
+            <Info className="w-5 h-5 text-[#C8FFD2] shrink-0 mt-0.5" />
           )}
           <div className="flex-1 min-w-0">
-            <p className="font-display font-bold text-sm text-tutu-light break-words">
+            <p className="font-display font-bold text-sm text-[#FFFFFF] break-words">
               {toast.title}
             </p>
-            <p className="text-xs text-tutu-light/85 mt-0.5 leading-relaxed break-words">
+            <p className="text-xs text-[#D0DED4] mt-0.5 leading-relaxed break-words">
               {toast.message}
             </p>
           </div>
           <button
             onClick={() => dismissToast(toast.id)}
-            className="text-tutu-light/60 hover:text-tutu-light p-1.5 -mr-1 -mt-1 rounded-lg shrink-0"
+            className="text-[#D0DED4] hover:text-[#FFFFFF] p-1.5 -mr-1 -mt-1 rounded-lg shrink-0 transition-colors"
             aria-label="Fechar aviso"
           >
             <X className="w-4 h-4" />
@@ -68,11 +68,11 @@ export const ToastContainer: React.FC = () => {
 
 export const MissionStatusBadge: React.FC<{ status: MissionStatus }> = ({ status }) => {
   const styles: Record<MissionStatus, string> = {
-    Concluída: 'bg-tutu-lime text-tutu-dark font-bold',
-    Disponível: 'bg-tutu-blue text-tutu-light font-semibold',
-    'Em andamento': 'bg-tutu-secondary text-tutu-lime border border-tutu-lime/40 font-semibold',
-    'Aguardando validação': 'bg-tutu-light/15 text-tutu-light border border-tutu-light/30',
-    Bloqueada: 'bg-tutu-dark/80 text-tutu-light/50 border border-tutu-light/15',
+    Concluída: 'bg-[#C8FFD2] text-[#071812] font-semibold shadow-sm',
+    Disponível: 'bg-[#10271D] text-[#C8FFD2] border border-[#397B55] font-semibold',
+    'Em andamento': 'bg-[#163527] text-[#DDF8E4] border border-[#C8FFD2]/50 font-semibold',
+    'Aguardando validação': 'bg-[#10271D] text-[#D0DED4] border border-[#397B55]/50',
+    Bloqueada: 'bg-[#071812] text-[#D0DED4]/60 border border-[#397B55]/20',
   };
 
   return (
@@ -86,7 +86,7 @@ export const MissionStatusBadge: React.FC<{ status: MissionStatus }> = ({ status
 
 export const CategoryPill: React.FC<{ category: MissionCategory }> = ({ category }) => {
   return (
-    <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-medium bg-tutu-secondary/40 text-tutu-light border border-tutu-blue/40 whitespace-nowrap">
+    <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-medium bg-[#10271D] text-[#D0DED4] border border-[#397B55]/40 whitespace-nowrap">
       {category}
     </span>
   );
@@ -96,10 +96,10 @@ export const AchievementIcon: React.FC<{
   iconName: Achievement['iconName'];
   unlocked: boolean;
 }> = ({ iconName, unlocked }) => {
-  const iconClass = unlocked ? 'w-6 h-6 text-tutu-dark' : 'w-6 h-6 text-tutu-light/50';
+  const iconClass = unlocked ? 'w-6 h-6 text-[#071812]' : 'w-6 h-6 text-[#D0DED4]/50';
   const wrapperClass = unlocked
-    ? 'w-12 h-12 rounded-2xl bg-tutu-lime flex items-center justify-center shrink-0'
-    : 'w-12 h-12 rounded-2xl bg-tutu-secondary/30 border border-tutu-secondary/60 flex items-center justify-center shrink-0';
+    ? 'w-12 h-12 rounded-2xl bg-[#C8FFD2] flex items-center justify-center shrink-0 shadow-sm'
+    : 'w-12 h-12 rounded-2xl bg-[#10271D] border border-[#397B55]/50 flex items-center justify-center shrink-0';
 
   return (
     <div className={wrapperClass}>
@@ -117,12 +117,10 @@ export const SimulatedQRMatrix: React.FC<{ code: string; size?: number }> = ({
   code,
   size = 136,
 }) => {
-  // Gera uma matriz determinística 7x7 baseada no código para visualização demonstrativa
   const seed = code.split('').reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 1), 0);
   const cells = Array.from({ length: 49 }, (_, idx) => {
     const row = Math.floor(idx / 7);
     const col = idx % 7;
-    // Cantos de posicionamento de QR Code
     if ((row < 2 && col < 2) || (row < 2 && col > 4) || (row > 4 && col < 2)) {
       return true;
     }
@@ -132,14 +130,14 @@ export const SimulatedQRMatrix: React.FC<{ code: string; size?: number }> = ({
   return (
     <div
       style={{ width: size, height: size, maxWidth: '100%' }}
-      className="bg-tutu-light p-3 rounded-2xl border-2 border-tutu-blue inline-flex flex-col justify-between shrink-0 aspect-square"
+      className="bg-[#FFFFFF] p-3 rounded-2xl border border-[#397B55] inline-flex flex-col justify-between shrink-0 aspect-square shadow-sm"
       title={`Representação demonstrativa QR: ${code}`}
     >
       <div className="grid grid-cols-7 gap-1 w-full h-full">
         {cells.map((filled, idx) => (
           <div
             key={idx}
-            className={`rounded-[2px] ${filled ? 'bg-tutu-dark' : 'bg-transparent'}`}
+            className={`rounded-[2px] ${filled ? 'bg-[#071812]' : 'bg-transparent'}`}
           />
         ))}
       </div>

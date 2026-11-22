@@ -180,10 +180,10 @@ export const RankingPage: React.FC = () => {
                   key={entry.participantId}
                   className={`tutu-card p-5 sm:p-6 flex flex-col justify-between space-y-5 relative transition-all ${
                     isFirst
-                      ? 'border-2 border-tutu-lime bg-tutu-secondary/35 shadow-xl shadow-tutu-lime/5'
+                      ? 'border-2 border-tutu-lime bg-tutu-secondary shadow-lg'
                       : isSecond
-                      ? 'border-2 border-tutu-blue/90 bg-tutu-secondary/25'
-                      : 'border-2 border-amber-500/60 bg-tutu-secondary/20'
+                      ? 'border border-tutu-blue bg-tutu-secondary'
+                      : 'border border-tutu-blue/60 bg-tutu-secondary'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -193,7 +193,7 @@ export const RankingPage: React.FC = () => {
                           ? 'bg-tutu-lime text-tutu-dark shadow-sm'
                           : isSecond
                           ? 'bg-tutu-blue text-tutu-light'
-                          : 'bg-amber-600 text-tutu-light'
+                          : 'bg-tutu-dark text-tutu-light border border-tutu-blue/60'
                       }`}
                     >
                       {isFirst ? (
@@ -219,8 +219,8 @@ export const RankingPage: React.FC = () => {
                         isFirst
                           ? 'bg-tutu-lime text-tutu-dark border-2 border-tutu-lime/60'
                           : isSecond
-                          ? 'bg-tutu-blue text-tutu-light border-2 border-tutu-blue/60'
-                          : 'bg-amber-900/60 text-amber-200 border-2 border-amber-500/60'
+                          ? 'bg-tutu-secondary text-tutu-light border-2 border-tutu-blue'
+                          : 'bg-tutu-dark text-tutu-light border-2 border-tutu-blue/60'
                       }`}
                     >
                       {entry.avatar}
@@ -302,7 +302,7 @@ export const RankingPage: React.FC = () => {
                             : row.position === 2
                             ? 'bg-tutu-blue text-tutu-light'
                             : row.position === 3
-                            ? 'bg-amber-600 text-tutu-light'
+                            ? 'bg-tutu-secondary text-tutu-light border border-tutu-blue/60'
                             : 'bg-tutu-dark text-tutu-light border border-tutu-secondary/60'
                         }`}
                       >
@@ -373,7 +373,7 @@ export const RankingPage: React.FC = () => {
                               : row.position === 2
                               ? 'bg-tutu-blue text-tutu-light'
                               : row.position === 3
-                              ? 'bg-amber-600 text-tutu-light'
+                              ? 'bg-tutu-secondary text-tutu-light border border-tutu-blue/60'
                               : 'bg-tutu-dark text-tutu-light border border-tutu-secondary/50'
                           }`}
                         >

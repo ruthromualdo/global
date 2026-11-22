@@ -76,10 +76,18 @@ export const ParticipantLayout: React.FC = () => {
 
           {/* User Points & Quick Links */}
           <div className="flex items-center gap-2 shrink-0">
-            <div className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-tutu-secondary/30 border border-tutu-lime/40 flex items-center gap-1.5 whitespace-nowrap">
-              <Zap className="w-4 h-4 text-tutu-lime fill-tutu-lime shrink-0" />
-              <span className="font-display font-bold text-xs sm:text-sm text-tutu-lime">
-                {formatPoints(participant.points)}
+            {/* Indicador Permanente de Pontuação (Etapa 5) */}
+            <div
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-tutu-secondary border border-tutu-lime/50 flex items-center gap-1.5 whitespace-nowrap shadow-sm select-none"
+              title={`Pontuação oficial: ${participant.points.toLocaleString('pt-BR')} pts (Limite: 1.000 pts)`}
+              aria-label={`Pontuação: ${participant.points} pontos`}
+            >
+              <Zap className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-tutu-lime fill-tutu-lime shrink-0" />
+              <span className="font-display font-bold text-xs sm:text-sm text-tutu-lime tracking-tight">
+                {participant.points.toLocaleString('pt-BR')}
+              </span>
+              <span className="text-[10px] sm:text-xs text-tutu-muted font-semibold lowercase">
+                pts
               </span>
             </div>
 

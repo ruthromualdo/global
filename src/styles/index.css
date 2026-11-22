@@ -5,11 +5,24 @@
 
 @layer base {
   :root {
-    --color-tutu-dark: #05001A;
-    --color-tutu-blue: #3D5AFF;
-    --color-tutu-lime: #D0FF00;
-    --color-tutu-secondary: #3248C7;
-    --color-tutu-light: #FFFAF5;
+    /* TOKENS OFICIAIS — AJUSTE DE LUMINOSIDADE (DARK PREMIUM TECH) */
+    --color-tech-bg: #071812;          /* Fundo principal */
+    --color-tech-card: #10271D;        /* Cards */
+    --color-tech-hover: #163527;       /* Hover */
+    --color-tech-medium: #397B55;      /* Verde médio */
+    --color-tech-text: #FFFFFF;        /* Texto principal: Branco puro */
+    --color-tech-secondary: #D0DED4;   /* Texto secundário: Cinza claro */
+    --color-tech-highlight: #DDF8E4;   /* Destaques textuais */
+    --color-tech-mint: #C8FFD2;        /* Botões principais */
+    --color-tech-bright: #E8FFF0;      /* Botões de maior destaque */
+    --color-tech-btn-text: #071812;    /* Texto dos botões */
+
+    /* Mapeamento semântico */
+    --color-tutu-dark: var(--color-tech-bg);
+    --color-tutu-secondary: var(--color-tech-card);
+    --color-tutu-blue: var(--color-tech-medium);
+    --color-tutu-lime: var(--color-tech-mint);
+    --color-tutu-light: var(--color-tech-text);
   }
 
   html {
@@ -19,123 +32,220 @@
   }
 
   body {
-    background-color: #05001A;
-    color: #FFFAF5;
+    background-color: #071812;
+    color: #FFFFFF;
     font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
     max-width: 100%;
     overflow-x: hidden;
     min-height: 100vh;
     min-height: 100dvh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
-  h1, h2, .font-bogart {
-    font-family: 'Bogart', Georgia, serif;
+  h1, h2, h3, h4, h5, h6, .font-display, .font-bogart {
+    font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
     overflow-wrap: break-word;
+    letter-spacing: -0.015em;
+    color: #FFFFFF;
   }
 
-  /* Estados de foco visíveis para navegação por teclado */
+  /* Estados de foco perceptíveis e acessíveis */
   a:focus-visible,
   button:focus-visible,
   input:focus-visible,
   select:focus-visible,
   textarea:focus-visible {
-    outline: 2px solid #D0FF00;
+    outline: 2px solid #C8FFD2;
     outline-offset: 2px;
   }
 }
 
 @layer components {
-  .tutu-card {
-    background-color: rgba(50, 72, 199, 0.14);
-    border: 1px solid rgba(50, 72, 199, 0.38);
+  /* CARDS: Fundo verde profundo #10271D, bordas finas e discretas #397B55 */
+  .tutu-card,
+  .tech-card {
+    background-color: #10271D;
+    border: 1px solid rgba(57, 123, 85, 0.4);
     border-radius: 1rem;
-    transition: all 0.2s ease;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     max-width: 100%;
   }
 
-  .tutu-card-hover:hover {
-    border-color: #3D5AFF;
-    background-color: rgba(50, 72, 199, 0.22);
+  .tutu-card-hover:hover,
+  .tech-card-hover:hover {
+    border-color: rgba(200, 255, 210, 0.5);
+    background-color: #163527;
     transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   }
 
   .tutu-card-solid {
-    background-color: #3248C7;
-    border: 1px solid rgba(255, 250, 245, 0.15);
+    background-color: #10271D;
+    border: 1px solid rgba(57, 123, 85, 0.45);
     border-radius: 1rem;
   }
 
   .tutu-card-light {
-    background-color: #FFFAF5;
-    color: #05001A;
+    background-color: #FFFFFF;
+    color: #071812;
     border-radius: 1rem;
   }
 
-  .btn-tutu-primary {
-    background-color: #3D5AFF;
-    color: #FFFAF5;
+  /* BOTÃO PRINCIPAL: Verde menta claro #C8FFD2, texto escuro de alto contraste #071812 */
+  .btn-tutu-lime,
+  .btn-tech-primary {
+    background-color: #C8FFD2;
+    color: #071812;
     font-weight: 600;
+    font-family: 'DM Sans', sans-serif;
     border-radius: 0.75rem;
-    transition: all 0.2s ease;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(200, 255, 210, 0.7);
   }
 
-  .btn-tutu-primary:hover:not(:disabled) {
-    background-color: #3248C7;
+  .btn-tutu-lime:hover:not(:disabled),
+  .btn-tech-primary:hover:not(:disabled) {
+    background-color: #E8FFF0;
     transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(200, 255, 210, 0.4);
   }
 
-  .btn-tutu-lime {
-    background-color: #D0FF00;
-    color: #05001A;
-    font-weight: 700;
+  .btn-tutu-lime:active:not(:disabled),
+  .btn-tech-primary:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .btn-tutu-lime:disabled,
+  .btn-tech-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* BOTÃO DE MAIOR DESTAQUE: Verde menta ultraclaro #E8FFF0, texto #071812 */
+  .btn-bright,
+  .btn-tech-highlight {
+    background-color: #E8FFF0;
+    color: #071812;
+    font-weight: 600;
+    font-family: 'DM Sans', sans-serif;
     border-radius: 0.75rem;
-    transition: all 0.2s ease;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 2px 8px rgba(232, 255, 240, 0.3);
+    border: 1px solid #FFFFFF;
   }
 
-  .btn-tutu-lime:hover:not(:disabled) {
-    filter: brightness(0.95);
+  .btn-bright:hover:not(:disabled),
+  .btn-tech-highlight:hover:not(:disabled) {
+    background-color: #FFFFFF;
     transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(232, 255, 240, 0.5);
   }
 
-  .btn-tutu-outline {
+  .btn-bright:active:not(:disabled),
+  .btn-tech-highlight:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  /* BOTÃO SECUNDÁRIO: Fundo verde profundo #10271D, texto branco #FFFFFF, borda verde médio #397B55 */
+  .btn-tutu-primary,
+  .btn-tech-secondary {
+    background-color: #10271D;
+    color: #FFFFFF;
+    font-weight: 600;
+    font-family: 'DM Sans', sans-serif;
+    border: 1px solid #397B55;
+    border-radius: 0.75rem;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .btn-tutu-primary:hover:not(:disabled),
+  .btn-tech-secondary:hover:not(:disabled) {
+    background-color: #163527;
+    border-color: #C8FFD2;
+    color: #FFFFFF;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  }
+
+  .btn-tutu-primary:active:not(:disabled),
+  .btn-tech-secondary:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .btn-tutu-primary:disabled,
+  .btn-tech-secondary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* BOTÃO DE CONTORNO: Fundo transparente, borda #397B55, texto branco #FFFFFF */
+  .btn-tutu-outline,
+  .btn-tech-outline {
     background-color: transparent;
-    color: #FFFAF5;
-    border: 1px solid rgba(255, 250, 245, 0.28);
+    color: #FFFFFF;
+    border: 1px solid #397B55;
     font-weight: 600;
+    font-family: 'DM Sans', sans-serif;
     border-radius: 0.75rem;
-    transition: all 0.2s ease;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .btn-tutu-outline:hover:not(:disabled) {
-    border-color: #3D5AFF;
-    background-color: rgba(61, 90, 255, 0.12);
+  .btn-tutu-outline:hover:not(:disabled),
+  .btn-tech-outline:hover:not(:disabled) {
+    background-color: #10271D;
+    border-color: #C8FFD2;
+    color: #FFFFFF;
+    transform: translateY(-1px);
   }
 
-  .input-tutu {
-    background-color: rgba(5, 0, 26, 0.75);
-    border: 1px solid rgba(50, 72, 199, 0.55);
-    color: #FFFAF5;
+  .btn-tutu-outline:active:not(:disabled),
+  .btn-tech-outline:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .btn-tutu-outline:disabled,
+  .btn-tech-outline:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* CAMPOS DE FORMULÁRIO */
+  .input-tutu,
+  .tech-input {
+    background-color: #071812;
+    border: 1px solid rgba(57, 123, 85, 0.5);
+    color: #FFFFFF;
     border-radius: 0.75rem;
     padding: 0.75rem 1rem;
     min-height: 2.75rem;
     width: 100%;
     max-width: 100%;
-    transition: border-color 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
 
-  .input-tutu:focus {
+  .input-tutu:focus,
+  .tech-input:focus {
     outline: none;
-    border-color: #3D5AFF;
-    box-shadow: 0 0 0 2px rgba(61, 90, 255, 0.25);
+    border-color: #C8FFD2;
+    box-shadow: 0 0 0 2px rgba(200, 255, 210, 0.25);
+  }
+
+  .input-tutu::placeholder,
+  .tech-input::placeholder {
+    color: #D0DED4;
+    opacity: 0.75;
   }
 }
 
-/* Áreas de toque confortáveis (~44-48px) em telas touch sem afetar o desktop */
+/* Áreas de toque confortáveis (~44-48px) em telas touch */
 @media (pointer: coarse) {
   .input-tutu,
-  select.input-tutu {
+  select.input-tutu,
+  .tech-input {
     min-height: 3rem;
-    font-size: 16px; /* Evita zoom automático indesejado no iOS Safari ao focar inputs */
+    font-size: 16px;
   }
 }
 
@@ -151,8 +261,12 @@
   }
 
   .tutu-card-hover:hover,
+  .tech-card-hover:hover,
   .btn-tutu-primary:hover:not(:disabled),
-  .btn-tutu-lime:hover:not(:disabled) {
+  .btn-tutu-lime:hover:not(:disabled),
+  .btn-tech-primary:hover:not(:disabled),
+  .btn-tech-secondary:hover:not(:disabled),
+  .btn-bright:hover:not(:disabled) {
     transform: none !important;
   }
 }
@@ -163,12 +277,13 @@
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #05001A;
+  background: #071812;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3248C7;
+  background: #10271D;
+  border: 1px solid #397B55;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3D5AFF;
+  background: #397B55;
 }

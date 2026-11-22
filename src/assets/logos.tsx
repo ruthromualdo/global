@@ -12,10 +12,10 @@ export const TutuBrandMark: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 
   return (
     <div className="inline-flex items-center gap-2 sm:gap-2.5 select-none">
       <div
-        className={`${pillDimensions} rounded-xl bg-tutu-blue border border-tutu-lime/50 flex items-center justify-center font-display font-bold tracking-wide text-tutu-light shadow-sm`}
+        className={`${pillDimensions} rounded-xl bg-tutu-secondary border border-tutu-blue/60 flex items-center justify-center font-display font-bold tracking-wide text-[#FFFFFF] shadow-sm`}
       >
-        <span className="mr-1.5 w-2 h-2 rounded-full bg-tutu-lime inline-block" />
-        <span>EX-DEVEDOR + TUTU</span>
+        <span className="mr-1.5 w-2 h-2 rounded-full bg-[#C8FFD2] inline-block shadow-sm" />
+        <span>DESAFIO GLOBAL 2026</span>
       </div>
     </div>
   );
@@ -29,27 +29,27 @@ export const StartupAvatarBadge: React.FC<{ logoText: string; isGuest?: boolean 
 
   if (normalized.includes('TUTU')) {
     return (
-      <div className="w-12 h-12 rounded-2xl bg-tutu-blue border border-tutu-lime/50 flex flex-col items-center justify-center text-tutu-light shrink-0">
-        <Sparkles className="w-4 h-4 text-tutu-lime mb-0.5" />
-        <span className="font-display font-bold text-[11px] tracking-wider">TUTU</span>
+      <div className="w-12 h-12 rounded-2xl bg-tutu-secondary border border-[#C8FFD2]/60 flex flex-col items-center justify-center text-[#FFFFFF] shrink-0">
+        <Sparkles className="w-4 h-4 text-[#C8FFD2] mb-0.5" />
+        <span className="font-display font-bold text-[11px] tracking-wider text-[#FFFFFF]">TUTU</span>
       </div>
     );
   }
 
   if (normalized.includes('ESCREVE')) {
     return (
-      <div className="w-12 h-12 rounded-2xl bg-tutu-secondary border border-tutu-light/25 flex flex-col items-center justify-center text-tutu-light shrink-0">
-        <Feather className="w-4 h-4 text-tutu-lime mb-0.5" />
-        <span className="font-display font-bold text-[10px] tracking-wider">LAB</span>
+      <div className="w-12 h-12 rounded-2xl bg-tutu-secondary border border-tutu-blue/60 flex flex-col items-center justify-center text-[#FFFFFF] shrink-0">
+        <Feather className="w-4 h-4 text-[#C8FFD2] mb-0.5" />
+        <span className="font-display font-bold text-[10px] tracking-wider text-[#FFFFFF]">LAB</span>
       </div>
     );
   }
 
   if (normalized.includes('FUTURIZE')) {
     return (
-      <div className="w-12 h-12 rounded-2xl bg-tutu-dark border border-tutu-blue flex flex-col items-center justify-center text-tutu-light shrink-0">
-        <Orbit className="w-4 h-4 text-tutu-lime mb-0.5" />
-        <span className="font-display font-bold text-[10px] tracking-wider">FUTUR</span>
+      <div className="w-12 h-12 rounded-2xl bg-tutu-secondary border border-tutu-blue/60 flex flex-col items-center justify-center text-[#FFFFFF] shrink-0">
+        <Orbit className="w-4 h-4 text-[#C8FFD2] mb-0.5" />
+        <span className="font-display font-bold text-[10px] tracking-wider text-[#FFFFFF]">FUTUR</span>
       </div>
     );
   }
@@ -57,11 +57,11 @@ export const StartupAvatarBadge: React.FC<{ logoText: string; isGuest?: boolean 
   return (
     <div
       className={`w-12 h-12 rounded-2xl ${
-        isGuest ? 'bg-tutu-dark border-dashed border-2 border-tutu-lime/60' : 'bg-tutu-secondary'
-      } flex flex-col items-center justify-center text-tutu-light shrink-0`}
+        isGuest ? 'bg-tutu-dark border-dashed border-2 border-[#C8FFD2]/60' : 'bg-tutu-secondary border border-tutu-blue/50'
+      } flex flex-col items-center justify-center text-[#FFFFFF] shrink-0`}
     >
-      <Cpu className="w-4 h-4 text-tutu-lime mb-0.5" />
-      <span className="font-display font-bold text-[10px] tracking-wider">
+      <Cpu className="w-4 h-4 text-[#C8FFD2] mb-0.5" />
+      <span className="font-display font-bold text-[10px] tracking-wider text-[#FFFFFF]">
         {logoText.slice(0, 5)}
       </span>
     </div>

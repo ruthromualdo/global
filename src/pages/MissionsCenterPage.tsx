@@ -1,46 +1,30 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
+  ArrowRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
-  Filter,
+  Crown,
   HelpCircle,
-  Lock,
+  History,
   Play,
   QrCode,
   Send,
   Sparkles,
+  Trophy,
   Zap,
 } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
-import { Mission, MissionCategory, MissionStatus } from '../types';
+import { Mission } from '../types';
 import { CategoryPill, MissionStatusBadge } from '../components/UI';
 import { MissionTimer } from '../components/MissionTimer';
-import { GlobalPointsIndicator } from '../components/GlobalPointsIndicator';
 import { formatPoints } from '../utils/formatters';
-
-const CATEGORIES: ('Todas' | MissionCategory)[] = [
-  'Todas',
-  'Visitação',
-  'Experimentação',
-  'Quiz',
-  'Compartilhamento',
-  'Missão surpresa',
-];
-
-const STATUSES: ('Todos' | MissionStatus)[] = [
-  'Todos',
-  'Disponível',
-  'Em andamento',
-  'Aguardando validação',
-  'Concluída',
-  'Bloqueada',
-];
 
 export const MissionsCenterPage: React.FC = () => {
   const {
     missions,
-    startups,
     startMission,
     completeMissionInstant,
     submitMissionEvidence,
@@ -48,28 +32,31 @@ export const MissionsCenterPage: React.FC = () => {
   } = useAppStore();
   const navigate = useNavigate();
 
-  const [selectedCategory, setSelectedCategory] = useState<'Todas' | MissionCategory>('Todas');
-  const [selectedStartupId, setSelectedStartupId] = useState<string>('Todas');
-  const [selectedStatus, setSelectedStatus] = useState<'Todos' | MissionStatus>('Todos');
-
-  // Interactive Modal for Quiz or Evidence Submission
+  // Estados de modais interativos (Quiz / Evidência)
   const [activeQuizMission, setActiveQuizMission] = useState<Mission | null>(null);
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
   const [evidenceMission, setEvidenceMission] = useState<Mission | null>(null);
   const [evidenceText, setEvidenceText] = useState('');
+  const [showCompletedHistory, setShowCompletedHistory] = useState(false);
 
-  const filteredMissions = missions
-    .filter((m) => m.active)
-    .filter((m) => (selectedCategory === 'Todas' ? true : m.category === selectedCategory))
-    .filter((m) => (selectedStartupId === 'Todas' ? true : m.startupId === selectedStartupId))
-    .filter((m) => (selectedStatus === 'Todos' ? true : m.status === selectedStatus));
+  // Missões sequenciais oficiais do circuito (1: Tutu, 2: Escreve Lab, 3: Futurize, 4: Startup Convidada)
+  const sequentialMissions = missions
+    .filter((m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined && m.active)
+    .sort((a, b) => (a.sequenceOrder || 0) - (b.sequenceOrder || 0));
+
+  // A missão ativa atual é a primeira da sequência cujo status NÃO seja 'Concluída'
+  const currentMission = sequentialMissions.find((m) => m.status !== 'Concluída') || null;
+  const isAllCompleted =
+    sequentialMissions.length > 0 &&
+    sequentialMissions.every((m) => m.status === 'Concluída');
+  const completedMissions = sequentialMissions.filter((m) => m.status === 'Concluída');
 
   const handleActionClick = (mission: Mission) => {
     if (mission.status === 'Bloqueada') {
       notify(
         'Missão Bloqueada',
-        `Conclua mais missões nas startups expositoras para desbloquear "${mission.title}".`,
-        'info'
+        `Conclua a missão anterior da sequência para desbloquear "${mission.title}".`,
+        'error'
       );
       return;
     }
@@ -137,244 +124,320 @@ export const MissionsCenterPage: React.FC = () => {
     <div className="space-y-6 sm:space-y-8">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div className="space-y-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-            Circuito Gamificado
-          </span>
+        <div className="space-y-1.5 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
+              Circuito Gamificado • Etapa 5
+            </span>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-tutu-secondary/30 text-tutu-light/80 text-[11px] font-semibold border border-tutu-secondary/40">
+              <span>Sequência Obrigatória</span>
+            </span>
+          </div>
           <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
             Central de Missões
           </h1>
-          <p className="text-xs sm:text-sm text-tutu-light/80">
-            Filtre por categoria, startup ou status e execute as atividades para acumular pontos.
+          <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed max-w-3xl">
+            Avance progressivamente pelas 4 missões oficiais das startups expositoras. Cada desafio completado desbloqueia automaticamente o próximo da jornada.
           </p>
+        </div>
+
+        {/* Status Badge no Header */}
+        <div className="px-3.5 py-2 rounded-xl bg-tutu-secondary/25 border border-tutu-secondary/50 text-xs text-tutu-light/85 flex items-center gap-2 self-start sm:self-auto shrink-0">
+          <Sparkles className="w-4 h-4 text-tutu-lime shrink-0" />
+          <span>
+            {isAllCompleted
+              ? 'Circuito 100% Concluído'
+              : `Missão ${currentMission?.sequenceOrder || (completedMissions.length + 1)} de ${sequentialMissions.length || 4}`}
+          </span>
         </div>
       </div>
 
-      {/* Indicador Global de Pontuação (Etapa 4) */}
-      <GlobalPointsIndicator variant="compact" className="tutu-card p-4 sm:p-5" />
-
-      {/* Filters Bar */}
-      <div className="tutu-card p-4 sm:p-5 space-y-4">
-        <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-tutu-lime">
-          <Filter className="w-4 h-4 shrink-0" />
-          <span>Filtros Inteligentes</span>
-        </div>
-
-        {/* Category Pills */}
-        <div className="flex flex-wrap gap-2">
-          {CATEGORIES.map((cat) => (
-            <button
-              key={cat}
-              onClick={() => setSelectedCategory(cat)}
-              className={`min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${
-                selectedCategory === cat
-                  ? 'bg-tutu-lime text-tutu-dark font-bold shadow-sm'
-                  : 'bg-tutu-dark/70 text-tutu-light/80 hover:text-tutu-light border border-tutu-secondary/40'
-              }`}
-            >
-              {cat}
-            </button>
-          ))}
-        </div>
-
-        {/* Startup & Status Selectors */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 pt-2 border-t border-tutu-secondary/30">
-          <div>
-            <label
-              htmlFor="filter-startup"
-              className="block text-xs text-tutu-light/75 mb-1.5 font-medium"
-            >
-              Filtrar por Startup Expositora
-            </label>
-            <select
-              id="filter-startup"
-              value={selectedStartupId}
-              onChange={(e) => setSelectedStartupId(e.target.value)}
-              className="input-tutu text-xs py-2.5"
-            >
-              <option value="Todas">Todas as Startups ({startups.length})</option>
-              {startups.map((st) => (
-                <option key={st.id} value={st.id}>
-                  {st.name}
-                </option>
-              ))}
-            </select>
+      {/* Indicador Compacto de Progresso (Sem cartões ou detalhes de missões futuras) */}
+      <div className="tutu-card p-4 sm:p-5 border border-tutu-secondary/40 bg-tutu-dark/70">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-tutu-lime/10 border border-tutu-lime/30 flex items-center justify-center shrink-0">
+              <Sparkles className="w-5 h-5 text-tutu-lime" />
+            </div>
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider text-tutu-light/60 block">
+                Progresso do Circuito
+              </span>
+              <p className="text-base sm:text-lg font-bold text-tutu-light">
+                {isAllCompleted
+                  ? 'Circuito 100% Concluído'
+                  : `Missão ${currentMission?.sequenceOrder || (completedMissions.length + 1)} de ${sequentialMissions.length || 4}`}
+              </p>
+            </div>
           </div>
 
-          <div>
-            <label
-              htmlFor="filter-status"
-              className="block text-xs text-tutu-light/75 mb-1.5 font-medium"
-            >
-              Filtrar por Status da Missão
-            </label>
-            <select
-              id="filter-status"
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value as 'Todos' | MissionStatus)}
-              className="input-tutu text-xs py-2.5"
-            >
-              {STATUSES.map((st) => (
-                <option key={st} value={st}>
-                  {st}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-3 w-full sm:w-72">
+            <div className="flex-1 bg-tutu-secondary/30 rounded-full h-2.5 overflow-hidden p-0.5 border border-tutu-secondary/40">
+              <div
+                className="bg-tutu-lime h-full rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(208,255,0,0.5)]"
+                style={{
+                  width: `${(completedMissions.length / Math.max(1, sequentialMissions.length || 4)) * 100}%`,
+                }}
+              />
+            </div>
+            <span className="text-xs font-mono font-bold text-tutu-lime shrink-0">
+              {completedMissions.length} de {sequentialMissions.length || 4} concluídas
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Missions Grid: 1 col mobile, 2 cols tablet/md, 3 cols desktop xl */}
-      {filteredMissions.length === 0 ? (
-        <div className="tutu-card p-8 sm:p-10 text-center space-y-3">
-          <Sparkles className="w-8 h-8 text-tutu-lime mx-auto" />
-          <h3 className="font-display font-bold text-xl text-tutu-light">
-            Nenhuma missão encontrada com estes filtros
-          </h3>
-          <p className="text-xs text-tutu-light/75">
-            Experimente limpar os filtros selecionados para visualizar todas as missões do evento.
-          </p>
-          <button
-            onClick={() => {
-              setSelectedCategory('Todas');
-              setSelectedStartupId('Todas');
-              setSelectedStatus('Todos');
-            }}
-            className="min-h-[44px] px-4 py-2 rounded-xl btn-tutu-primary text-xs"
-          >
-            Restaurar Filtros
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5 sm:gap-6">
-          {filteredMissions.map((mission) => (
-            <div
-              key={mission.id}
-              className={`tutu-card p-5 sm:p-6 flex flex-col justify-between space-y-5 ${mission.status === 'Bloqueada' ? 'opacity-70' : 'tutu-card-hover'
-                }`}
+      {/* CASO 1: CIRCUITO 100% CONCLUÍDO */}
+      {isAllCompleted ? (
+        <div className="tutu-card p-6 sm:p-10 text-center space-y-5 sm:space-y-6 border-2 border-tutu-lime bg-tutu-secondary/30 shadow-2xl">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-3xl bg-tutu-lime/20 border-2 border-tutu-lime flex items-center justify-center text-tutu-lime mx-auto shadow-lg">
+            <Trophy className="w-8 h-8 sm:w-10 sm:h-10" />
+          </div>
+
+          <div className="space-y-2 max-w-2xl mx-auto">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
+              <Crown className="w-3.5 h-3.5 shrink-0" />
+              <span>Circuito Oficial Completo</span>
+            </div>
+            <h2 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
+              Parabéns! Você concluiu todas as 4 missões!
+            </h2>
+            <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
+              Você completou com sucesso a jornada pelas quatro startups expositoras (Tutu, Escreve Lab, Futurize e Startup Convidada). Todos os pontos-base e bônus de velocidade foram contabilizados no seu saldo oficial.
+            </p>
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+            <Link
+              to="/app/ranking"
+              className="min-h-[46px] w-full sm:w-auto px-6 py-2.5 rounded-xl btn-tutu-lime text-xs font-bold flex items-center justify-center gap-2"
             >
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                    <CategoryPill category={mission.category} />
-                    <span className="text-xs text-tutu-light/70 font-medium truncate">
-                      • {mission.startupName}
-                    </span>
-                  </div>
-                  <MissionStatusBadge status={mission.status} />
+              <Trophy className="w-4 h-4 shrink-0" />
+              <span>Ver Minha Posição no Ranking</span>
+            </Link>
+            <Link
+              to="/app/perfil"
+              className="min-h-[46px] w-full sm:w-auto px-6 py-2.5 rounded-xl btn-tutu-outline text-xs font-semibold flex items-center justify-center gap-2"
+            >
+              <span>Ver Perfil e Conquistas</span>
+              <ArrowRight className="w-4 h-4 shrink-0" />
+            </Link>
+          </div>
+        </div>
+      ) : currentMission ? (
+        /* CASO 2: EXIBIÇÃO DE APENAS UMA MISSÃO POR VEZ (A ATUAL LIBERADA) */
+        <div className="space-y-4">
+          <div className="tutu-card p-6 sm:p-8 space-y-6 border-2 border-tutu-lime bg-tutu-secondary/20 shadow-xl relative overflow-hidden">
+            {/* Top Bar da Missão Atual */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
+                  Missão Ativa • Missão {currentMission.sequenceOrder} de {sequentialMissions.length || 4}
+                </span>
+                <CategoryPill category={currentMission.category} />
+                <span className="text-xs text-tutu-light/80 font-semibold">
+                  • {currentMission.startupName}
+                </span>
+              </div>
+              <MissionStatusBadge status={currentMission.status} />
+            </div>
+
+            {/* Título & Descrição Nobres */}
+            <div className="space-y-2">
+              <h2 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
+                {currentMission.title}
+              </h2>
+              <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed max-w-4xl">
+                {currentMission.description}
+              </p>
+            </div>
+
+            {/* Recompensas e Informações */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 sm:p-4 rounded-2xl bg-tutu-dark/80 border border-tutu-secondary/50 text-xs">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-tutu-lime/15 text-tutu-lime flex items-center justify-center shrink-0 border border-tutu-lime/30">
+                  <Zap className="w-4 h-4 fill-tutu-lime" />
                 </div>
-
-                <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light">
-                  {mission.title}
-                </h2>
-                <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
-                  {mission.description}
-                </p>
+                <div>
+                  <span className="text-[11px] text-tutu-light/65 block">Pontuação de Conclusão</span>
+                  <span className="font-display font-bold text-sm text-tutu-lime">
+                    +{formatPoints(currentMission.points)}
+                  </span>
+                </div>
               </div>
 
-              <div className="space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 text-xs">
-                  <div className="flex items-center gap-3">
-                    <span className="inline-flex items-center gap-1 text-tutu-lime font-bold">
-                      <Zap className="w-4 h-4 shrink-0" />
-                      {formatPoints(mission.points)}
-                    </span>
-                    <span className="inline-flex items-center gap-1 text-tutu-light/80">
-                      <Clock className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
-                      {mission.estimatedTime}
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-tutu-light/65">{mission.period}</span>
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-tutu-blue/20 text-tutu-light flex items-center justify-center shrink-0 border border-tutu-blue/40">
+                  <Sparkles className="w-4 h-4 text-tutu-lime" />
                 </div>
-
-                {/* Cronômetro e Bônus de Velocidade (Etapa 3) */}
-                <MissionTimer
-                  status={mission.status}
-                  startedAtMs={mission.startedAtMs}
-                  durationSeconds={mission.durationSeconds}
-                  targetEndAtMs={mission.targetEndAtMs}
-                  serverTimeMs={mission.serverTimeMs}
-                  completedAtMs={mission.completedAtMs}
-                  elapsedSeconds={mission.elapsedSeconds}
-                  speedBonusAwarded={mission.speedBonusAwarded}
-                />
-
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <span className="text-[11px] text-tutu-light/70 leading-snug">
-                    {mission.completionCriteria}
+                <div>
+                  <span className="text-[11px] text-tutu-light/65 block">Bônus por Velocidade</span>
+                  <span className="font-display font-bold text-sm text-tutu-lime">
+                    Até +50 pts extras
                   </span>
+                </div>
+              </div>
 
-                  <button
-                    onClick={() => handleActionClick(mission)}
-                    className={`min-h-[44px] w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shrink-0 ${mission.status === 'Concluída'
-                      ? 'bg-tutu-secondary/30 text-tutu-lime border border-tutu-lime/40'
-                      : mission.status === 'Bloqueada'
-                        ? 'bg-tutu-dark text-tutu-light/50 border border-tutu-light/15'
-                        : mission.status === 'Em andamento'
-                          ? 'btn-tutu-lime'
-                          : 'btn-tutu-primary'
-                      }`}
-                  >
-                    {mission.status === 'Concluída' && (
-                      <>
-                        <CheckCircle2 className="w-4 h-4 shrink-0" />
-                        <span>Concluída</span>
-                      </>
-                    )}
-                    {mission.status === 'Bloqueada' && (
-                      <>
-                        <Lock className="w-4 h-4 shrink-0" />
-                        <span>Bloqueada</span>
-                      </>
-                    )}
-                    {mission.status === 'Aguardando validação' && (
-                      <>
-                        <Send className="w-4 h-4 shrink-0" />
-                        <span>Reenviar Evidência</span>
-                      </>
-                    )}
-                    {mission.status === 'Disponível' && (
-                      <>
-                        <Play className="w-4 h-4 shrink-0" />
-                        <span>
-                          {mission.qrCodeRequired
-                            ? `Iniciar & Ler QR (${mission.qrCodeRequired})`
-                            : mission.category === 'Quiz'
-                              ? 'Iniciar Quiz'
-                              : 'Iniciar Missão'}
-                        </span>
-                      </>
-                    )}
-                    {mission.status === 'Em andamento' && (
-                      <>
-                        {mission.category === 'Quiz' ? (
-                          <>
-                            <HelpCircle className="w-4 h-4 shrink-0" />
-                            <span>Responder Quiz</span>
-                          </>
-                        ) : mission.category === 'Compartilhamento' ? (
-                          <>
-                            <Send className="w-4 h-4 shrink-0" />
-                            <span>Enviar Validação</span>
-                          </>
-                        ) : mission.qrCodeRequired ? (
-                          <>
-                            <QrCode className="w-4 h-4 shrink-0" />
-                            <span>Escanear QR ({mission.qrCodeRequired})</span>
-                          </>
-                        ) : (
-                          <>
-                            <Play className="w-4 h-4 shrink-0" />
-                            <span>Concluir Missão</span>
-                          </>
-                        )}
-                      </>
-                    )}
-                  </button>
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-tutu-dark text-tutu-light/80 flex items-center justify-center shrink-0 border border-tutu-secondary/40">
+                  <Clock className="w-4 h-4 text-tutu-lime" />
+                </div>
+                <div>
+                  <span className="text-[11px] text-tutu-light/65 block">Tempo Estimado</span>
+                  <span className="font-medium text-tutu-light">
+                    {currentMission.estimatedTime} ({currentMission.period})
+                  </span>
                 </div>
               </div>
             </div>
-          ))}
+
+            {/* Cronômetro e Bônus de Velocidade Integrado */}
+            <MissionTimer
+              status={currentMission.status}
+              startedAtMs={currentMission.startedAtMs}
+              durationSeconds={currentMission.durationSeconds}
+              targetEndAtMs={currentMission.targetEndAtMs}
+              serverTimeMs={currentMission.serverTimeMs}
+              completedAtMs={currentMission.completedAtMs}
+              elapsedSeconds={currentMission.elapsedSeconds}
+              speedBonusAwarded={currentMission.speedBonusAwarded}
+            />
+
+            {/* Critérios e Ação Principal */}
+            <div className="pt-4 border-t border-tutu-secondary/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-0.5 min-w-0 max-w-xl">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-tutu-lime block">
+                  Critério de Validação Oficial:
+                </span>
+                <p className="text-xs text-tutu-light/80 leading-relaxed">
+                  {currentMission.completionCriteria}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleActionClick(currentMission)}
+                className={`min-h-[48px] w-full sm:w-auto px-6 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shrink-0 transition-all shadow-md ${
+                  currentMission.status === 'Em andamento'
+                    ? 'btn-tutu-lime'
+                    : currentMission.status === 'Aguardando validação'
+                    ? 'bg-tutu-secondary/40 text-tutu-light border border-tutu-secondary/60'
+                    : 'btn-tutu-lime'
+                }`}
+              >
+                {currentMission.status === 'Disponível' && (
+                  <>
+                    <Play className="w-4 h-4 shrink-0 fill-current" />
+                    <span>
+                      {currentMission.qrCodeRequired
+                        ? `Iniciar Missão & Validar QR (${currentMission.qrCodeRequired})`
+                        : currentMission.category === 'Quiz'
+                        ? 'Iniciar Missão & Abrir Quiz'
+                        : 'Iniciar Missão Agora'}
+                    </span>
+                  </>
+                )}
+                {currentMission.status === 'Em andamento' && (
+                  <>
+                    {currentMission.category === 'Quiz' ? (
+                      <>
+                        <HelpCircle className="w-4 h-4 shrink-0" />
+                        <span>Responder Quiz Interativo</span>
+                      </>
+                    ) : currentMission.category === 'Compartilhamento' ? (
+                      <>
+                        <Send className="w-4 h-4 shrink-0" />
+                        <span>Enviar Registro de Evidência</span>
+                      </>
+                    ) : currentMission.qrCodeRequired ? (
+                      <>
+                        <QrCode className="w-4 h-4 shrink-0" />
+                        <span>Escanear QR Code ({currentMission.qrCodeRequired})</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>Confirmar Conclusão da Missão</span>
+                      </>
+                    )}
+                  </>
+                )}
+                {currentMission.status === 'Aguardando validação' && (
+                  <>
+                    <Send className="w-4 h-4 shrink-0" />
+                    <span>Evidência Enviada • Aguardando Validação</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Histórico Discreto de Missões Concluídas (Colapsável) */}
+      {completedMissions.length > 0 && (
+        <div className="tutu-card overflow-hidden border border-tutu-secondary/35 bg-tutu-dark/50">
+          <button
+            type="button"
+            onClick={() => setShowCompletedHistory((prev) => !prev)}
+            className="w-full p-4 flex items-center justify-between text-left text-xs font-semibold text-tutu-light hover:bg-tutu-secondary/20 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <History className="w-4 h-4 text-tutu-lime shrink-0" />
+              <span>
+                Histórico de Missões Concluídas ({completedMissions.length} de {sequentialMissions.length})
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 text-tutu-light/60">
+              <span className="text-[11px]">
+                {showCompletedHistory ? 'Recolher' : 'Exibir'}
+              </span>
+              {showCompletedHistory ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </div>
+          </button>
+
+          {showCompletedHistory && (
+            <div className="divide-y divide-tutu-secondary/30 border-t border-tutu-secondary/30 p-2 sm:p-3 bg-tutu-dark/80">
+              {completedMissions.map((m) => (
+                <div
+                  key={m.id}
+                  className="p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl hover:bg-tutu-secondary/15 transition-colors"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="w-7 h-7 rounded-lg bg-tutu-lime/20 text-tutu-lime border border-tutu-lime/40 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-4 h-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <h4 className="text-xs sm:text-sm font-semibold text-tutu-light truncate">
+                        Etapa {m.sequenceOrder}: {m.title}
+                      </h4>
+                      <p className="text-[11px] text-tutu-light/60 truncate">
+                        {m.startupName} • {m.completionCriteria}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0 self-end sm:self-auto text-xs">
+                    <span className="text-tutu-lime font-bold">
+                      +{formatPoints(m.points)}
+                    </span>
+                    {m.speedBonusAwarded ? (
+                      <span className="px-2 py-0.5 rounded bg-tutu-lime/10 text-tutu-lime text-[10px] font-bold border border-tutu-lime/30">
+                        +{m.speedBonusAwarded} bônus
+                      </span>
+                    ) : null}
+                    <span className="px-2 py-0.5 rounded-full bg-tutu-secondary/30 text-tutu-light/75 text-[10px]">
+                      Concluída
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -412,10 +475,11 @@ export const MissionsCenterPage: React.FC = () => {
                     {q.options.map((opt, optIdx) => (
                       <label
                         key={optIdx}
-                        className={`flex items-start gap-3 p-3 rounded-lg border text-xs cursor-pointer transition-colors ${quizAnswers[qIdx] === optIdx
-                          ? 'bg-tutu-blue/30 border-tutu-lime text-tutu-light font-semibold'
-                          : 'bg-tutu-dark/50 border-tutu-secondary/30 text-tutu-light/80'
-                          }`}
+                        className={`flex items-start gap-3 p-3 rounded-lg border text-xs cursor-pointer transition-colors ${
+                          quizAnswers[qIdx] === optIdx
+                            ? 'bg-tutu-blue/30 border-tutu-lime text-tutu-light font-semibold'
+                            : 'bg-tutu-dark/50 border-tutu-secondary/30 text-tutu-light/80'
+                        }`}
                       >
                         <input
                           type="radio"
@@ -476,7 +540,7 @@ export const MissionsCenterPage: React.FC = () => {
                 required
                 value={evidenceText}
                 onChange={(e) => setEvidenceText(e.target.value)}
-                placeholder="Ex.: Participei da dinâmica no estande da Futurize e compartilhei meu insight no mural"
+                placeholder="Ex.: Participei da dinâmica no estande e recebi a validação da equipe"
                 className="input-tutu text-xs"
               />
               <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 sm:gap-3">
