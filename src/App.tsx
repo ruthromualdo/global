@@ -23,7 +23,6 @@ import { MissionsCenterPage } from './pages/MissionsCenterPage';
 import { QRScannerPage } from './pages/QRScannerPage';
 import { StartupsPage } from './pages/StartupsPage';
 import { RankingPage } from './pages/RankingPage';
-import { AchievementsPage } from './pages/AchievementsPage';
 import { ProfilePage } from './pages/ProfilePage';
 
 import { AdminLoginPage } from './pages/admin/AdminLoginPage';
@@ -83,14 +82,6 @@ export const App: React.FC = () => {
             />
             <Route path="startups" element={<StartupsPage />} />
             <Route path="ranking" element={<RankingPage />} />
-            <Route
-              path="conquistas"
-              element={
-                <RequireParticipantRoute>
-                  <AchievementsPage />
-                </RequireParticipantRoute>
-              }
-            />
             <Route
               path="perfil"
               element={

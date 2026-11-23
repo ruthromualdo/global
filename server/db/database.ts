@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  initialAchievements,
   initialEventSettings,
   initialGovernancePlans,
   initialMissions,
@@ -11,7 +10,6 @@ import {
   initialStartups,
 } from '../../src/mocks/mockData';
 import {
-  Achievement,
   AdminDashboardMetrics,
   EventSettings,
   GovernancePlan,
@@ -29,10 +27,35 @@ import { hashPassword } from '../security/auth';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const DB_FILE_PATH = path.join(__dirname, 'desafio_global.sqlite');
+export const DB_FILE_PATH = process.env.DESAFIO_DB_PATH
+  ? path.resolve(process.env.DESAFIO_DB_PATH)
+  : path.join(__dirname, 'desafio_global.sqlite');
 const SCHEMA_FILE_PATH = path.join(__dirname, 'schema.sql');
 
 export const db = new DatabaseSync(DB_FILE_PATH);
+
+let isDatabaseClosed = false;
+
+export function closeDatabaseGracefully(): { checkpointed: boolean; closed: boolean } {
+  if (isDatabaseClosed) {
+    return { checkpointed: true, closed: true };
+  }
+  let checkpointed = false;
+  try {
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    checkpointed = true;
+  } catch (err) {
+    console.error('[SQLite] Aviso ao executar wal_checkpoint(TRUNCATE) no encerramento:', err);
+  }
+  try {
+    db.close();
+    isDatabaseClosed = true;
+    return { checkpointed, closed: true };
+  } catch (err) {
+    console.error('[SQLite] Erro ao fechar conexão SQLite:', err);
+    return { checkpointed, closed: false };
+  }
+}
 
 export const MAX_PARTICIPANT_POINTS = 1000;
 export const MISSION_UNLOCK_POINTS = 20;
@@ -41,6 +64,10 @@ export const MISSION_MAX_SPEED_BONUS = 50;
 export const SEQUENTIAL_MISSION_IDS = ['ms-01', 'ms-04', 'ms-06', 'ms-08'] as const;
 
 export * from './circuitScoring';
+export * from './dailyRanking';
+export * from './evidenceStorage';
+import { ensureDailyRankingSchema, ensureDailyRankingsClosedUpTo } from './dailyRanking';
+import { ensureEvidenceStorageDir } from './evidenceStorage';
 
 export const DEFAULT_MISSION_TIMER_MINUTES = 5;
 export const MIN_MISSION_TIMER_MINUTES = 1;
@@ -117,6 +144,62 @@ export interface ParticipantPointsReservation {
  * 3. Missão concluída: não reserva pontos já creditados (desbloqueio e conclusão = 0); reserva bônus potencial restante.
  * 4. Saldo livre: MAX (0, 1.000 - pontosAtuais - totalReservado).
  */
+/**
+ * Verifica se uma transação específica foi estornada por lançamento compensatório
+ * de simulação (`REVERSAL_SIMULATION:<participantId>:<transactionId>`).
+ */
+export function isTransactionReversedBySimulation(
+  participantId: string,
+  transactionId: string,
+  targetDb: DatabaseSync = db
+): boolean {
+  const reversal = targetDb
+    .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+    .get(`REVERSAL_SIMULATION:${participantId}:${transactionId}`) as { id: string } | undefined;
+  return Boolean(reversal);
+}
+
+/**
+ * Consulta uma transação ativa (não estornada por REVERSAL_SIMULATION) por uma lista
+ * de chaves candidatas (por exemplo, a chave base e a chave pós-estorno).
+ */
+export function findActiveTransactionByEventKeys(
+  participantId: string,
+  eventKeys: string[],
+  targetDb: DatabaseSync = db
+): { id: string; points_delta: number; event_key: string } | undefined {
+  const stmt = targetDb.prepare(
+    'SELECT id, points_delta, event_key FROM points_transactions WHERE event_key = ? LIMIT 1'
+  );
+  for (const key of eventKeys) {
+    const tx = stmt.get(key) as { id: string; points_delta: number; event_key: string } | undefined;
+    if (tx && !isTransactionReversedBySimulation(participantId, tx.id, targetDb)) {
+      return tx;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a próxima chave de evento idempotente disponível para emissão de crédito,
+ * preservando chaves históricas estornadas sem violar UNIQUE(event_key).
+ */
+export function resolveNextIdempotentEventKey(
+  participantId: string,
+  baseEventKey: string,
+  postReversalEventKey: string = `${baseEventKey}:POST_SIM_REV`,
+  targetDb: DatabaseSync = db
+): string {
+  const existingBase = targetDb
+    .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+    .get(baseEventKey) as { id: string } | undefined;
+
+  if (existingBase && isTransactionReversedBySimulation(participantId, existingBase.id, targetDb)) {
+    return postReversalEventKey;
+  }
+  return baseEventKey;
+}
+
 export function calculateParticipantReservedPoints(
   participantId: string
 ): ParticipantPointsReservation {
@@ -157,22 +240,26 @@ export function calculateParticipantReservedPoints(
     const pm = pmByMissionId.get(m.id);
     const seq = Number(m.sequence_order);
 
-    const unlockTx = db
-      .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-      .get(`UNLOCK:${participantId}:${m.id}`);
+    const unlockTx = findActiveTransactionByEventKeys(participantId, [
+      `UNLOCK:${participantId}:${m.id}`,
+      `UNLOCK:${participantId}:${m.id}:POST_SIM_REV`,
+    ]);
     const reversalTx = db
       .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
       .get(`REVERSAL:${participantId}:${m.id}`);
-    const validatedUnlockTx = db
-      .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-      .get(`UNLOCK_VALIDATED:${participantId}:${m.id}`);
-    const completeTx = db
-      .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-      .get(`COMPLETE:${participantId}:${m.id}`);
+    const validatedUnlockTx = findActiveTransactionByEventKeys(participantId, [
+      `UNLOCK_VALIDATED:${participantId}:${m.id}`,
+      `UNLOCK_VALIDATED:${participantId}:${m.id}:POST_SIM_REV`,
+    ]);
+    const completeTx = findActiveTransactionByEventKeys(participantId, [
+      `COMPLETE:${participantId}:${m.id}`,
+      `COMPLETE:${participantId}:${m.id}:POST_SIM_REV`,
+    ]);
 
-    // Etapa 6: O desbloqueio só é considerado efetivamente creditado se:
-    // a) Houver transação UNLOCK sem estorno REVERSAL correspondente, ou
-    // b) Houver transação UNLOCK_VALIDATED emitida no ato da validação, ou
+    // Etapa 6 + Reconhecimento de estorno de simulação:
+    // O desbloqueio só é considerado efetivamente creditado se:
+    // a) Houver transação UNLOCK ativa (não estornada por REVERSAL nem REVERSAL_SIMULATION), ou
+    // b) Houver transação UNLOCK_VALIDATED ativa (não estornada por REVERSAL_SIMULATION), ou
     // c) participant_missions já constar com unlock_points_awarded > 0
     const hasEffectiveUnlockPoints =
       (Boolean(unlockTx) && !Boolean(reversalTx)) ||
@@ -438,6 +525,8 @@ export function reconcileLegacyFirstMissionUnlockPointsInDb(): void {
  */
 export function initializeDatabase(): void {
   db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA synchronous = NORMAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA foreign_keys = ON;');
 
   const schemaSql = fs.readFileSync(SCHEMA_FILE_PATH, 'utf-8');
@@ -491,10 +580,10 @@ export function initializeDatabase(): void {
             INSERT INTO participants (
               id, name, nickname, email, password_hash, role, avatar, points,
               ranking_position, completed_missions_count, visited_startups_json,
-              unlocked_achievements_json, registered_at, status,
+              registered_at, status,
               show_nickname_in_public_ranking, allow_activity_notifications,
               share_startup_interests, is_current_session
-            ) VALUES (?, ?, ?, ?, ?, 'ADMIN', ?, 0, 1, 0, '[]', '[]', ?, 'Ativo', 1, 1, 0, 0)
+            ) VALUES (?, ?, ?, ?, ?, 'ADMIN', ?, 0, 1, 0, '[]', ?, 'Ativo', 1, 1, 0, 0)
           `).run(
             adminId,
             envAdminName,
@@ -599,31 +688,7 @@ export function initializeDatabase(): void {
       }
     }
 
-    // 4. Achievements
-    const achievementsCount = (
-      db.prepare('SELECT COUNT(*) as total FROM achievements').get() as { total: number }
-    ).total;
-    if (achievementsCount === 0) {
-      const insertAchievement = db.prepare(`
-        INSERT OR IGNORE INTO achievements (
-          id, name, description, unlock_condition, icon_name,
-          points_bonus, unlocked, unlocked_at, progress_current, progress_total
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, NULL, 0, ?)
-      `);
-      for (const a of initialAchievements) {
-        insertAchievement.run(
-          a.id,
-          a.name,
-          a.description,
-          a.unlockCondition,
-          a.iconName,
-          a.pointsBonus,
-          a.progressTotal
-        );
-      }
-    }
-
-    // 5. QR Codes
+    // 4. QR Codes
     const qrCount = (
       db.prepare('SELECT COUNT(*) as total FROM qr_codes').get() as { total: number }
     ).total;
@@ -780,7 +845,40 @@ export function initializeDatabase(): void {
       'default_mission_timer_minutes',
       'INTEGER NOT NULL DEFAULT 5'
     );
+    ensureColumnExists('participants', 'phone', 'TEXT');
+    ensureColumnExists('participants', 'image_publicity_consent', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumnExists('participants', 'image_publicity_consent_updated_at', 'TEXT');
+    ensureColumnExists('points_transactions', 'created_at_ms', 'INTEGER');
     ensureColumnExists('missions', 'timer_minutes', 'INTEGER');
+    ensureColumnExists('missions', 'requires_evidence', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumnExists('missions', 'evidence_type', 'TEXT');
+    ensureColumnExists('mission_completions', 'evidence_file_name', 'TEXT');
+    ensureColumnExists('mission_completions', 'evidence_stored_name', 'TEXT');
+    ensureColumnExists('mission_completions', 'evidence_mime_type', 'TEXT');
+    ensureColumnExists('mission_completions', 'evidence_size_bytes', 'INTEGER');
+    ensureColumnExists('mission_completions', 'evidence_sha256', 'TEXT');
+
+    // Índice único parcial para impedir mais de uma submissão ativa (Pendente/Aprovada) por participante e missão.
+    // Verifica previamente se existem duplicidades legadas para preservar histórico sem falhar inicialização.
+    const legacyActiveDuplicate = db
+      .prepare(
+        `SELECT participant_id, mission_id, COUNT(*) as total
+         FROM mission_completions
+         WHERE status IN ('Pendente', 'Aprovada')
+         GROUP BY participant_id, mission_id
+         HAVING total > 1
+         LIMIT 1`
+      )
+      .get() as { total: number } | undefined;
+
+    if (!legacyActiveDuplicate) {
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_completions_active_unique
+        ON mission_completions(participant_id, mission_id)
+        WHERE status IN ('Pendente', 'Aprovada');
+      `);
+    }
+
     ensureColumnExists('participant_missions', 'duration_seconds', 'INTEGER');
     ensureColumnExists('participant_missions', 'target_end_at_ms', 'INTEGER');
 
@@ -799,6 +897,9 @@ export function initializeDatabase(): void {
     recalculateRankingsInDb();
 
     db.exec('COMMIT;');
+    ensureDailyRankingSchema(db);
+    ensureDailyRankingsClosedUpTo(db);
+    ensureEvidenceStorageDir();
   } catch (err) {
     db.exec('ROLLBACK;');
     console.error('[SQLite] Erro ao verificar inicialização do banco:', err);
@@ -819,13 +920,13 @@ export function mapParticipantRow(row: Record<string, unknown>): Participant {
     name: String(row.name),
     nickname: String(row.nickname),
     email: String(row.email),
+    phone: row.phone ? String(row.phone) : null,
     role,
     avatar: String(row.avatar),
     points: Number(row.points),
     rankingPosition: Number(row.ranking_position),
     completedMissionsCount: Number(row.completed_missions_count),
     visitedStartupsIds: JSON.parse(String(row.visited_startups_json || '[]')),
-    unlockedAchievementIds: JSON.parse(String(row.unlocked_achievements_json || '[]')),
     registeredAt: String(row.registered_at),
     status: row.status as Participant['status'],
     privacyPreferences: {
@@ -833,6 +934,10 @@ export function mapParticipantRow(row: Record<string, unknown>): Participant {
       allowActivityNotifications: Boolean(row.allow_activity_notifications),
       shareStartupInterests: Boolean(row.share_startup_interests),
     },
+    imagePublicityConsent: Boolean(row.image_publicity_consent),
+    imagePublicityConsentUpdatedAt: row.image_publicity_consent_updated_at
+      ? String(row.image_publicity_consent_updated_at)
+      : null,
   };
 }
 
@@ -892,6 +997,13 @@ export function mapMissionRow(row: Record<string, unknown>): Mission {
       row.max_speed_bonus !== null && row.max_speed_bonus !== undefined
         ? Number(row.max_speed_bonus)
         : undefined,
+    requiresEvidence: Boolean(row.requires_evidence),
+    evidenceType:
+      row.evidence_type === 'photo' ||
+      row.evidence_type === 'file' ||
+      row.evidence_type === 'both'
+        ? row.evidence_type
+        : undefined,
   };
 }
 
@@ -923,6 +1035,13 @@ export function mapValidationRow(row: Record<string, unknown>): MissionCompletio
     submittedAt: String(row.submitted_at),
     evidenceDescription: String(row.evidence_description),
     evidenceCode: String(row.evidence_code),
+    evidenceFileName: row.evidence_file_name ? String(row.evidence_file_name) : undefined,
+    evidenceMimeType: row.evidence_mime_type ? String(row.evidence_mime_type) : undefined,
+    evidenceSizeBytes:
+      row.evidence_size_bytes !== null && row.evidence_size_bytes !== undefined
+        ? Number(row.evidence_size_bytes)
+        : undefined,
+    hasFile: Boolean(row.evidence_stored_name),
     pointsAwarded: Number(row.points_awarded),
     status: row.status as MissionCompletion['status'],
   };
@@ -940,51 +1059,6 @@ export function mapTransactionRow(row: Record<string, unknown>): PointsTransacti
     newBalance: Number(row.new_balance),
     createdAt: String(row.created_at),
   };
-}
-
-export function mapAchievementRow(row: Record<string, unknown>): Achievement {
-  return {
-    id: String(row.id),
-    name: String(row.name),
-    description: String(row.description),
-    unlockCondition: String(row.unlock_condition),
-    iconName: row.icon_name as Achievement['iconName'],
-    pointsBonus: Number(row.points_bonus),
-    unlocked: Boolean(row.unlocked),
-    unlockedAt: row.unlocked_at ? String(row.unlocked_at) : undefined,
-    progressCurrent: Number(row.progress_current),
-    progressTotal: Number(row.progress_total),
-  };
-}
-
-export function getParticipantAchievementsFromDb(participant: Participant): Achievement[] {
-  const rows = db.prepare('SELECT * FROM achievements').all() as Record<string, unknown>[];
-  return rows.map((row) => {
-    const base = mapAchievementRow(row);
-    const isUnlocked = participant.unlockedAchievementIds.includes(base.id);
-    let progressCurrent = 0;
-
-    if (base.id === 'ach-01') {
-      progressCurrent = Math.min(base.progressTotal, participant.completedMissionsCount);
-    } else if (base.id === 'ach-02') {
-      progressCurrent = Math.min(base.progressTotal, participant.visitedStartupsIds.length);
-    } else if (base.id === 'ach-03') {
-      progressCurrent = isUnlocked
-        ? base.progressTotal
-        : Math.min(base.progressTotal, participant.completedMissionsCount);
-    } else if (base.id === 'ach-04') {
-      progressCurrent = Math.min(base.progressTotal, participant.visitedStartupsIds.length);
-    } else if (base.id === 'ach-05') {
-      progressCurrent = Math.min(base.progressTotal, participant.points);
-    }
-
-    return {
-      ...base,
-      unlocked: isUnlocked,
-      unlockedAt: isUnlocked ? base.unlockedAt : undefined,
-      progressCurrent: isUnlocked ? base.progressTotal : progressCurrent,
-    };
-  });
 }
 
 export function mapEventSettingsRow(row: Record<string, unknown>): EventSettings {
@@ -1040,116 +1114,477 @@ export function getPublicRankingFromDb(currentUserId?: string): PublicRankingEnt
     .all() as Record<string, unknown>[];
   return rows.map((row) => {
     const p = mapParticipantRow(row);
-    const isCurrentUser = currentUserId
-      ? p.id === currentUserId
-      : Boolean(row.is_current_session);
+    const isCurrentUser = Boolean(currentUserId && p.id === currentUserId);
     return {
       position: p.rankingPosition,
       participantId: p.id,
       displayName: p.privacyPreferences.showNicknameInPublicRanking ? p.nickname : p.name,
       avatar: p.avatar,
       points: p.points,
-      medalsCount: p.unlockedAchievementIds.length,
       completedMissionsCount: p.completedMissionsCount,
       isCurrentUser,
     };
   });
 }
 
-export function getAdminMetricsFromDb(): AdminDashboardMetrics {
-  const totalParticipants = (
-    db
-      .prepare("SELECT COUNT(*) as total FROM participants WHERE UPPER(role) = 'PARTICIPANT'")
-      .get() as { total: number }
-  ).total;
-  const activeParticipants = (
-    db
-      .prepare(
-        "SELECT COUNT(*) as total FROM participants WHERE status = 'Ativo' AND UPPER(role) = 'PARTICIPANT'"
-      )
-      .get() as { total: number }
-  ).total;
-  const completedMissions = (
-    db
-      .prepare(
-        "SELECT COALESCE(SUM(completed_missions_count), 0) as total FROM participants WHERE UPPER(role) = 'PARTICIPANT'"
-      )
-      .get() as { total: number }
-  ).total;
+const OFFICIAL_EVENT_DAYS = [
+  { date: '2026-11-24', label: 'Dia 1 — 24/11 (Ter)' },
+  { date: '2026-11-25', label: 'Dia 2 — 25/11 (Qua)' },
+  { date: '2026-11-26', label: 'Dia 3 — 26/11 (Qui)' },
+] as const;
+
+const BRASILIA_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function formatMsToBrasiliaDate(ms: number): string | null {
+  if (!Number.isFinite(ms)) return null;
+  return BRASILIA_DATE_FORMATTER.format(new Date(ms));
+}
+
+export function parseStoredDateToBrasiliaIso(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+
+  // Formato pt-BR: "DD/MM/AAAA, HH:MM" ou "DD/MM/AAAA"
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (brMatch) {
+    const [, dd, mm, yyyy] = brMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Formato ISO com timezone explícito (Z ou ±HH:MM): converte para fuso America/Sao_Paulo
+  if (/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+    const parsedMs = Date.parse(text);
+    return Number.isNaN(parsedMs) ? null : formatMsToBrasiliaDate(parsedMs);
+  }
+
+  // Formato ISO sem timezone ("YYYY-MM-DD HH:MM:SS" ou "YYYY-MM-DD")
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const [, yyyy, mm, dd] = isoMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return null;
+}
+
+export function getAdminMetricsFromDb(
+  targetDb: DatabaseSync = db,
+  nowMs: number = Date.now()
+): AdminDashboardMetrics {
+  const allParticipantRows = (
+    targetDb
+      .prepare("SELECT * FROM participants WHERE UPPER(role) = 'PARTICIPANT'")
+      .all() as Record<string, unknown>[]
+  ).map(mapParticipantRow);
+
+  const participantIdSet = new Set<string>(allParticipantRows.map((p) => p.id));
+  const totalParticipants = allParticipantRows.length;
+
+  const completedMissions = allParticipantRows.reduce(
+    (acc, p) => acc + Number(p.completedMissionsCount || 0),
+    0
+  );
+  const totalPointsDistributed = allParticipantRows.reduce(
+    (acc, p) => acc + Number(p.points || 0),
+    0
+  );
   const qrCodesScanned = (
-    db.prepare('SELECT COALESCE(SUM(scans_count), 0) as total FROM qr_codes').get() as {
+    targetDb.prepare('SELECT COALESCE(SUM(scans_count), 0) as total FROM qr_codes').get() as {
       total: number;
     }
   ).total;
   const registeredStartups = (
-    db.prepare('SELECT COUNT(*) as total FROM startups').get() as { total: number }
-  ).total;
-  const totalPointsDistributed = (
-    db
-      .prepare(
-        "SELECT COALESCE(SUM(points), 0) as total FROM participants WHERE UPPER(role) = 'PARTICIPANT'"
-      )
-      .get() as { total: number }
+    targetDb.prepare('SELECT COUNT(*) as total FROM startups').get() as { total: number }
   ).total;
 
+  // Carrega missões, participant_missions, qr_scans, mission_completions e points_transactions (somente PARTICIPANT)
+  const missionsRows = targetDb
+    .prepare('SELECT id, title, startup_id, startup_name, category, points, active FROM missions')
+    .all() as {
+      id: string;
+      title: string;
+      startup_id: string;
+      startup_name: string;
+      category: string;
+      points: number;
+      active: number;
+    }[];
+  const missionById = new Map(missionsRows.map((m) => [m.id, m]));
+
+  const pmRows = targetDb
+    .prepare(`
+      SELECT pm.*
+      FROM participant_missions pm
+      INNER JOIN participants p ON p.id = pm.participant_id
+      WHERE UPPER(p.role) = 'PARTICIPANT'
+    `)
+    .all() as {
+      participant_id: string;
+      mission_id: string;
+      status: string;
+      started_at_ms: number | null;
+      completed_at_ms: number | null;
+      elapsed_seconds: number | null;
+      speed_bonus_awarded: number;
+      total_points_awarded: number;
+      target_end_at_ms: number | null;
+    }[];
+
+  const qrScanRows = targetDb
+    .prepare(`
+      SELECT qs.participant_id, qs.scanned_at, q.startup_id
+      FROM qr_scans qs
+      INNER JOIN participants p ON p.id = qs.participant_id
+      LEFT JOIN qr_codes q ON q.id = qs.qr_code_id
+      WHERE UPPER(p.role) = 'PARTICIPANT'
+    `)
+    .all() as { participant_id: string; scanned_at: string; startup_id: string | null }[];
+
+  const completionRows = targetDb
+    .prepare(`
+      SELECT mc.participant_id, mc.startup_id, mc.submitted_at
+      FROM mission_completions mc
+      INNER JOIN participants p ON p.id = mc.participant_id
+      WHERE UPPER(p.role) = 'PARTICIPANT'
+    `)
+    .all() as { participant_id: string; startup_id: string; submitted_at: string }[];
+
+  const txRows = targetDb
+    .prepare(`
+      SELECT pt.id, pt.participant_id, pt.source_type, pt.points_delta, pt.created_at, pt.event_key, pt.mission_id
+      FROM points_transactions pt
+      INNER JOIN participants p ON p.id = pt.participant_id
+      WHERE UPPER(p.role) = 'PARTICIPANT'
+    `)
+    .all() as {
+      id: string;
+      participant_id: string;
+      source_type: string;
+      points_delta: number;
+      created_at: string;
+      event_key: string | null;
+      mission_id: string | null;
+    }[];
+
+  // Identifica transações estornadas (Etapa 6 REVERSAL e REVERSAL_SIMULATION)
+  const legacyReversalKeys = new Set<string>();
+  const simulationReversedTxIds = new Set<string>();
+  for (const tx of txRows) {
+    if (!tx.event_key) continue;
+    if (tx.event_key.startsWith('REVERSAL:')) {
+      legacyReversalKeys.add(tx.event_key);
+    } else if (tx.event_key.startsWith('REVERSAL_SIMULATION:')) {
+      const parts = tx.event_key.split(':');
+      if (parts.length >= 3) {
+        simulationReversedTxIds.add(parts.slice(2).join(':'));
+      }
+    }
+  }
+
+  const isEffectivePositiveCredit = (tx: (typeof txRows)[number]): boolean => {
+    if (Number(tx.points_delta) <= 0) return false;
+    if (tx.event_key?.startsWith('REVERSAL')) return false;
+    if (simulationReversedTxIds.has(tx.id)) return false;
+    if (tx.event_key && tx.event_key.startsWith('UNLOCK:')) {
+      const suffix = tx.event_key.slice('UNLOCK:'.length);
+      if (legacyReversalKeys.has(`REVERSAL:${suffix}`)) return false;
+    }
+    return true;
+  };
+
+  // Helper para determinar se um registro de participant_missions expirou (nunca confunde Bloqueada com Expirada)
+  const isMissionExpired = (pm: (typeof pmRows)[number]): boolean => {
+    if (pm.status === 'Bloqueada') return false;
+    if (pm.target_end_at_ms === null || pm.target_end_at_ms === undefined) return false;
+    const targetEnd = Number(pm.target_end_at_ms);
+    if (pm.completed_at_ms !== null && pm.completed_at_ms !== undefined) {
+      return Number(pm.completed_at_ms) > targetEnd;
+    }
+    return pm.status !== 'Concluída' && nowMs > targetEnd;
+  };
+
+  // BLOCO 2: Participantes efetivamente ativos (com atividade real) vs inativos
+  const activeParticipantIds = new Set<string>();
+  for (const p of allParticipantRows) {
+    if (Number(p.points || 0) > 0 || Number(p.completedMissionsCount || 0) > 0) {
+      activeParticipantIds.add(p.id);
+    }
+  }
+  for (const pm of pmRows) {
+    if (pm.started_at_ms !== null || pm.status === 'Concluída') {
+      activeParticipantIds.add(pm.participant_id);
+    }
+  }
+  for (const scan of qrScanRows) {
+    if (participantIdSet.has(scan.participant_id)) {
+      activeParticipantIds.add(scan.participant_id);
+    }
+  }
+  for (const comp of completionRows) {
+    if (participantIdSet.has(comp.participant_id)) {
+      activeParticipantIds.add(comp.participant_id);
+    }
+  }
+
+  const activeParticipants = activeParticipantIds.size;
+  const inactiveParticipants = Math.max(0, totalParticipants - activeParticipants);
   const participationRate =
     totalParticipants > 0
       ? Number(((activeParticipants / totalParticipants) * 100).toFixed(1))
       : 0;
 
-  const startupsRows = db.prepare('SELECT id, name FROM startups').all() as {
+  // BLOCO 4: Indicadores globais de missões e cronômetros
+  let startedMissions = 0;
+  let completedOfficialMissions = 0;
+  let expiredMissions = 0;
+  let elapsedSum = 0;
+  let elapsedCount = 0;
+  let totalSpeedBonusAwarded = 0;
+
+  for (const pm of pmRows) {
+    if (pm.started_at_ms !== null) {
+      startedMissions += 1;
+    }
+    if (pm.status === 'Concluída') {
+      completedOfficialMissions += 1;
+      if (pm.elapsed_seconds !== null && Number(pm.elapsed_seconds) > 0) {
+        elapsedSum += Number(pm.elapsed_seconds);
+        elapsedCount += 1;
+      }
+    }
+    if (isMissionExpired(pm)) {
+      expiredMissions += 1;
+    }
+    totalSpeedBonusAwarded += Number(pm.speed_bonus_awarded || 0);
+  }
+
+  const missionCompletionRate =
+    startedMissions > 0
+      ? Number(((completedOfficialMissions / startedMissions) * 100).toFixed(1))
+      : 0;
+  const averageCompletionSeconds =
+    elapsedCount > 0 ? Math.round(elapsedSum / elapsedCount) : null;
+
+  // BLOCO 1: Métricas por startup baseadas em participant_missions e transações efetivas
+  const startupsRows = targetDb.prepare('SELECT id, name FROM startups').all() as {
     id: string;
     name: string;
   }[];
-  const allParticipantsRows = (
-    db
-      .prepare("SELECT * FROM participants WHERE UPPER(role) = 'PARTICIPANT'")
-      .all() as Record<string, unknown>[]
-  ).map(mapParticipantRow);
 
   const participationByStartup = startupsRows.map((st) => {
-    const visits = allParticipantsRows.filter((p) => p.visitedStartupsIds.includes(st.id)).length;
-    const completedForStartup = (
-      db
-        .prepare(
-          "SELECT COUNT(*) as total FROM missions WHERE startup_id = ? AND status = 'Concluída'"
-        )
-        .get(st.id) as { total: number }
-    ).total;
-    const pointsForStartup = (
-      db
-        .prepare(
-          "SELECT COALESCE(SUM(points), 0) as total FROM missions WHERE startup_id = ? AND status = 'Concluída'"
-        )
-        .get(st.id) as { total: number }
-    ).total;
+    const startupMissionIds = new Set(
+      missionsRows.filter((m) => m.startup_id === st.id).map((m) => m.id)
+    );
+
+    const startupParticipants = new Set<string>();
+    for (const p of allParticipantRows) {
+      if (p.visitedStartupsIds.includes(st.id)) {
+        startupParticipants.add(p.id);
+      }
+    }
+
+    let stStarted = 0;
+    let stCompleted = 0;
+    let stPending = 0;
+
+    for (const pm of pmRows) {
+      if (!startupMissionIds.has(pm.mission_id)) continue;
+      if (pm.started_at_ms !== null || pm.status === 'Concluída') {
+        startupParticipants.add(pm.participant_id);
+      }
+      if (pm.started_at_ms !== null) {
+        stStarted += 1;
+      }
+      if (pm.status === 'Concluída') {
+        stCompleted += 1;
+      } else if (pm.status === 'Em andamento' || pm.status === 'Aguardando validação') {
+        stPending += 1;
+      }
+    }
+
+    for (const scan of qrScanRows) {
+      if (scan.startup_id === st.id) {
+        startupParticipants.add(scan.participant_id);
+      }
+    }
+    for (const comp of completionRows) {
+      if (comp.startup_id === st.id) {
+        startupParticipants.add(comp.participant_id);
+      }
+    }
+
+    let stPointsIssued = 0;
+    for (const tx of txRows) {
+      if (!tx.mission_id || !startupMissionIds.has(tx.mission_id)) continue;
+      if (isEffectivePositiveCredit(tx)) {
+        stPointsIssued += Number(tx.points_delta);
+      }
+    }
+
+    const stCompletionRate =
+      stStarted > 0 ? Number(((stCompleted / stStarted) * 100).toFixed(1)) : 0;
 
     return {
+      startupId: st.id,
       startupName: st.name,
-      visits,
-      missionsCompleted: completedForStartup,
-      pointsIssued: pointsForStartup,
+      visits: startupParticipants.size,
+      uniqueParticipants: startupParticipants.size,
+      missionsStarted: stStarted,
+      missionsCompleted: stCompleted,
+      missionsPending: stPending,
+      completionRate: stCompletionRate,
+      pointsIssued: stPointsIssued,
     };
   });
+
+  // BLOCO 3: Evolução diária real nos 3 dias oficiais (24, 25 e 26/11/2026 — America/Sao_Paulo)
+  const dayBuckets = new Map<
+    string,
+    {
+      date: string;
+      day: string;
+      scans: number;
+      missionsStarted: number;
+      missionsCompleted: number;
+      missionsExpired: number;
+      pointsAwarded: number;
+      activeUserIds: Set<string>;
+    }
+  >();
+
+  for (const d of OFFICIAL_EVENT_DAYS) {
+    dayBuckets.set(d.date, {
+      date: d.date,
+      day: d.label,
+      scans: 0,
+      missionsStarted: 0,
+      missionsCompleted: 0,
+      missionsExpired: 0,
+      pointsAwarded: 0,
+      activeUserIds: new Set<string>(),
+    });
+  }
+
+  for (const pm of pmRows) {
+    if (pm.started_at_ms !== null) {
+      const startDate = formatMsToBrasiliaDate(Number(pm.started_at_ms));
+      const bucket = startDate ? dayBuckets.get(startDate) : undefined;
+      if (bucket) {
+        bucket.missionsStarted += 1;
+        bucket.activeUserIds.add(pm.participant_id);
+      }
+    }
+    if (pm.status === 'Concluída' && pm.completed_at_ms !== null) {
+      const compDate = formatMsToBrasiliaDate(Number(pm.completed_at_ms));
+      const bucket = compDate ? dayBuckets.get(compDate) : undefined;
+      if (bucket) {
+        bucket.missionsCompleted += 1;
+        bucket.activeUserIds.add(pm.participant_id);
+      }
+    }
+    if (isMissionExpired(pm) && pm.target_end_at_ms !== null) {
+      const expDate = formatMsToBrasiliaDate(Number(pm.target_end_at_ms));
+      const bucket = expDate ? dayBuckets.get(expDate) : undefined;
+      if (bucket) {
+        bucket.missionsExpired += 1;
+      }
+    }
+  }
+
+  for (const scan of qrScanRows) {
+    const scanDate = parseStoredDateToBrasiliaIso(scan.scanned_at);
+    const bucket = scanDate ? dayBuckets.get(scanDate) : undefined;
+    if (bucket) {
+      bucket.scans += 1;
+      bucket.activeUserIds.add(scan.participant_id);
+    }
+  }
+
+  for (const comp of completionRows) {
+    const subDate = parseStoredDateToBrasiliaIso(comp.submitted_at);
+    const bucket = subDate ? dayBuckets.get(subDate) : undefined;
+    if (bucket) {
+      bucket.activeUserIds.add(comp.participant_id);
+    }
+  }
+
+  for (const tx of txRows) {
+    if (!isEffectivePositiveCredit(tx)) continue;
+    const txDate = parseStoredDateToBrasiliaIso(tx.created_at);
+    const bucket = txDate ? dayBuckets.get(txDate) : undefined;
+    if (bucket) {
+      bucket.pointsAwarded += Number(tx.points_delta);
+      bucket.activeUserIds.add(tx.participant_id);
+    }
+  }
+
+  const engagementByDay = OFFICIAL_EVENT_DAYS.map((d) => {
+    const b = dayBuckets.get(d.date)!;
+    const completionRate =
+      b.missionsStarted > 0
+        ? Number(((b.missionsCompleted / b.missionsStarted) * 100).toFixed(1))
+        : 0;
+    return {
+      date: b.date,
+      day: b.day,
+      scans: b.scans,
+      missions: b.missionsCompleted,
+      missionsStarted: b.missionsStarted,
+      missionsCompleted: b.missionsCompleted,
+      missionsExpired: b.missionsExpired,
+      completionRate,
+      pointsAwarded: b.pointsAwarded,
+      activeUsers: b.activeUserIds.size,
+    };
+  });
+
+  // BLOCO 5: Desempenho por missão ordenado por conclusões reais
+  const missionStatsMap = new Map<string, { starts: number; completions: number }>();
+  for (const pm of pmRows) {
+    const current = missionStatsMap.get(pm.mission_id) || { starts: 0, completions: 0 };
+    if (pm.started_at_ms !== null) current.starts += 1;
+    if (pm.status === 'Concluída') current.completions += 1;
+    missionStatsMap.set(pm.mission_id, current);
+  }
+
+  const missionPerformance = missionsRows
+    .filter((m) => Boolean(m.active))
+    .map((m) => {
+      const stats = missionStatsMap.get(m.id) || { starts: 0, completions: 0 };
+      return {
+        missionId: m.id,
+        title: m.title,
+        startupName: m.startup_name,
+        category: m.category,
+        points: Number(m.points),
+        starts: stats.starts,
+        completions: stats.completions,
+      };
+    })
+    .sort((a, b) => b.completions - a.completions || b.starts - a.starts || a.title.localeCompare(b.title));
 
   return {
     registeredParticipants: totalParticipants,
     activeParticipants,
+    inactiveParticipants,
+    startedMissions,
     completedMissions,
+    expiredMissions,
+    missionCompletionRate,
+    averageCompletionSeconds,
+    totalSpeedBonusAwarded,
     qrCodesScanned,
     registeredStartups,
     totalPointsDistributed,
     participationRate,
-    engagementByDay: [
-      {
-        day: 'Dia 1 — 24/11 (Ter)',
-        scans: qrCodesScanned,
-        missions: completedMissions,
-        activeUsers: activeParticipants,
-      },
-      { day: 'Dia 2 — 25/11 (Qua)', scans: 0, missions: 0, activeUsers: 0 },
-      { day: 'Dia 3 — 26/11 (Qui)', scans: 0, missions: 0, activeUsers: 0 },
-    ],
+    engagementByDay,
     participationByStartup,
+    missionPerformance,
   };
 }

@@ -1,4 +1,4 @@
-﻿# Dependências
+# Dependências
 node_modules/
 
 # Arquivos gerados
@@ -27,3 +27,9 @@ Thumbs.db
 
 # Arquivos auxiliares SQLite
 *.sqlite-*
+
+# Evidências enviadas pelos participantes (armazenamento privado)
+server/storage/evidences/
+
+# Backups locais do banco e evidências
+server/backups/

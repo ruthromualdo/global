@@ -1,15 +1,23 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'node:fs';
+import { VALID_BRAZILIAN_DDDS } from '../src/utils/formatters';
 import {
   calculateParticipantReservedPoints,
+  closeDatabaseGracefully,
   compactCircuitSequencesInDb,
   db,
   DB_FILE_PATH,
   DEFAULT_MISSION_TIMER_MINUTES,
+  deleteEvidenceFileIfExists,
+  ensureDailyRankingsClosedUpTo,
   ensureParticipantFirstMissionUnlockedInDb,
+  EVIDENCE_STORAGE_DIR,
+  EvidenceRequirementType,
+  findActiveTransactionByEventKeys,
   getAdminMetricsFromDb,
+  getDailyRankingsFromDb,
   getMissionConfiguredDurationSeconds,
-  getParticipantAchievementsFromDb,
   getPublicRankingFromDb,
   hasOfficialCircuitStartedInDb,
   initializeDatabase,
@@ -27,52 +35,135 @@ import {
   ParticipantPointsReservation,
   recalculateCircuitMissionPointsInDb,
   recalculateRankingsInDb,
+  resolveNextIdempotentEventKey,
+  resolveSafeEvidenceFilePath,
+  saveEvidenceFileToDisk,
+  validateAndDetectEvidenceFile,
 } from './db/database';
 import {
   createSessionInDb,
   extractBearerToken,
   hashPassword,
   requireAdmin,
+  requireAuth,
+  requireParticipant,
   RequestWithAuth,
   resolveSessionFromRequest,
   revokeSessionTokenInDb,
   verifyPassword,
 } from './security/auth';
+import { createInMemoryRateLimiter } from './security/rateLimiter';
 
 initializeDatabase();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
+let isShuttingDown = false;
 
-app.use(cors());
+app.use((_req, res, next) => {
+  if (isShuttingDown) {
+    res.setHeader('Connection', 'close');
+    res.status(503).json({
+      error: 'Servidor em processo de encerramento controlado. Tente novamente em instantes.',
+      code: 'SERVER_SHUTTING_DOWN',
+    });
+    return;
+  }
+  next();
+});
+
+// Configuração de CORS restrito via variável CORS_ALLOWED_ORIGINS (nunca '*' em produção)
+const configuredCorsOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+
+const defaultDevOrigins =
+  process.env.NODE_ENV === 'production'
+    ? []
+    : [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'http://localhost:4173',
+        'http://127.0.0.1:4173',
+      ];
+
+const allowedCorsOrigins = new Set<string>(
+  configuredCorsOrigins.length > 0 ? configuredCorsOrigins : defaultDevOrigins
+);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Requisições sem cabeçalho Origin (same-origin, healthchecks, clientes CLI) são permitidas sem abrir CORS '*'
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      const normalizedOrigin = origin.trim().replace(/\/+$/, '');
+      if (allowedCorsOrigins.has(normalizedOrigin)) {
+        callback(null, true);
+        return;
+      }
+      const corsError = new Error('Origem não autorizada pela política de CORS.') as Error & {
+        status?: number;
+        code?: string;
+      };
+      corsError.status = 403;
+      corsError.code = 'CORS_ORIGIN_FORBIDDEN';
+      callback(corsError);
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Mission-Id',
+      'X-File-Name',
+      'X-File-Mime',
+      'X-Evidence-Description',
+      'X-Participant-Id',
+    ],
+  })
+);
 app.use(express.json());
 
-// Helper para obter o participante ativo da sessão atual no SQLite
-function getCurrentParticipantFromDb(req?: express.Request) {
-  if (req) {
-    const session = resolveSessionFromRequest(req);
-    if (session) {
-      const bySession = db
-        .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
-        .get(session.userId) as Record<string, unknown> | undefined;
-      if (bySession) return mapParticipantRow(bySession);
-    }
-  }
+// Rate limiters nativos em memória (instância única, limites independentes por rota)
+const DEFAULT_RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
 
-  let row = db
-    .prepare(
-      "SELECT * FROM participants WHERE is_current_session = 1 AND UPPER(role) = 'PARTICIPANT' LIMIT 1"
-    )
-    .get() as Record<string, unknown> | undefined;
-  if (!row) {
-    row = db
-      .prepare("SELECT * FROM participants WHERE UPPER(role) = 'PARTICIPANT' LIMIT 1")
-      .get() as Record<string, unknown> | undefined;
-  }
-  if (!row) {
-    row = db.prepare('SELECT * FROM participants LIMIT 1').get() as Record<string, unknown>;
-  }
-  return mapParticipantRow(row);
+const loginRateLimiter = createInMemoryRateLimiter({
+  routeKey: 'auth_login',
+  windowMs: DEFAULT_RATE_WINDOW_MS,
+  maxRequests: Number(process.env.RATE_LIMIT_LOGIN_MAX) || 10,
+  message: 'Muitas tentativas de login. Aguarde alguns minutos e tente novamente.',
+});
+
+const adminLoginRateLimiter = createInMemoryRateLimiter({
+  routeKey: 'auth_admin_login',
+  windowMs: DEFAULT_RATE_WINDOW_MS,
+  maxRequests: Number(process.env.RATE_LIMIT_ADMIN_LOGIN_MAX) || 5,
+  message: 'Muitas tentativas de login administrativo. Aguarde alguns minutos e tente novamente.',
+});
+
+const registerRateLimiter = createInMemoryRateLimiter({
+  routeKey: 'auth_register',
+  windowMs: DEFAULT_RATE_WINDOW_MS,
+  maxRequests: Number(process.env.RATE_LIMIT_REGISTER_MAX) || 10,
+  message: 'Muitas tentativas de cadastro em sequência. Aguarde alguns minutos e tente novamente.',
+});
+
+const evidenceUploadRateLimiter = createInMemoryRateLimiter({
+  routeKey: 'evidences_upload',
+  windowMs: DEFAULT_RATE_WINDOW_MS,
+  maxRequests: Number(process.env.RATE_LIMIT_UPLOAD_MAX) || 20,
+  message: 'Limite temporário de envios de evidência atingido. Aguarde alguns minutos.',
+});
+
+// Helper seguro para buscar o registro do usuário autenticado exclusivamente por ID da sessão (sem fallback)
+function getAuthenticatedUserById(userId: string) {
+  const row = db
+    .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+    .get(userId) as Record<string, unknown> | undefined;
+  return row ? mapParticipantRow(row) : null;
 }
 
 function hasAdminAccountInDb(): boolean {
@@ -95,7 +186,7 @@ function hasActiveParticipantSessionInDb(): boolean {
 function creditPointsInSql(params: {
   participantId: string;
   pointsDelta: number;
-  sourceType: 'Missão' | 'QR Code' | 'Conquista' | 'Ajuste Administrativo';
+  sourceType: 'Missão' | 'QR Code' | 'Ajuste Administrativo';
   sourceTitle: string;
   visitedStartupId?: string;
   incrementMissionCount?: boolean;
@@ -143,16 +234,6 @@ function creditPointsInSql(params: {
       ? [...participant.visitedStartupsIds, params.visitedStartupId]
       : participant.visitedStartupsIds;
 
-  // Avaliar desbloqueio real de medalhas para o participante
-  const unlockedSet = new Set<string>(participant.unlockedAchievementIds);
-  if (newMissionCount >= 1) unlockedSet.add('ach-01');
-  if (visitedStartups.length >= 2) unlockedSet.add('ach-02');
-  if (newMissionCount >= 2) unlockedSet.add('ach-03');
-  if (visitedStartups.length >= 3) unlockedSet.add('ach-04');
-  if (visitedStartups.length >= 4 && newBalance >= 800) unlockedSet.add('ach-05');
-
-  const unlockedList = Array.from(unlockedSet);
-
   const nowStr = new Date().toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
@@ -165,23 +246,22 @@ function creditPointsInSql(params: {
     UPDATE participants
     SET points = ?,
         completed_missions_count = ?,
-        visited_startups_json = ?,
-        unlocked_achievements_json = ?
+        visited_startups_json = ?
     WHERE id = ?
   `).run(
     newBalance,
     newMissionCount,
     JSON.stringify(visitedStartups),
-    JSON.stringify(unlockedList),
     participant.id
   );
 
-  const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const nowMs = Date.now();
+  const txId = `tx-${nowMs}-${Math.random().toString(36).slice(2, 7)}`;
   db.prepare(`
     INSERT INTO points_transactions (
       id, participant_id, participant_name, source_type, source_title,
-      points_delta, previous_balance, new_balance, created_at, event_key, mission_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      points_delta, previous_balance, new_balance, created_at, created_at_ms, event_key, mission_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     txId,
     participant.id,
@@ -192,6 +272,7 @@ function creditPointsInSql(params: {
     previousBalance,
     newBalance,
     nowStr,
+    nowMs,
     params.eventKey || null,
     params.missionId || null
   );
@@ -235,9 +316,10 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
     const mId = String(mRow.id);
     const seq = Number(mRow.sequence_order);
     const pm = pmByMissionId.get(mId);
-    const completeTx = db
-      .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-      .get(`COMPLETE:${participant.id}:${mId}`) as { id: string } | undefined;
+    const completeTx = findActiveTransactionByEventKeys(participant.id, [
+      `COMPLETE:${participant.id}:${mId}`,
+      `COMPLETE:${participant.id}:${mId}:POST_SIM_REV`,
+    ]);
 
     if ((pm && String(pm.status) === 'Concluída') || completeTx) {
       completedSeqOrders.add(seq);
@@ -246,7 +328,7 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
 
   const nowMs = Date.now();
 
-  return baseMissionsRows.map((mRow) => {
+  const officialMapped = baseMissionsRows.map((mRow) => {
     const m = mapMissionRow(mRow);
     const seq = Number(mRow.sequence_order);
     const pm = pmByMissionId.get(m.id);
@@ -278,7 +360,9 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
     const completedAtMs = pm?.completed_at_ms ? Number(pm.completed_at_ms) : null;
     const speedBonusAwarded = Number(pm?.speed_bonus_awarded || 0);
 
-    const missionMaxBonus = Number(m.maxSpeedBonus ?? mRow.max_speed_bonus ?? 50);
+    const isOfficial = mRow.sequence_order !== null && mRow.sequence_order !== undefined;
+    const rawMaxBonus = Number(mRow.max_speed_bonus);
+    const missionMaxBonus = Number.isInteger(rawMaxBonus) && rawMaxBonus >= 0 ? rawMaxBonus : 0;
     let elapsedSeconds = 0;
     let remainingSeconds = durationSeconds;
     let isExpired = false;
@@ -321,6 +405,38 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
       serverTimeMs: nowMs,
     };
   });
+
+  // Inclui missões extras ativas com exigência de evidência (sem interferir na sequência oficial)
+  const extraEvidenceRows = db
+    .prepare(
+      'SELECT * FROM missions WHERE sequence_order IS NULL AND active = 1 AND requires_evidence = 1 ORDER BY rowid ASC'
+    )
+    .all() as Record<string, unknown>[];
+
+  const extraMapped = extraEvidenceRows.map((mRow) => {
+    const m = mapMissionRow(mRow);
+    const pm = pmByMissionId.get(m.id);
+    const subRow = db
+      .prepare(
+        'SELECT status FROM mission_completions WHERE participant_id = ? AND mission_id = ? ORDER BY rowid DESC LIMIT 1'
+      )
+      .get(participant.id, m.id) as { status: string } | undefined;
+
+    let computedStatus: ReturnType<typeof mapMissionRow>['status'] = 'Disponível';
+    if ((pm && String(pm.status) === 'Concluída') || subRow?.status === 'Aprovada') {
+      computedStatus = 'Concluída';
+    } else if (subRow?.status === 'Pendente') {
+      computedStatus = 'Aguardando validação';
+    }
+
+    return {
+      ...m,
+      status: computedStatus,
+      serverTimeMs: nowMs,
+    };
+  });
+
+  return [...officialMapped, ...extraMapped];
 }
 
 // Helper transacional atômico para concluir missão sequencial (+180 pts) e desbloquear a próxima (+20 pts)
@@ -364,10 +480,15 @@ function completeSequentialMissionInSql(params: {
       };
     }
 
-    const completeEventKey = `COMPLETE:${params.participantId}:${mission.id}`;
-    const existingCompleteTx = db
-      .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-      .get(completeEventKey) as { id: string } | undefined;
+    const baseCompleteEventKey = `COMPLETE:${params.participantId}:${mission.id}`;
+    const completeEventKey = resolveNextIdempotentEventKey(
+      params.participantId,
+      baseCompleteEventKey
+    );
+    const existingCompleteTx = findActiveTransactionByEventKeys(params.participantId, [
+      baseCompleteEventKey,
+      `${baseCompleteEventKey}:POST_SIM_REV`,
+    ]);
 
     const pmRow = db
       .prepare(
@@ -394,11 +515,10 @@ function completeSequentialMissionInSql(params: {
         .get(seqOrder - 1) as { id: string; title: string } | undefined;
 
       if (prevMissionRow) {
-        const prevCompleteTx = db
-          .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-          .get(`COMPLETE:${params.participantId}:${prevMissionRow.id}`) as
-          | { id: string }
-          | undefined;
+        const prevCompleteTx = findActiveTransactionByEventKeys(params.participantId, [
+          `COMPLETE:${params.participantId}:${prevMissionRow.id}`,
+          `COMPLETE:${params.participantId}:${prevMissionRow.id}:POST_SIM_REV`,
+        ]);
         const prevPm = db
           .prepare(
             'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
@@ -458,9 +578,30 @@ function completeSequentialMissionInSql(params: {
       ? `Conclusão (${params.qrCodeRow.code}): ${mission.title}`
       : `Conclusão: ${mission.title}`;
 
-    const missionUnlockPoints = Number(mission.unlockPoints ?? missionRow.unlock_points ?? 20);
-    const missionCompletionPoints = Number(mission.completionPoints ?? missionRow.completion_points ?? 180);
-    const missionMaxSpeedBonus = Number(mission.maxSpeedBonus ?? missionRow.max_speed_bonus ?? 50);
+    const rawUnlock = missionRow.unlock_points;
+    const rawCompletion = missionRow.completion_points;
+    const rawBonus = missionRow.max_speed_bonus;
+
+    if (
+      rawUnlock === null || rawUnlock === undefined ||
+      rawCompletion === null || rawCompletion === undefined ||
+      rawBonus === null || rawBonus === undefined ||
+      !Number.isInteger(Number(rawUnlock)) || Number(rawUnlock) < 0 ||
+      !Number.isInteger(Number(rawCompletion)) || Number(rawCompletion) <= 0 ||
+      !Number.isInteger(Number(rawBonus)) || Number(rawBonus) < 0
+    ) {
+      db.exec('ROLLBACK;');
+      return {
+        ok: false,
+        httpStatus: 500,
+        status: 'INVALID_CIRCUIT_SCORING' as const,
+        message: `Erro contábil: a missão oficial "${mission.title}" (ID: ${mission.id}) não possui valores dinâmicos válidos de pontuação no banco (unlock: ${missionRow.unlock_points}, completion: ${missionRow.completion_points}, bonus: ${missionRow.max_speed_bonus}). Operação abortada e revertida integralmente.`,
+      };
+    }
+
+    const missionUnlockPoints = Number(rawUnlock);
+    const missionCompletionPoints = Number(rawCompletion);
+    const missionMaxSpeedBonus = Number(rawBonus);
 
     const startedAtMs = pmRow?.started_at_ms ? Number(pmRow.started_at_ms) : null;
     const durationSeconds = pmRow?.duration_seconds
@@ -483,24 +624,28 @@ function completeSequentialMissionInSql(params: {
     // SOMENTE AGORA, no momento da conclusão/validação efetiva da missão!
     let awardedUnlockPoints = 0;
     if (seqOrder === 1) {
-      const legacyUnlockTx = db
-        .prepare('SELECT id, points_delta FROM points_transactions WHERE event_key = ? LIMIT 1')
-        .get(`UNLOCK:${params.participantId}:${mission.id}`) as { id: string; points_delta: number } | undefined;
+      const legacyUnlockTx = findActiveTransactionByEventKeys(params.participantId, [
+        `UNLOCK:${params.participantId}:${mission.id}`,
+        `UNLOCK:${params.participantId}:${mission.id}:POST_SIM_REV`,
+      ]);
       const reversalTx = db
         .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
         .get(`REVERSAL:${params.participantId}:${mission.id}`) as { id: string } | undefined;
-      const validatedUnlockTx = db
-        .prepare('SELECT id, points_delta FROM points_transactions WHERE event_key = ? LIMIT 1')
-        .get(`UNLOCK_VALIDATED:${params.participantId}:${mission.id}`) as { id: string; points_delta: number } | undefined;
+      const validatedUnlockTx = findActiveTransactionByEventKeys(params.participantId, [
+        `UNLOCK_VALIDATED:${params.participantId}:${mission.id}`,
+        `UNLOCK_VALIDATED:${params.participantId}:${mission.id}:POST_SIM_REV`,
+      ]);
 
       const hasEffectiveUnlock =
         (Boolean(legacyUnlockTx) && !Boolean(reversalTx)) || Boolean(validatedUnlockTx);
 
       if (!hasEffectiveUnlock) {
-        // Se já houve estorno da transação legada antiga, usa a chave UNLOCK_VALIDATED para respeitar o índice único
-        const unlockEventKey = Boolean(reversalTx)
+        // Se já houve estorno da transação legada antiga (Etapa 6), parte de UNLOCK_VALIDATED;
+        // se essa chave também foi estornada por REVERSAL_SIMULATION, usa :POST_SIM_REV
+        const baseUnlockKey = Boolean(reversalTx)
           ? `UNLOCK_VALIDATED:${params.participantId}:${mission.id}`
           : `UNLOCK:${params.participantId}:${mission.id}`;
+        const unlockEventKey = resolveNextIdempotentEventKey(params.participantId, baseUnlockKey);
 
         const unlockCredit = creditPointsInSql({
           participantId: params.participantId,
@@ -518,9 +663,10 @@ function completeSequentialMissionInSql(params: {
           : Number(legacyUnlockTx?.points_delta || missionUnlockPoints);
       }
     } else {
-      const existingUnlockTx = db
-        .prepare('SELECT points_delta FROM points_transactions WHERE event_key = ? LIMIT 1')
-        .get(`UNLOCK:${params.participantId}:${mission.id}`) as { points_delta: number } | undefined;
+      const existingUnlockTx = findActiveTransactionByEventKeys(params.participantId, [
+        `UNLOCK:${params.participantId}:${mission.id}`,
+        `UNLOCK:${params.participantId}:${mission.id}:POST_SIM_REV`,
+      ]);
       awardedUnlockPoints = existingUnlockTx
         ? Number(existingUnlockTx.points_delta)
         : Number(pmRow?.unlock_points_awarded || missionUnlockPoints);
@@ -543,7 +689,10 @@ function completeSequentialMissionInSql(params: {
     // 1.5 Concede bônus de velocidade proporcional dinâmico (Etapa 3)
     let awardedSpeedBonus = 0;
     if (speedBonus > 0) {
-      const speedBonusEventKey = `SPEED_BONUS:${params.participantId}:${mission.id}`;
+      const speedBonusEventKey = resolveNextIdempotentEventKey(
+        params.participantId,
+        `SPEED_BONUS:${params.participantId}:${mission.id}`
+      );
       const bonusCredit = creditPointsInSql({
         participantId: params.participantId,
         pointsDelta: speedBonus,
@@ -590,8 +739,27 @@ function completeSequentialMissionInSql(params: {
     if (nextMissionRow) {
       const nextMissionId = String(nextMissionRow.id);
       const nextMissionTitle = String(nextMissionRow.title);
-      const nextUnlockPoints = Number(nextMissionRow.unlock_points ?? 20);
-      const nextUnlockEventKey = `UNLOCK:${params.participantId}:${nextMissionId}`;
+      const rawNextUnlock = nextMissionRow.unlock_points;
+
+      if (
+        rawNextUnlock === null || rawNextUnlock === undefined ||
+        !Number.isInteger(Number(rawNextUnlock)) || Number(rawNextUnlock) < 0
+      ) {
+        db.exec('ROLLBACK;');
+        return {
+          ok: false,
+          httpStatus: 500,
+          status: 'INVALID_CIRCUIT_SCORING' as const,
+          message: `Erro contábil: a próxima missão oficial "${nextMissionTitle}" (ID: ${nextMissionId}) não possui pontuação dinâmica de desbloqueio válida no banco (unlock: ${nextMissionRow.unlock_points}). Operação abortada e revertida integralmente.`,
+        };
+      }
+
+      const nextUnlockPoints = Number(rawNextUnlock);
+
+      const nextUnlockEventKey = resolveNextIdempotentEventKey(
+        params.participantId,
+        `UNLOCK:${params.participantId}:${nextMissionId}`
+      );
 
       const unlockCredit = creditPointsInSql({
         participantId: params.participantId,
@@ -694,7 +862,6 @@ app.get('/api/health', (_req, res) => {
     engine: 'node:sqlite (SQLite3)',
     rbac: 'enabled (PARTICIPANT | ADMIN)',
     hasConfiguredAdmin: hasAdminAccountInDb(),
-    databaseFile: DB_FILE_PATH,
     timestamp: new Date().toISOString(),
   });
 });
@@ -704,8 +871,18 @@ app.get('/api/bootstrap', (req, res) => {
 
   const session = resolveSessionFromRequest(req);
   const isAdmin = session?.role === 'ADMIN';
+  const isParticipantSession = session?.role === 'PARTICIPANT';
 
-  const initialParticipant = getCurrentParticipantFromDb(req);
+  let authenticatedParticipant: ReturnType<typeof mapParticipantRow> | null = null;
+  if (session) {
+    const bySession = db
+      .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+      .get(session.userId) as Record<string, unknown> | undefined;
+    if (bySession) {
+      authenticatedParticipant = mapParticipantRow(bySession);
+    }
+  }
+
   const missions = isAdmin
     ? (
         db
@@ -714,23 +891,62 @@ app.get('/api/bootstrap', (req, res) => {
           )
           .all() as Record<string, unknown>[]
       ).map(mapMissionRow)
-    : getParticipantMissionsFromDb(initialParticipant);
+    : authenticatedParticipant && isParticipantSession
+    ? getParticipantMissionsFromDb(authenticatedParticipant)
+    : (
+        db
+          .prepare(
+            'SELECT * FROM missions WHERE active = 1 ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+          )
+          .all() as Record<string, unknown>[]
+      ).map(mapMissionRow);
 
-  // Recarrega participante após eventual desbloqueio inicial idempotente da Missão 1 (+20 pts)
-  const participant = getCurrentParticipantFromDb(req);
-  recalculateRankingsInDb();
+  // Recarrega participante autenticado após eventual desbloqueio inicial idempotente da Missão 1 (+20 pts)
+  if (authenticatedParticipant && isParticipantSession) {
+    const refreshed = db
+      .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+      .get(authenticatedParticipant.id) as Record<string, unknown> | undefined;
+    if (refreshed) {
+      authenticatedParticipant = mapParticipantRow(refreshed);
+    }
+    recalculateRankingsInDb();
+  }
+
+  const guestParticipant = {
+    id: '',
+    name: '',
+    nickname: '',
+    email: '',
+    phone: '',
+    role: 'PARTICIPANT' as const,
+    avatar: '',
+    points: 0,
+    rankingPosition: 0,
+    completedMissionsCount: 0,
+    visitedStartupsIds: [] as string[],
+    registeredAt: '',
+    status: 'Ativo' as const,
+    privacy: {
+      showNicknameInPublicRanking: true,
+      allowActivityNotifications: false,
+      shareStartupInterests: false,
+    },
+  };
+
+  const participant = authenticatedParticipant || guestParticipant;
 
   const startups = (
     db.prepare('SELECT * FROM startups').all() as Record<string, unknown>[]
   ).map(mapStartupRow);
 
-  const achievements = getParticipantAchievementsFromDb(participant);
-
   const qrCodes = (
     db.prepare('SELECT * FROM qr_codes').all() as Record<string, unknown>[]
   ).map(mapQRCodeRow);
 
-  const publicRanking = getPublicRankingFromDb(participant?.id);
+  const publicRanking = getPublicRankingFromDb(authenticatedParticipant?.id);
+  const dailyRankings = getDailyRankingsFromDb(db, {
+    currentUserId: authenticatedParticipant?.id,
+  });
 
   const settingsRow = db
     .prepare('SELECT * FROM event_settings WHERE id = 1')
@@ -748,12 +964,19 @@ app.get('/api/bootstrap', (req, res) => {
       ).map(mapParticipantRow)
     : [];
 
+  // Sem sessão autenticada, nenhuma evidência ou submissão de participante é retornada
   const validationQueue = isAdmin
     ? (
         db.prepare('SELECT * FROM mission_completions ORDER BY rowid DESC').all() as Record<
           string,
           unknown
         >[]
+      ).map(mapValidationRow)
+    : authenticatedParticipant && isParticipantSession
+    ? (
+        db
+          .prepare('SELECT * FROM mission_completions WHERE participant_id = ? ORDER BY rowid DESC')
+          .all(authenticatedParticipant.id) as Record<string, unknown>[]
       ).map(mapValidationRow)
     : [];
 
@@ -779,14 +1002,21 @@ app.get('/api/bootstrap', (req, res) => {
     ? getAdminMetricsFromDb()
     : {
         registeredParticipants: publicRanking.length,
-        activeParticipants: publicRanking.length,
+        activeParticipants: 0,
+        inactiveParticipants: publicRanking.length,
+        startedMissions: 0,
         completedMissions: 0,
+        expiredMissions: 0,
+        missionCompletionRate: 0,
+        averageCompletionSeconds: null,
+        totalSpeedBonusAwarded: 0,
         qrCodesScanned: 0,
         registeredStartups: startups.length,
         totalPointsDistributed: 0,
         participationRate: 0,
         engagementByDay: [],
         participationByStartup: [],
+        missionPerformance: [],
       };
 
   res.json({
@@ -794,19 +1024,19 @@ app.get('/api/bootstrap', (req, res) => {
     allParticipants,
     startups,
     missions,
-    achievements,
     qrCodes,
     validationQueue,
     publicRanking,
+    dailyRankings,
     pointsTransactions,
     eventSettings,
     governancePlans,
     adminMetrics,
     auth: {
-      authenticated: Boolean(session) || hasActiveParticipantSessionInDb(),
-      role: session?.role || (hasActiveParticipantSessionInDb() ? 'PARTICIPANT' : null),
-      userId: session?.userId || (hasActiveParticipantSessionInDb() ? participant.id : null),
-      email: session?.email || (hasActiveParticipantSessionInDb() ? participant.email : null),
+      authenticated: Boolean(session && authenticatedParticipant),
+      role: session && authenticatedParticipant ? session.role : null,
+      userId: session && authenticatedParticipant ? session.userId : null,
+      email: session && authenticatedParticipant ? session.email : null,
       hasConfiguredAdmin: hasAdminAccountInDb(),
     },
   });
@@ -839,44 +1069,39 @@ app.get('/api/auth/session', (req, res) => {
   });
 });
 
-app.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body as { email?: string; password?: string };
+app.post('/api/auth/login', loginRateLimiter, (req, res) => {
+  const { email, password } = (req.body || {}) as { email?: string; password?: string };
   const cleanEmail = (email || '').trim().toLowerCase();
 
-  let row = db
-    .prepare('SELECT * FROM participants WHERE LOWER(email) = ?')
-    .get(cleanEmail) as Record<string, unknown> | undefined;
-
-  if (!row) {
+  if (!cleanEmail || !password) {
     res.status(401).json({
-      error: 'Conta não encontrada para o e-mail informado.',
+      error: 'E-mail ou senha inválidos.',
+      code: 'INVALID_CREDENTIALS',
     });
     return;
   }
 
-  const dbRole = String(row.role || 'PARTICIPANT').toUpperCase();
-  const storedHash = String(row.password_hash || '');
+  const row = db
+    .prepare('SELECT * FROM participants WHERE LOWER(email) = ? LIMIT 1')
+    .get(cleanEmail) as Record<string, unknown> | undefined;
 
-  // Contas ADMIN exigem verificação estrita de hash scrypt mesmo no login geral
-  if (dbRole === 'ADMIN') {
-    if (!password || !verifyPassword(password, storedHash)) {
-      res.status(401).json({
-        error: 'E-mail ou senha inválidos.',
-      });
-      return;
-    }
-  } else if (password && password.length >= 6 && !password.includes('•')) {
-    // Atualiza hash scrypt do participante caso informe senha no login
-    const upgradedHash = hashPassword(password);
-    db.prepare('UPDATE participants SET password_hash = ? WHERE id = ?').run(
-      upgradedHash,
-      String(row.id)
-    );
+  if (!row || String(row.status) === 'Inativo') {
+    res.status(401).json({
+      error: 'E-mail ou senha inválidos.',
+      code: 'INVALID_CREDENTIALS',
+    });
+    return;
   }
 
-  if (String(row.role).toUpperCase() === 'PARTICIPANT') {
-    db.prepare("UPDATE participants SET is_current_session = 0 WHERE UPPER(role) = 'PARTICIPANT'").run();
-    db.prepare('UPDATE participants SET is_current_session = 1 WHERE id = ?').run(String(row.id));
+  const storedHash = String(row.password_hash || '');
+  // Exige hash scrypt válido e verificação estrita de senha tanto para PARTICIPANT quanto para ADMIN.
+  // Contas legadas sem hash válido não recebem senha automaticamente e nunca têm password_hash alterado no login.
+  if (!storedHash || !storedHash.startsWith('scrypt$') || !verifyPassword(password, storedHash)) {
+    res.status(401).json({
+      error: 'E-mail ou senha inválidos.',
+      code: 'INVALID_CREDENTIALS',
+    });
+    return;
   }
 
   recalculateRankingsInDb();
@@ -903,7 +1128,7 @@ app.post('/api/auth/login', (req, res) => {
  * Login exclusivo para Administradores (/api/auth/admin/login).
  * Verifica hash scrypt no servidor e exige role === 'ADMIN' no SQLite.
  */
-app.post('/api/auth/admin/login', (req, res) => {
+app.post('/api/auth/admin/login', adminLoginRateLimiter, (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
   const cleanEmail = (email || '').trim().toLowerCase();
 
@@ -970,23 +1195,114 @@ app.post('/api/auth/logout', (req, res) => {
   });
 });
 
-app.post('/api/auth/register', (req, res) => {
-  const { name, email, password, role } = req.body as {
+export function normalizeAndValidateBrazilianPhone(raw: unknown):
+  | { ok: true; normalized: string }
+  | { ok: false; code: 'PHONE_REQUIRED' | 'INVALID_PHONE'; error: string } {
+  const rawStr = typeof raw === 'string' || typeof raw === 'number' ? String(raw) : '';
+  let digits = rawStr.replace(/\D/g, '');
+  if ((digits.length === 12 || digits.length === 13) && digits.startsWith('55')) {
+    digits = digits.slice(2);
+  }
+  if (!digits) {
+    return {
+      ok: false,
+      code: 'PHONE_REQUIRED',
+      error: 'Informe seu telefone ou WhatsApp com DDD.',
+    };
+  }
+  if (digits.length !== 10 && digits.length !== 11) {
+    return {
+      ok: false,
+      code: 'INVALID_PHONE',
+      error: 'Informe um telefone brasileiro válido com DDD (10 dígitos para fixo ou 11 para celular).',
+    };
+  }
+  if (/^(\d)\1+$/.test(digits)) {
+    return {
+      ok: false,
+      code: 'INVALID_PHONE',
+      error: 'Número de telefone inválido.',
+    };
+  }
+  if (!VALID_BRAZILIAN_DDDS.has(digits.slice(0, 2))) {
+    return {
+      ok: false,
+      code: 'INVALID_PHONE',
+      error: 'DDD inválido. Informe um DDD brasileiro válido.',
+    };
+  }
+  if (digits.length === 11 && digits[2] !== '9') {
+    return {
+      ok: false,
+      code: 'INVALID_PHONE',
+      error: 'Números de celular com 11 dígitos devem começar com 9 após o DDD.',
+    };
+  }
+  if (digits.length === 10 && !/[2-5]/.test(digits[2])) {
+    return {
+      ok: false,
+      code: 'INVALID_PHONE',
+      error: 'Número de telefone fixo inválido após o DDD.',
+    };
+  }
+  return { ok: true, normalized: digits };
+}
+
+export function registerParticipantInDb(
+  targetDb: typeof db,
+  payload: {
     name?: string;
     email?: string;
+    phone?: string;
     password?: string;
     role?: string;
-  };
+  },
+  hooks?: {
+    onAfterInsert?: (participantId: string) => void;
+    createSession?: (params: { userId: string; email: string; role: 'PARTICIPANT' }) => {
+      token: string;
+      expiresAt: number;
+    };
+  }
+):
+  | {
+      ok: true;
+      httpStatus: 201;
+      token?: string;
+      expiresAt?: number;
+      user: ReturnType<typeof mapParticipantRow>;
+      message: string;
+    }
+  | {
+      ok: false;
+      httpStatus: number;
+      code: string;
+      error: string;
+    } {
+  const { name, email, phone, password, role } = payload;
 
   // Bloqueia tentativa de criar conta já como ADMIN via endpoint de cadastro
   if (role && String(role).toUpperCase() === 'ADMIN') {
-    res.status(403).json({
+    return {
+      ok: false,
+      httpStatus: 403,
+      code: 'PRIVILEGE_ESCALATION_BLOCKED',
       error:
         'Operação bloqueada (HTTP 403): não é permitido atribuir papel ADMIN pelo cadastro de participantes.',
-      code: 'PRIVILEGE_ESCALATION_BLOCKED',
-    });
-    return;
+    };
   }
+
+  // Validação obrigatória de telefone brasileiro (backend)
+  const phoneCheck = normalizeAndValidateBrazilianPhone(phone);
+  if (!phoneCheck.ok) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: phoneCheck.code,
+      error: phoneCheck.error,
+    };
+  }
+  const normalizedPhone = phoneCheck.normalized;
 
   const cleanName = (name || 'Participante Summit').trim();
   const cleanEmail = (email || `visitante.${Date.now()}@summit2026.br`).trim().toLowerCase();
@@ -999,52 +1315,6 @@ app.post('/api/auth/register', (req, res) => {
     .toUpperCase();
 
   const passwordHash = password ? hashPassword(password) : hashPassword(crypto.randomUUID());
-
-  const existing = db
-    .prepare('SELECT * FROM participants WHERE LOWER(email) = ?')
-    .get(cleanEmail) as Record<string, unknown> | undefined;
-
-  if (existing) {
-    if (String(existing.role).toUpperCase() === 'ADMIN') {
-      res.status(403).json({
-        error: 'Este e-mail pertence a uma conta administrativa restrita.',
-      });
-      return;
-    }
-
-    db.exec('BEGIN IMMEDIATE TRANSACTION;');
-    try {
-      db.prepare("UPDATE participants SET is_current_session = 0 WHERE UPPER(role) = 'PARTICIPANT'").run();
-      db.prepare(
-        'UPDATE participants SET is_current_session = 1, name = ?, nickname = ?, avatar = ?, password_hash = ? WHERE id = ?'
-      ).run(cleanName, nickname, initials || 'PS', passwordHash, String(existing.id));
-      ensureParticipantFirstMissionUnlockedInDb(String(existing.id));
-      recalculateRankingsInDb();
-      db.exec('COMMIT;');
-    } catch (err) {
-      db.exec('ROLLBACK;');
-      throw err;
-    }
-
-    const updated = db
-      .prepare('SELECT * FROM participants WHERE id = ?')
-      .get(String(existing.id)) as Record<string, unknown>;
-    const user = mapParticipantRow(updated);
-    const sessionToken = createSessionInDb({
-      userId: user.id,
-      email: user.email,
-      role: 'PARTICIPANT',
-    });
-
-    res.json({
-      token: sessionToken.token,
-      expiresAt: sessionToken.expiresAt,
-      user,
-      message: 'Cadastro localizado e conectado ao banco SQLite!',
-    });
-    return;
-  }
-
   const newId = `part-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const nowStr = new Date().toLocaleString('pt-BR', {
     day: '2-digit',
@@ -1054,42 +1324,114 @@ app.post('/api/auth/register', (req, res) => {
     minute: '2-digit',
   });
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  // BEGIN IMMEDIATE serializa verificações e inserções concorrentes no SQLite
+  targetDb.exec('BEGIN IMMEDIATE TRANSACTION;');
   try {
-    db.prepare("UPDATE participants SET is_current_session = 0 WHERE UPPER(role) = 'PARTICIPANT'").run();
-    db.prepare(`
-      INSERT INTO participants (
-        id, name, nickname, email, password_hash, role, avatar, points, ranking_position,
-        completed_missions_count, visited_startups_json, unlocked_achievements_json,
-        registered_at, status, show_nickname_in_public_ranking,
-        allow_activity_notifications, share_startup_interests, is_current_session
-      ) VALUES (?, ?, ?, ?, ?, 'PARTICIPANT', ?, 0, 1, 0, '[]', '[]', ?, 'Ativo', 1, 1, 0, 1)
-    `).run(newId, cleanName, nickname, cleanEmail, passwordHash, initials || 'PS', nowStr);
+    const existing = targetDb
+      .prepare('SELECT id FROM participants WHERE LOWER(email) = ? LIMIT 1')
+      .get(cleanEmail) as { id: string } | undefined;
 
-    // Desbloqueia automaticamente a 1ª missão e concede os +20 pontos iniciais de desbloqueio
-    ensureParticipantFirstMissionUnlockedInDb(newId);
-    recalculateRankingsInDb();
-    db.exec('COMMIT;');
-  } catch (err) {
-    db.exec('ROLLBACK;');
+    if (existing) {
+      targetDb.exec('ROLLBACK;');
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'EMAIL_ALREADY_REGISTERED',
+        error: 'Este e-mail já possui cadastro. Faça login para acessar sua conta.',
+      };
+    }
+
+    targetDb
+      .prepare("UPDATE participants SET is_current_session = 0 WHERE UPPER(role) = 'PARTICIPANT'")
+      .run();
+    targetDb
+      .prepare(`
+        INSERT INTO participants (
+          id, name, nickname, email, phone, password_hash, role, avatar, points, ranking_position,
+          completed_missions_count, visited_startups_json,
+          registered_at, status, show_nickname_in_public_ranking,
+          allow_activity_notifications, share_startup_interests, is_current_session
+        ) VALUES (?, ?, ?, ?, ?, ?, 'PARTICIPANT', ?, 0, 1, 0, '[]', ?, 'Ativo', 1, 1, 0, 1)
+      `)
+      .run(newId, cleanName, nickname, cleanEmail, normalizedPhone, passwordHash, initials || 'PS', nowStr);
+
+    if (hooks?.onAfterInsert) {
+      hooks.onAfterInsert(newId);
+    }
+
+    targetDb.exec('COMMIT;');
+  } catch (err: unknown) {
+    try {
+      targetDb.exec('ROLLBACK;');
+    } catch (_) {
+      // transação já revertida
+    }
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes('UNIQUE constraint failed') && errMsg.includes('email')) {
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'EMAIL_ALREADY_REGISTERED',
+        error: 'Este e-mail já possui cadastro. Faça login para acessar sua conta.',
+      };
+    }
     throw err;
   }
 
-  const createdRow = db
+  const createdRow = targetDb
     .prepare('SELECT * FROM participants WHERE id = ?')
     .get(newId) as Record<string, unknown>;
   const user = mapParticipantRow(createdRow);
-  const sessionToken = createSessionInDb({
-    userId: user.id,
-    email: user.email,
-    role: 'PARTICIPANT',
-  });
+  const sessionToken = hooks?.createSession
+    ? hooks.createSession({
+        userId: user.id,
+        email: user.email,
+        role: 'PARTICIPANT',
+      })
+    : undefined;
 
-  res.status(201).json({
-    token: sessionToken.token,
-    expiresAt: sessionToken.expiresAt,
+  return {
+    ok: true,
+    httpStatus: 201,
+    token: sessionToken?.token,
+    expiresAt: sessionToken?.expiresAt,
     user,
     message: 'Cadastro gravado com sucesso no banco de dados SQLite!',
+  };
+}
+
+app.post('/api/auth/register', registerRateLimiter, (req, res) => {
+  const result = registerParticipantInDb(
+    db,
+    (req.body || {}) as {
+      name?: string;
+      email?: string;
+      phone?: string;
+      password?: string;
+      role?: string;
+    },
+    {
+      onAfterInsert: (newId) => {
+        ensureParticipantFirstMissionUnlockedInDb(newId);
+        recalculateRankingsInDb();
+      },
+      createSession: (params) => createSessionInDb(params),
+    }
+  );
+
+  if (!result.ok) {
+    res.status(result.httpStatus).json({
+      error: result.error,
+      code: result.code,
+    });
+    return;
+  }
+
+  res.status(result.httpStatus).json({
+    token: result.token,
+    expiresAt: result.expiresAt,
+    user: result.user,
+    message: result.message,
   });
 });
 
@@ -1115,67 +1457,325 @@ app.get('/api/participants', requireAdmin, (_req, res) => {
   res.json(rows.map(mapParticipantRow));
 });
 
-app.get('/api/participants/me', (req, res) => {
+app.get('/api/participants/me', requireAuth, (req: RequestWithAuth, res) => {
   recalculateRankingsInDb();
-  res.json(getCurrentParticipantFromDb(req));
+  const current = getAuthenticatedUserById(req.authSession!.userId);
+  if (!current) {
+    res.status(401).json({
+      error: 'Sessão inválida ou usuário não encontrado.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+  res.json(current);
 });
 
-app.put('/api/participants/me', (req, res) => {
-  const rawBody = req.body as Record<string, unknown>;
+const EMAIL_VALIDATION_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 6;
 
-  // Bloqueia explicitamente qualquer tentativa de promover conta a ADMIN via perfil
+function computeInitialsFromName(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'PS';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+export function updateParticipantProfileInDb(
+  targetDb: typeof db,
+  participantId: string,
+  rawBody: Record<string, unknown>,
+  options?: { allowAdminFields?: boolean }
+):
+  | { ok: true; participant: ReturnType<typeof mapParticipantRow>; passwordChanged: boolean; message: string }
+  | { ok: false; httpStatus: number; code: string; error: string } {
+  // Bloqueia tentativa de alterar outro participante pelo payload
   if (
-    rawBody.role !== undefined ||
-    rawBody.isAdmin !== undefined ||
-    rawBody.permissions !== undefined
+    (rawBody.id !== undefined && String(rawBody.id) !== participantId) ||
+    (rawBody.participantId !== undefined && String(rawBody.participantId) !== participantId)
   ) {
-    const session = resolveSessionFromRequest(req);
-    if (!session || session.role !== 'ADMIN') {
-      res.status(403).json({
-        error:
-          'Operação bloqueada (HTTP 403): participantes não podem alterar seu papel (role) ou promover privilégios.',
-        code: 'PRIVILEGE_ESCALATION_BLOCKED',
-      });
-      return;
-    }
+    return {
+      ok: false,
+      httpStatus: 403,
+      code: 'FORBIDDEN_OTHER_PARTICIPANT',
+      error: 'Operação bloqueada (HTTP 403): você só pode atualizar os seus próprios dados cadastrais.',
+    };
   }
 
-  const current = getCurrentParticipantFromDb(req);
-  const updates = req.body as Partial<ReturnType<typeof mapParticipantRow>>;
+  // Bloqueia explicitamente alteração de privilégios, pontos, missões ou campos administrativos
+  if (
+    !options?.allowAdminFields &&
+    (rawBody.role !== undefined ||
+      rawBody.isAdmin !== undefined ||
+      rawBody.permissions !== undefined ||
+      rawBody.points !== undefined ||
+      rawBody.completedMissionsCount !== undefined ||
+      rawBody.completed_missions_count !== undefined ||
+      rawBody.rankingPosition !== undefined ||
+      rawBody.ranking_position !== undefined ||
+      rawBody.status !== undefined ||
+      rawBody.visitedStartupsIds !== undefined)
+  ) {
+    return {
+      ok: false,
+      httpStatus: 403,
+      code: 'PROTECTED_FIELD_MUTATION_BLOCKED',
+      error:
+        'Operação bloqueada (HTTP 403): não é permitido alterar papel, permissões, pontuação ou progresso por esta rota.',
+    };
+  }
 
-  const name = updates.name ?? current.name;
-  const nickname = updates.nickname ?? current.nickname;
-  const email = updates.email ?? current.email;
-  const avatar = updates.avatar ?? current.avatar;
-  const showNick =
-    updates.privacyPreferences?.showNicknameInPublicRanking ??
-    current.privacyPreferences.showNicknameInPublicRanking;
-  const allowNotif =
-    updates.privacyPreferences?.allowActivityNotifications ??
-    current.privacyPreferences.allowActivityNotifications;
-  const shareInt =
-    updates.privacyPreferences?.shareStartupInterests ??
-    current.privacyPreferences.shareStartupInterests;
+  const currentRow = targetDb
+    .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+    .get(participantId) as Record<string, unknown> | undefined;
 
-  db.prepare(`
-    UPDATE participants
-    SET name = ?, nickname = ?, email = ?, avatar = ?,
-        show_nickname_in_public_ranking = ?,
-        allow_activity_notifications = ?,
-        share_startup_interests = ?
-    WHERE id = ?
-  `).run(
-    name,
-    nickname,
-    email,
-    avatar,
-    showNick ? 1 : 0,
-    allowNotif ? 1 : 0,
-    shareInt ? 1 : 0,
-    current.id
-  );
+  if (!currentRow) {
+    return {
+      ok: false,
+      httpStatus: 404,
+      code: 'PARTICIPANT_NOT_FOUND',
+      error: 'Participante não encontrado.',
+    };
+  }
 
-  res.json(getCurrentParticipantFromDb(req));
+  const current = mapParticipantRow(currentRow);
+
+  // 1. Validação de Nome
+  const rawName = rawBody.name !== undefined ? String(rawBody.name).trim() : current.name;
+  if (!rawName || rawName.length < 2) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'INVALID_NAME',
+      error: 'Informe um nome completo válido (mínimo 2 caracteres).',
+    };
+  }
+
+  // 2. Validação de E-mail + Unicidade
+  const rawEmail =
+    rawBody.email !== undefined ? String(rawBody.email).trim().toLowerCase() : current.email.toLowerCase();
+  if (!rawEmail || !EMAIL_VALIDATION_REGEX.test(rawEmail)) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'INVALID_EMAIL',
+      error: 'Informe um endereço de e-mail válido.',
+    };
+  }
+
+  const emailOwner = targetDb
+    .prepare('SELECT id FROM participants WHERE LOWER(email) = ? AND id != ? LIMIT 1')
+    .get(rawEmail, participantId) as { id: string } | undefined;
+
+  if (emailOwner) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      code: 'EMAIL_ALREADY_IN_USE',
+      error: 'Este e-mail já está cadastrado para outro participante.',
+    };
+  }
+
+  // 2.5. Validação de Telefone (quando enviado)
+  let nextPhone: string | null = current.phone ?? null;
+  if (rawBody.phone !== undefined) {
+    const phoneCheck = normalizeAndValidateBrazilianPhone(rawBody.phone);
+    if (!phoneCheck.ok) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: phoneCheck.code,
+        error: phoneCheck.error,
+      };
+    }
+    nextPhone = phoneCheck.normalized;
+  }
+
+  // 3. Validação opcional de Senha
+  const currentPassword =
+    typeof rawBody.currentPassword === 'string' ? rawBody.currentPassword : '';
+  const newPassword = typeof rawBody.newPassword === 'string' ? rawBody.newPassword : '';
+  const confirmNewPassword =
+    typeof rawBody.confirmNewPassword === 'string' ? rawBody.confirmNewPassword : '';
+
+  const wantsPasswordChange = Boolean(currentPassword || newPassword || confirmNewPassword);
+  let nextPasswordHash: string | null = null;
+
+  if (wantsPasswordChange) {
+    if (!currentPassword) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'CURRENT_PASSWORD_REQUIRED',
+        error: 'Informe sua senha atual para definir uma nova senha.',
+      };
+    }
+    if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'WEAK_PASSWORD',
+        error: `A nova senha deve conter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`,
+      };
+    }
+    if (newPassword !== confirmNewPassword) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'PASSWORD_MISMATCH',
+        error: 'A nova senha e a confirmação não coincidem.',
+      };
+    }
+
+    const storedHash = currentRow.password_hash ? String(currentRow.password_hash) : null;
+    if (!verifyPassword(currentPassword, storedHash)) {
+      return {
+        ok: false,
+        httpStatus: 401,
+        code: 'INVALID_CURRENT_PASSWORD',
+        error: 'A senha atual informada está incorreta.',
+      };
+    }
+
+    nextPasswordHash = hashPassword(newPassword);
+  }
+
+  const nextNickname =
+    rawBody.nickname !== undefined && String(rawBody.nickname).trim().length > 0
+      ? String(rawBody.nickname).trim()
+      : rawName.split(/\s+/)[0];
+  const nextAvatar = computeInitialsFromName(rawName);
+
+  targetDb.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    if (nextPasswordHash) {
+      targetDb
+        .prepare(
+          'UPDATE participants SET name = ?, nickname = ?, email = ?, phone = ?, avatar = ?, password_hash = ? WHERE id = ?'
+        )
+        .run(rawName, nextNickname, rawEmail, nextPhone, nextAvatar, nextPasswordHash, participantId);
+    } else {
+      targetDb
+        .prepare('UPDATE participants SET name = ?, nickname = ?, email = ?, phone = ?, avatar = ? WHERE id = ?')
+        .run(rawName, nextNickname, rawEmail, nextPhone, nextAvatar, participantId);
+    }
+
+    if (rawEmail !== current.email.toLowerCase()) {
+      targetDb
+        .prepare('UPDATE auth_sessions SET user_email = ? WHERE user_id = ? AND revoked = 0')
+        .run(rawEmail, participantId);
+    }
+
+    targetDb.exec('COMMIT;');
+  } catch (err) {
+    targetDb.exec('ROLLBACK;');
+    throw err;
+  }
+
+  const updatedRow = targetDb
+    .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+    .get(participantId) as Record<string, unknown>;
+
+  return {
+    ok: true,
+    participant: mapParticipantRow(updatedRow),
+    passwordChanged: Boolean(nextPasswordHash),
+    message: nextPasswordHash
+      ? 'Dados cadastrais e senha atualizados com sucesso.'
+      : 'Dados cadastrais atualizados com sucesso.',
+  };
+}
+
+app.put('/api/participants/me', requireAuth, (req: RequestWithAuth, res) => {
+  const rawBody = (req.body || {}) as Record<string, unknown>;
+  const session = req.authSession!;
+  const current = getAuthenticatedUserById(session.userId);
+
+  if (!current) {
+    res.status(401).json({
+      error: 'Não autenticado. Faça login para atualizar seus dados.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  const result = updateParticipantProfileInDb(db, current.id, rawBody, {
+    allowAdminFields: session.role === 'ADMIN',
+  });
+
+  if (!result.ok) {
+    res.status(result.httpStatus).json({
+      error: result.error,
+      code: result.code,
+    });
+    return;
+  }
+
+  recalculateRankingsInDb();
+  res.json({
+    ok: true,
+    participant: result.participant,
+    passwordChanged: result.passwordChanged,
+    message: result.message,
+  });
+});
+
+// Consulta e atualização da autorização opcional de divulgação pública de imagem (LGPD Art. 7º, I)
+// Totalmente desvinculada do envio de evidências obrigatórias (validação interna: Art. 7º, V)
+app.get('/api/participants/me/image-consent', requireAuth, (req: RequestWithAuth, res) => {
+  const current = getAuthenticatedUserById(req.authSession!.userId);
+  if (!current) {
+    res.status(401).json({
+      error: 'Sessão inválida ou usuário não encontrado.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  res.json({
+    authorized: Boolean(current.imagePublicityConsent),
+    updatedAt: current.imagePublicityConsentUpdatedAt ?? null,
+    optional: true,
+    legalBasis: 'Consentimento livre, informado e revogável (LGPD, Art. 7º, I)',
+    validationNote:
+      'O envio de evidências para validação de missões independe desta autorização e permanece privado.',
+  });
+});
+
+app.put('/api/participants/me/image-consent', requireAuth, (req: RequestWithAuth, res) => {
+  const { authorized } = (req.body || {}) as { authorized?: unknown };
+  if (typeof authorized !== 'boolean') {
+    res.status(400).json({
+      error: 'Informe o campo booleano "authorized" (true ou false).',
+      code: 'INVALID_CONSENT_VALUE',
+    });
+    return;
+  }
+
+  const userId = req.authSession!.userId;
+  const current = getAuthenticatedUserById(userId);
+  if (!current) {
+    res.status(401).json({
+      error: 'Sessão inválida ou usuário não encontrado.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  const updatedAt = new Date().toISOString();
+  db.prepare(
+    `UPDATE participants
+     SET image_publicity_consent = ?, image_publicity_consent_updated_at = ?
+     WHERE id = ?`
+  ).run(authorized ? 1 : 0, updatedAt, userId);
+
+  res.json({
+    ok: true,
+    authorized,
+    updatedAt,
+    message: authorized
+      ? 'Autorização opcional para divulgação pública de imagem registrada com sucesso.'
+      : 'Autorização para divulgação pública de imagem revogada. A revogação não impede sua participação nem o envio de evidências.',
+  });
 });
 
 // Bloqueia tentativas de promoção de papel por endpoints diretos
@@ -1204,6 +1804,145 @@ app.patch('/api/participants/:id/status', requireAdmin, (req, res) => {
     )
     .all() as Record<string, unknown>[];
   res.json(rows.map(mapParticipantRow));
+});
+
+export function resetParticipantPasswordInDb(
+  targetDb: typeof db,
+  params: {
+    adminId: string;
+    participantId: string;
+    newPassword: unknown;
+    confirmPassword: unknown;
+  }
+):
+  | {
+      ok: true;
+      httpStatus: 200;
+      participantId: string;
+      sessionsRevoked: number;
+      updatedAt: string;
+      message: string;
+    }
+  | {
+      ok: false;
+      httpStatus: number;
+      code: string;
+      error: string;
+    } {
+  const newPassword = typeof params.newPassword === 'string' ? params.newPassword : '';
+  const confirmPassword = typeof params.confirmPassword === 'string' ? params.confirmPassword : '';
+
+  if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'WEAK_PASSWORD',
+      error: `A nova senha deve conter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`,
+    };
+  }
+
+  if (newPassword !== confirmPassword) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'PASSWORD_MISMATCH',
+      error: 'A nova senha e a confirmação não coincidem.',
+    };
+  }
+
+  const targetRow = targetDb
+    .prepare('SELECT id, role FROM participants WHERE id = ? LIMIT 1')
+    .get(params.participantId) as { id: string; role: string } | undefined;
+
+  if (!targetRow) {
+    return {
+      ok: false,
+      httpStatus: 404,
+      code: 'PARTICIPANT_NOT_FOUND',
+      error: 'Participante não encontrado.',
+    };
+  }
+
+  if (String(targetRow.role || '').toUpperCase() !== 'PARTICIPANT') {
+    return {
+      ok: false,
+      httpStatus: 403,
+      code: 'ADMIN_PASSWORD_RESET_FORBIDDEN',
+      error: 'Operação negada: não é permitido redefinir senha de contas administrativas por este endpoint.',
+    };
+  }
+
+  const nextPasswordHash = hashPassword(newPassword);
+  const updatedAt = new Date().toISOString();
+  let sessionsRevoked = 0;
+
+  targetDb.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    const updateRes = targetDb
+      .prepare("UPDATE participants SET password_hash = ? WHERE id = ? AND UPPER(role) = 'PARTICIPANT'")
+      .run(nextPasswordHash, targetRow.id);
+
+    if (Number(updateRes.changes) !== 1) {
+      throw new Error('PARTICIPANT_PASSWORD_UPDATE_FAILED');
+    }
+
+    const revokeRes = targetDb
+      .prepare('UPDATE auth_sessions SET revoked = 1 WHERE user_id = ?')
+      .run(targetRow.id);
+    sessionsRevoked = Number(revokeRes.changes || 0);
+
+    targetDb.exec('COMMIT;');
+  } catch (err) {
+    try {
+      targetDb.exec('ROLLBACK;');
+    } catch {
+      // transação já revertida
+    }
+    throw err;
+  }
+
+  console.log(
+    `[AdminAudit] Redefinição administrativa de senha executada: adminId=${params.adminId} targetParticipantId=${targetRow.id} sessionsRevoked=${sessionsRevoked} timestamp=${updatedAt}`
+  );
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    participantId: targetRow.id,
+    sessionsRevoked,
+    updatedAt,
+    message: 'Senha do participante redefinida com sucesso e sessões anteriores revogadas.',
+  };
+}
+
+app.post('/api/participants/:id/reset-password', requireAdmin, (req: RequestWithAuth, res) => {
+  const { id } = req.params;
+  const body = (req.body || {}) as { newPassword?: unknown; confirmPassword?: unknown };
+  const adminId = req.authSession!.userId;
+
+  const result = resetParticipantPasswordInDb(db, {
+    adminId,
+    participantId: id,
+    newPassword: body.newPassword,
+    confirmPassword: body.confirmPassword,
+  });
+
+  if (!result.ok) {
+    res.status(result.httpStatus).json({
+      ok: false,
+      error: result.error,
+      code: result.code,
+    });
+    return;
+  }
+
+  res.status(200).json({
+    ok: true,
+    participantId: result.participantId,
+    sessionsRevoked: result.sessionsRevoked,
+    updatedAt: result.updatedAt,
+    message: result.message,
+  });
 });
 
 // ============================================================================
@@ -1313,8 +2052,20 @@ app.get('/api/missions', (req, res) => {
     res.json(rows.map(mapMissionRow));
     return;
   }
-  const participant = getCurrentParticipantFromDb(req);
-  res.json(getParticipantMissionsFromDb(participant));
+  if (session?.role === 'PARTICIPANT') {
+    const participant = getAuthenticatedUserById(session.userId);
+    if (participant) {
+      res.json(getParticipantMissionsFromDb(participant));
+      return;
+    }
+  }
+  // Sem sessão autenticada: retorna apenas catálogo público ativo, sem progresso pessoal nem efeitos colaterais
+  const publicRows = db
+    .prepare(
+      'SELECT * FROM missions WHERE active = 1 ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+    )
+    .all() as Record<string, unknown>[];
+  res.json(publicRows.map(mapMissionRow));
 });
 
 app.post('/api/missions', requireAdmin, (req, res) => {
@@ -1375,10 +2126,18 @@ app.post('/api/missions', requireAdmin, (req, res) => {
         ? Math.max(1, Math.min(30, Math.trunc(Number(p.timerMinutes))))
         : null;
 
-    const points = Number(p.points || (isOfficial ? 180 : 200));
-    const unlockPoints = isOfficial ? Number(p.unlockPoints || 20) : 0;
-    const completionPoints = isOfficial ? Number(p.completionPoints || 180) : points;
-    const maxSpeedBonus = isOfficial ? Number(p.maxSpeedBonus ?? 50) : 0;
+    const points = isOfficial ? 0 : Number(p.points || 200);
+    const unlockPoints = 0;
+    const completionPoints = isOfficial ? 0 : points;
+    const maxSpeedBonus = 0;
+
+    const requiresEvidence = Boolean(p.requiresEvidence) ? 1 : 0;
+    const rawEvidenceType = String(p.evidenceType || '').toLowerCase();
+    const evidenceType: EvidenceRequirementType | null = requiresEvidence
+      ? rawEvidenceType === 'photo' || rawEvidenceType === 'file' || rawEvidenceType === 'both'
+        ? rawEvidenceType
+        : 'photo'
+      : null;
 
     const newId = `ms-${Date.now()}`;
     db.prepare(`
@@ -1386,8 +2145,9 @@ app.post('/api/missions', requireAdmin, (req, res) => {
         id, title, description, startup_id, startup_name, category,
         points, estimated_time, status, period, completion_criteria,
         active, qr_code_required, quiz_questions_json,
-        sequence_order, timer_minutes, unlock_points, completion_points, max_speed_bonus
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        sequence_order, timer_minutes, unlock_points, completion_points, max_speed_bonus,
+        requires_evidence, evidence_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       newId,
       p.title,
@@ -1407,7 +2167,9 @@ app.post('/api/missions', requireAdmin, (req, res) => {
       parsedTimerMinutes,
       unlockPoints,
       completionPoints,
-      maxSpeedBonus
+      maxSpeedBonus,
+      requiresEvidence,
+      evidenceType
     );
 
     // Se for oficial e ativa, compacta a sequência e recalcula os 1.000 pontos
@@ -1515,6 +2277,22 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
           return;
         }
 
+        // Bloquear alteração de configuração de evidência em missão oficial após início do circuito
+        if (
+          (u.requiresEvidence !== undefined &&
+            Boolean(u.requiresEvidence) !== Boolean(current.requiresEvidence)) ||
+          (u.evidenceType !== undefined &&
+            (u.evidenceType || undefined) !== (current.evidenceType || undefined))
+        ) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. A configuração de evidência das missões oficiais está bloqueada.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
         // Bloquear alteração manual de pontos
         if (u.points !== undefined && Number(u.points) !== current.points) {
           db.exec('ROLLBACK;');
@@ -1569,12 +2347,28 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
               : null
             : (current.timerMinutes ?? null);
 
+        const nextExtraRequiresEvidence =
+          u.requiresEvidence !== undefined
+            ? Boolean(u.requiresEvidence)
+              ? 1
+              : 0
+            : current.requiresEvidence
+            ? 1
+            : 0;
+        const rawExtraEvType = String(u.evidenceType ?? current.evidenceType ?? '').toLowerCase();
+        const nextExtraEvidenceType: EvidenceRequirementType | null = nextExtraRequiresEvidence
+          ? rawExtraEvType === 'photo' || rawExtraEvType === 'file' || rawExtraEvType === 'both'
+            ? rawExtraEvType
+            : 'photo'
+          : null;
+
         db.prepare(`
           UPDATE missions
           SET title = ?, description = ?, startup_id = ?, startup_name = ?,
               category = ?, points = ?, estimated_time = ?, status = ?,
               period = ?, completion_criteria = ?, active = ?,
-              sequence_order = NULL, timer_minutes = ?
+              sequence_order = NULL, timer_minutes = ?,
+              requires_evidence = ?, evidence_type = ?
           WHERE id = ?
         `).run(
           u.title ?? current.title,
@@ -1589,6 +2383,8 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
           u.completionCriteria ?? current.completionCriteria,
           (u.active ?? current.active) ? 1 : 0,
           parsedTimerMinutes,
+          nextExtraRequiresEvidence,
+          nextExtraEvidenceType,
           id
         );
 
@@ -1649,12 +2445,28 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
       newSequenceOrder = null;
     }
 
+    const nextRequiresEvidence =
+      u.requiresEvidence !== undefined
+        ? Boolean(u.requiresEvidence)
+          ? 1
+          : 0
+        : current.requiresEvidence
+        ? 1
+        : 0;
+    const rawNextEvType = String(u.evidenceType ?? current.evidenceType ?? '').toLowerCase();
+    const nextEvidenceType: EvidenceRequirementType | null = nextRequiresEvidence
+      ? rawNextEvType === 'photo' || rawNextEvType === 'file' || rawNextEvType === 'both'
+        ? rawNextEvType
+        : 'photo'
+      : null;
+
     db.prepare(`
       UPDATE missions
       SET title = ?, description = ?, startup_id = ?, startup_name = ?,
           category = ?, points = ?, estimated_time = ?, status = ?,
           period = ?, completion_criteria = ?, active = ?,
-          sequence_order = ?, timer_minutes = ?
+          sequence_order = ?, timer_minutes = ?,
+          requires_evidence = ?, evidence_type = ?
       WHERE id = ?
     `).run(
       u.title ?? current.title,
@@ -1670,6 +2482,8 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
       willBeActive,
       newSequenceOrder,
       parsedTimerMinutes,
+      nextRequiresEvidence,
+      nextEvidenceType,
       id
     );
 
@@ -1726,9 +2540,10 @@ function startMissionForParticipant(participantId: string, missionId: string) {
         .get(seqOrder - 1) as { id: string; title: string } | undefined;
 
       if (prevMission) {
-        const prevCompleteTx = db
-          .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-          .get(`COMPLETE:${participantId}:${prevMission.id}`);
+        const prevCompleteTx = findActiveTransactionByEventKeys(participantId, [
+          `COMPLETE:${participantId}:${prevMission.id}`,
+          `COMPLETE:${participantId}:${prevMission.id}:POST_SIM_REV`,
+        ]);
         const prevPm = db
           .prepare(
             'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
@@ -1795,7 +2610,21 @@ function startMissionForParticipant(participantId: string, missionId: string) {
     const elapsedSeconds = Math.max(0, Math.round((nowMs - effectiveStartedAtMs) / 1000));
     const remainingSeconds = Math.max(0, Math.ceil((effectiveTargetEndAtMs - nowMs) / 1000));
     const isExpired = remainingSeconds <= 0;
-    const missionMaxBonus = Number(missionRow.max_speed_bonus ?? 50);
+    const rawBonus = missionRow.max_speed_bonus;
+    if (
+      rawBonus === null || rawBonus === undefined ||
+      !Number.isInteger(Number(rawBonus)) || Number(rawBonus) < 0
+    ) {
+      db.exec('ROLLBACK;');
+      return {
+        ok: false,
+        httpStatus: 500,
+        errorCode: 'INVALID_CIRCUIT_SCORING',
+        error: `Erro contábil: a missão oficial "${missionRow.title}" não possui max_speed_bonus dinâmico válido no banco.`,
+      };
+    }
+    const missionMaxBonus = Number(rawBonus);
+
     const potentialSpeedBonus = isExpired
       ? 0
       : Math.max(
@@ -1830,10 +2659,10 @@ function startMissionForParticipant(participantId: string, missionId: string) {
 }
 
 // Iniciação explícita da missão e do cronômetro (Etapa 3)
-app.post('/api/missions/:id/start', (req, res) => {
+app.post('/api/missions/:id/start', requireParticipant, (req: RequestWithAuth, res) => {
   const { id } = req.params;
-  const currentParticipant = getCurrentParticipantFromDb(req);
-  const result = startMissionForParticipant(currentParticipant.id, id);
+  const participantId = req.authSession!.userId;
+  const result = startMissionForParticipant(participantId, id);
 
   if (!result.ok) {
     res.status(result.httpStatus).json({
@@ -1848,21 +2677,42 @@ app.post('/api/missions/:id/start', (req, res) => {
 });
 
 // Consulta do status em tempo real do cronômetro da missão
-app.get('/api/missions/:id/timer', (req, res) => {
+app.get('/api/missions/:id/timer', requireParticipant, (req: RequestWithAuth, res) => {
   const { id } = req.params;
-  const currentParticipant = getCurrentParticipantFromDb(req);
+  const participantId = req.authSession!.userId;
 
   const pm = db
     .prepare(
       'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
     )
-    .get(currentParticipant.id, id) as Record<string, unknown> | undefined;
+    .get(participantId, id) as Record<string, unknown> | undefined;
 
   const missionRow = db
     .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
     .get(id) as Record<string, unknown> | undefined;
 
-  const missionMaxBonus = Number(missionRow?.max_speed_bonus ?? 50);
+  if (!missionRow) {
+    res.status(404).json({ error: 'Missão não encontrada' });
+    return;
+  }
+
+  const isOfficial = missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+  const rawMaxBonus = missionRow.max_speed_bonus;
+
+  if (
+    isOfficial &&
+    (rawMaxBonus === null || rawMaxBonus === undefined || !Number.isInteger(Number(rawMaxBonus)) || Number(rawMaxBonus) < 0)
+  ) {
+    res.status(500).json({
+      error: `Erro contábil: a missão oficial "${missionRow.title}" não possui max_speed_bonus dinâmico válido no banco.`,
+      code: 'INVALID_CIRCUIT_SCORING',
+    });
+    return;
+  }
+
+  const missionMaxBonus = isOfficial
+    ? Number(rawMaxBonus)
+    : (Number.isInteger(Number(rawMaxBonus)) && Number(rawMaxBonus) >= 0 ? Number(rawMaxBonus) : 0);
 
   const nowMs = Date.now();
   const durationSeconds = pm?.duration_seconds
@@ -1925,10 +2775,19 @@ app.get('/api/missions/:id/timer', (req, res) => {
   });
 });
 
-app.patch('/api/missions/:id/status', (req, res) => {
+app.patch('/api/missions/:id/status', requireParticipant, (req: RequestWithAuth, res) => {
   const { id } = req.params;
   const { status } = req.body as { status?: string };
-  const currentParticipant = getCurrentParticipantFromDb(req);
+  const currentParticipant = getAuthenticatedUserById(req.authSession!.userId);
+
+  if (!currentParticipant) {
+    res.status(401).json({
+      success: false,
+      error: 'Sessão de participante inválida.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
 
   ensureParticipantFirstMissionUnlockedInDb(currentParticipant.id);
 
@@ -1958,12 +2817,25 @@ app.patch('/api/missions/:id/status', (req, res) => {
   res.json(updated);
 });
 
-app.post('/api/missions/:id/complete', (req, res) => {
+app.post('/api/missions/:id/complete', requireParticipant, (req: RequestWithAuth, res) => {
   const { id } = req.params;
-  const currentParticipant = getCurrentParticipantFromDb(req);
+  const participantId = req.authSession!.userId;
+
+  const missionCheck = db
+    .prepare('SELECT id, title, requires_evidence FROM missions WHERE id = ? LIMIT 1')
+    .get(id) as { id: string; title: string; requires_evidence: number } | undefined;
+
+  if (missionCheck && Boolean(missionCheck.requires_evidence)) {
+    res.status(400).json({
+      success: false,
+      status: 'EVIDENCE_REQUIRED',
+      error: `A missão "${missionCheck.title}" exige o envio e a aprovação administrativa de evidência antes da conclusão.`,
+    });
+    return;
+  }
 
   const result = completeSequentialMissionInSql({
-    participantId: currentParticipant.id,
+    participantId,
     missionId: id,
     sourceType: 'Missão',
   });
@@ -2110,6 +2982,450 @@ app.delete('/api/missions/:id', requireAdmin, (req, res) => {
   }
 });
 
+export function submitEvidenceUploadInDb(
+  targetDb: typeof db,
+  params: {
+    participantId: string;
+    participantName: string;
+    missionId: string;
+    buffer: Buffer;
+    originalName: string;
+    declaredMimeType: string;
+    description?: string;
+    storageDir?: string;
+  }
+):
+  | { ok: true; httpStatus: 201; validation: ReturnType<typeof mapValidationRow> }
+  | { ok: false; httpStatus: number; code: string; error: string } {
+  const storageDir = params.storageDir || EVIDENCE_STORAGE_DIR;
+
+  const missionRow = targetDb
+    .prepare('SELECT * FROM missions WHERE id = ? AND active = 1 LIMIT 1')
+    .get(params.missionId) as Record<string, unknown> | undefined;
+
+  if (!missionRow) {
+    return {
+      ok: false,
+      httpStatus: 404,
+      code: 'MISSION_NOT_FOUND',
+      error: 'Missão não encontrada ou inativa.',
+    };
+  }
+
+  if (!Boolean(missionRow.requires_evidence)) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'EVIDENCE_NOT_REQUIRED',
+      error: 'Esta missão não exige o envio de evidência por arquivo.',
+    };
+  }
+
+  const requiredType: EvidenceRequirementType =
+    missionRow.evidence_type === 'photo' ||
+    missionRow.evidence_type === 'file' ||
+    missionRow.evidence_type === 'both'
+      ? missionRow.evidence_type
+      : 'photo';
+
+  const isOfficial =
+    missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+
+  // Valida pontuação dinâmica da missão oficial antes de aceitar arquivo
+  let completionPoints = 0;
+  if (isOfficial) {
+    const rawComp = missionRow.completion_points;
+    if (
+      rawComp === null ||
+      rawComp === undefined ||
+      !Number.isInteger(Number(rawComp)) ||
+      Number(rawComp) <= 0
+    ) {
+      return {
+        ok: false,
+        httpStatus: 500,
+        code: 'INVALID_CIRCUIT_SCORING',
+        error: `A missão oficial "${missionRow.title}" não possui completion_points dinâmico válido no banco.`,
+      };
+    }
+    completionPoints = Number(rawComp);
+  } else {
+    completionPoints = Number(missionRow.points || 0);
+  }
+
+  // Validação completa do arquivo no backend (extensão, MIME, magic bytes, tamanho <= 5 MB)
+  const fileCheck = validateAndDetectEvidenceFile({
+    buffer: params.buffer,
+    originalName: params.originalName,
+    declaredMimeType: params.declaredMimeType,
+    requiredType,
+  });
+  if (!fileCheck.ok) {
+    return fileCheck;
+  }
+
+  // Grava arquivo em armazenamento privado com nome interno UUID seguro
+  saveEvidenceFileToDisk(params.buffer, fileCheck.storedName, storageDir);
+
+  const newId = `val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const evidenceCode = `EV-${Date.now().toString().slice(-6)}`;
+  const nowStr = new Date().toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const description =
+    (params.description || '').trim() || `Arquivo enviado: ${fileCheck.safeDisplayName}`;
+
+  targetDb.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    // Verifica bloqueio sequencial dentro da transação (elimina TOCTOU)
+    if (isOfficial && Number(missionRow.sequence_order) > 1) {
+      const seqOrder = Number(missionRow.sequence_order);
+      const prevMission = targetDb
+        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
+        .get(seqOrder - 1) as { id: string; title: string } | undefined;
+
+      if (prevMission) {
+        const prevCompleteTx = findActiveTransactionByEventKeys(
+          params.participantId,
+          [
+            `COMPLETE:${params.participantId}:${prevMission.id}`,
+            `COMPLETE:${params.participantId}:${prevMission.id}:POST_SIM_REV`,
+          ],
+          targetDb
+        );
+        const prevPm = targetDb
+          .prepare(
+            'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+          )
+          .get(params.participantId, prevMission.id) as { status: string } | undefined;
+
+        if (!prevCompleteTx && (!prevPm || prevPm.status !== 'Concluída')) {
+          targetDb.exec('ROLLBACK;');
+          deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+          return {
+            ok: false,
+            httpStatus: 403,
+            code: 'MISSION_LOCKED',
+            error: `Bloqueio sequencial: conclua primeiro a Missão 0${seqOrder - 1} antes de enviar evidências desta missão.`,
+          };
+        }
+      }
+    }
+
+    // Impede envio duplicado dentro da mesma transação (elimina TOCTOU)
+    const existingCompleteTx = findActiveTransactionByEventKeys(
+      params.participantId,
+      [
+        `COMPLETE:${params.participantId}:${params.missionId}`,
+        `COMPLETE:${params.participantId}:${params.missionId}:POST_SIM_REV`,
+      ],
+      targetDb
+    );
+    const existingPm = targetDb
+      .prepare(
+        'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+      )
+      .get(params.participantId, params.missionId) as { status: string } | undefined;
+    const existingSubmission = targetDb
+      .prepare(
+        "SELECT id, status FROM mission_completions WHERE participant_id = ? AND mission_id = ? AND status IN ('Pendente', 'Aprovada') LIMIT 1"
+      )
+      .get(params.participantId, params.missionId) as { id: string; status: string } | undefined;
+
+    if (
+      existingCompleteTx ||
+      (existingPm && existingPm.status === 'Concluída') ||
+      existingSubmission
+    ) {
+      targetDb.exec('ROLLBACK;');
+      deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'EVIDENCE_ALREADY_SUBMITTED',
+        error:
+          existingSubmission?.status === 'Pendente'
+            ? 'Você já enviou uma evidência para esta missão e ela está aguardando validação.'
+            : 'Esta missão já foi concluída e validada anteriormente.',
+      };
+    }
+
+    targetDb
+      .prepare(`
+        INSERT INTO mission_completions (
+          id, participant_id, participant_name, mission_id, mission_title,
+          startup_id, startup_name, submitted_at, evidence_description,
+          evidence_code, evidence_file_name, evidence_stored_name,
+          evidence_mime_type, evidence_size_bytes, evidence_sha256,
+          points_awarded, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendente')
+      `)
+      .run(
+        newId,
+        params.participantId,
+        params.participantName,
+        String(missionRow.id),
+        String(missionRow.title),
+        String(missionRow.startup_id),
+        String(missionRow.startup_name),
+        nowStr,
+        description,
+        evidenceCode,
+        fileCheck.safeDisplayName,
+        fileCheck.storedName,
+        fileCheck.mimeType,
+        fileCheck.sizeBytes,
+        fileCheck.sha256,
+        completionPoints
+      );
+
+    if (isOfficial) {
+      targetDb
+        .prepare(
+          "UPDATE participant_missions SET status = 'Aguardando validação' WHERE participant_id = ? AND mission_id = ?"
+        )
+        .run(params.participantId, String(missionRow.id));
+    }
+
+    targetDb.exec('COMMIT;');
+  } catch (err: any) {
+    try {
+      targetDb.exec('ROLLBACK;');
+    } catch {
+      // transação já revertida
+    }
+    deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+    if (String(err?.message || '').includes('UNIQUE constraint failed')) {
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'EVIDENCE_ALREADY_SUBMITTED',
+        error: 'Você já possui uma evidência ativa ou aprovada para esta missão.',
+      };
+    }
+    throw err;
+  }
+
+  const created = targetDb
+    .prepare('SELECT * FROM mission_completions WHERE id = ?')
+    .get(newId) as Record<string, unknown>;
+
+  return {
+    ok: true,
+    httpStatus: 201,
+    validation: mapValidationRow(created),
+  };
+}
+
+const evidenceRawBodyMiddleware = express.raw({
+  type: 'application/octet-stream',
+  limit: '6mb',
+});
+
+app.post(
+  '/api/evidences/upload',
+  evidenceUploadRateLimiter,
+  (req, res, next) => {
+    evidenceRawBodyMiddleware(req, res, (err?: any) => {
+      if (err) {
+        if (err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413) {
+          res.status(413).json({
+            error: 'O arquivo excede o limite máximo permitido de 5 MB.',
+            code: 'FILE_TOO_LARGE',
+          });
+          return;
+        }
+        res.status(400).json({
+          error: 'Falha ao processar o arquivo enviado.',
+          code: 'INVALID_UPLOAD_PAYLOAD',
+        });
+        return;
+      }
+      next();
+    });
+  },
+  (req, res) => {
+    const session = resolveSessionFromRequest(req);
+    if (!session) {
+      res.status(401).json({
+        error: 'Não autenticado. Faça login para enviar evidências.',
+        code: 'AUTH_REQUIRED',
+      });
+      return;
+    }
+
+    if (session.role !== 'PARTICIPANT') {
+      res.status(403).json({
+        error: 'Apenas participantes autenticados podem enviar evidências de missões.',
+        code: 'PARTICIPANT_ROLE_REQUIRED',
+      });
+      return;
+    }
+
+    const participantRow = db
+      .prepare("SELECT * FROM participants WHERE id = ? AND UPPER(role) = 'PARTICIPANT' LIMIT 1")
+      .get(session.userId) as Record<string, unknown> | undefined;
+
+    if (!participantRow) {
+      res.status(401).json({
+        error: 'Sessão de participante inválida ou expirada.',
+        code: 'AUTH_REQUIRED',
+      });
+      return;
+    }
+
+    const currentParticipant = mapParticipantRow(participantRow);
+
+    const headerParticipantId = String(req.headers['x-participant-id'] || '').trim();
+    if (headerParticipantId && headerParticipantId !== currentParticipant.id) {
+      res.status(403).json({
+        error: 'Operação negada: não é permitido enviar evidências em nome de outro participante.',
+        code: 'FORBIDDEN_PARTICIPANT_MISMATCH',
+      });
+      return;
+    }
+
+    const missionId = String(req.headers['x-mission-id'] || '').trim();
+    const rawFileNameHeader = String(req.headers['x-file-name'] || 'evidencia');
+    let decodedFileName = rawFileNameHeader;
+    try {
+      decodedFileName = decodeURIComponent(rawFileNameHeader);
+    } catch {
+      decodedFileName = rawFileNameHeader;
+    }
+    const declaredMimeType = String(req.headers['x-file-mime'] || '').trim();
+    const rawDescHeader = String(req.headers['x-evidence-description'] || '');
+    let decodedDesc = rawDescHeader;
+    try {
+      decodedDesc = decodeURIComponent(rawDescHeader);
+    } catch {
+      decodedDesc = rawDescHeader;
+    }
+
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+
+    const result = submitEvidenceUploadInDb(db, {
+      participantId: currentParticipant.id,
+      participantName: currentParticipant.name,
+      missionId,
+      buffer,
+      originalName: decodedFileName,
+      declaredMimeType,
+      description: decodedDesc,
+    });
+
+    if (!result.ok) {
+      res.status(result.httpStatus).json({
+        error: result.error,
+        code: result.code,
+      });
+      return;
+    }
+
+    res.status(201).json({
+      ok: true,
+      validation: result.validation,
+      message: 'Evidência enviada com sucesso e aguardando validação administrativa.',
+    });
+  }
+);
+
+app.get('/api/evidences/me', (req, res) => {
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({
+      error: 'Não autenticado. Faça login para consultar suas evidências.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  const rows = db
+    .prepare('SELECT * FROM mission_completions WHERE participant_id = ? ORDER BY rowid DESC')
+    .all(session.userId) as Record<string, unknown>[];
+  res.json(rows.map(mapValidationRow));
+});
+
+app.get('/api/evidences/:id/file', (req, res) => {
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({
+      error: 'Não autenticado. Faça login para acessar evidências.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  const { id } = req.params;
+  const row = db
+    .prepare('SELECT * FROM mission_completions WHERE id = ? LIMIT 1')
+    .get(id) as Record<string, unknown> | undefined;
+
+  if (!row || !row.evidence_stored_name) {
+    res.status(404).json({
+      error: 'Arquivo de evidência não encontrado.',
+      code: 'EVIDENCE_FILE_NOT_FOUND',
+    });
+    return;
+  }
+
+  const isOwner = String(row.participant_id) === session.userId;
+  const isAdminUser = session.role === 'ADMIN';
+  if (!isOwner && !isAdminUser) {
+    res.status(403).json({
+      error: 'Acesso negado: você só pode consultar suas próprias evidências.',
+      code: 'FORBIDDEN_EVIDENCE_ACCESS',
+    });
+    return;
+  }
+
+  try {
+    const filePath = resolveSafeEvidenceFilePath(String(row.evidence_stored_name));
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({
+        error: 'Arquivo físico de evidência não encontrado no servidor.',
+        code: 'EVIDENCE_FILE_MISSING',
+      });
+      return;
+    }
+
+    const mimeType = String(row.evidence_mime_type || 'application/octet-stream');
+    const rawDisplayName = String(row.evidence_file_name || 'evidencia')
+      .replace(/[\r\n\x00-\x1f\x7f]+/g, '_')
+      .trim() || 'evidencia';
+    const asciiFallback =
+      rawDisplayName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\x20-\x7e]/g, '_')
+        .replace(/["\\;]/g, '_')
+        .trim() || 'evidencia';
+    const encodedUtf8 = encodeURIComponent(rawDisplayName).replace(
+      /['()*]/g,
+      (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+    );
+    const isPdf = mimeType === 'application/pdf';
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader(
+      'Content-Disposition',
+      `${isPdf ? 'attachment' : 'inline'}; filename="${asciiFallback}"; filename*=UTF-8''${encodedUtf8}`
+    );
+    res.sendFile(filePath);
+  } catch {
+    res.status(400).json({
+      error: 'Referência de arquivo inválida.',
+      code: 'INVALID_EVIDENCE_REFERENCE',
+    });
+  }
+});
+
 app.get('/api/validations', requireAdmin, (_req, res) => {
   const rows = db
     .prepare('SELECT * FROM mission_completions ORDER BY rowid DESC')
@@ -2118,38 +3434,97 @@ app.get('/api/validations', requireAdmin, (_req, res) => {
 });
 
 app.post('/api/validations', (req, res) => {
-  const p = req.body;
-  const currentParticipant = getCurrentParticipantFromDb(req);
-  const targetParticipantId = p.participantId || currentParticipant.id;
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({
+      error: 'Não autenticado. Faça login para enviar validações.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  if (session.role !== 'PARTICIPANT') {
+    res.status(403).json({
+      error: 'Apenas participantes autenticados podem enviar submissões de validação.',
+      code: 'PARTICIPANT_ROLE_REQUIRED',
+    });
+    return;
+  }
+
+  const participantRow = db
+    .prepare("SELECT * FROM participants WHERE id = ? AND UPPER(role) = 'PARTICIPANT' LIMIT 1")
+    .get(session.userId) as Record<string, unknown> | undefined;
+
+  if (!participantRow) {
+    res.status(401).json({
+      error: 'Sessão de participante inválida.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  const currentParticipant = mapParticipantRow(participantRow);
+  const p = (req.body || {}) as Record<string, unknown>;
+
+  if (
+    p.participantId !== undefined &&
+    p.participantId !== null &&
+    String(p.participantId).trim() !== '' &&
+    String(p.participantId) !== currentParticipant.id
+  ) {
+    res.status(403).json({
+      error: 'Operação negada: não é permitido enviar validações em nome de outro participante.',
+      code: 'FORBIDDEN_PARTICIPANT_MISMATCH',
+    });
+    return;
+  }
+
+  const targetParticipantId = currentParticipant.id;
+  const missionId = String(p.missionId || '').trim();
 
   ensureParticipantFirstMissionUnlockedInDb(targetParticipantId);
 
   const missionRow = db
-    .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
-    .get(p.missionId) as Record<string, unknown> | undefined;
+    .prepare('SELECT * FROM missions WHERE id = ? AND active = 1 LIMIT 1')
+    .get(missionId) as Record<string, unknown> | undefined;
 
-  if (missionRow && missionRow.sequence_order !== null && Number(missionRow.sequence_order) > 1) {
-    const seqOrder = Number(missionRow.sequence_order);
-    const prevMission = db
-      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-      .get(seqOrder - 1) as { id: string; title: string } | undefined;
-
-    if (prevMission) {
-      const prevCompleteTx = db
-        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-        .get(`COMPLETE:${targetParticipantId}:${prevMission.id}`) as
-        | { id: string }
-        | undefined;
-      if (!prevCompleteTx) {
-        res.status(403).json({
-          error: `Bloqueio sequencial: conclua primeiro a Missão 0${seqOrder - 1} antes de enviar evidências desta missão.`,
-        });
-        return;
-      }
-    }
+  if (!missionRow) {
+    res.status(404).json({ error: 'Missão não encontrada ou inativa.' });
+    return;
   }
 
-  const newId = `val-${Date.now()}`;
+  if (Boolean(missionRow.requires_evidence)) {
+    res.status(400).json({
+      error: `A missão "${missionRow.title}" exige o envio de arquivo de evidência pela rota oficial de upload.`,
+      status: 'EVIDENCE_REQUIRED',
+      code: 'EVIDENCE_REQUIRED',
+    });
+    return;
+  }
+
+  const isOfficial = missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+  let completionPoints = 0;
+
+  if (isOfficial) {
+    const rawComp = missionRow.completion_points;
+    if (
+      rawComp === null ||
+      rawComp === undefined ||
+      !Number.isInteger(Number(rawComp)) ||
+      Number(rawComp) <= 0
+    ) {
+      res.status(500).json({
+        error: `A missão oficial "${missionRow.title}" não possui completion_points dinâmico válido no banco.`,
+        code: 'INVALID_CIRCUIT_SCORING',
+      });
+      return;
+    }
+    completionPoints = Number(rawComp);
+  } else {
+    completionPoints = Number(missionRow.points || 0);
+  }
+
+  const newId = `val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const nowStr = new Date().toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
@@ -2157,13 +3532,70 @@ app.post('/api/validations', (req, res) => {
     hour: '2-digit',
     minute: '2-digit',
   });
-
-  const completionPoints = missionRow
-    ? Number(missionRow.completion_points ?? missionRow.points ?? 180)
-    : 180;
+  const evidenceDescription = String(p.evidenceDescription || '').trim() || 'Registro enviado para validação';
+  const evidenceCode = String(p.evidenceCode || `EV-${Date.now().toString().slice(-6)}`).trim();
 
   db.exec('BEGIN IMMEDIATE TRANSACTION;');
   try {
+    if (isOfficial && Number(missionRow.sequence_order) > 1) {
+      const seqOrder = Number(missionRow.sequence_order);
+      const prevMission = db
+        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
+        .get(seqOrder - 1) as { id: string; title: string } | undefined;
+
+      if (prevMission) {
+        const prevCompleteTx = findActiveTransactionByEventKeys(targetParticipantId, [
+          `COMPLETE:${targetParticipantId}:${prevMission.id}`,
+          `COMPLETE:${targetParticipantId}:${prevMission.id}:POST_SIM_REV`,
+        ]);
+        const prevPm = db
+          .prepare(
+            'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+          )
+          .get(targetParticipantId, prevMission.id) as { status: string } | undefined;
+
+        if (!prevCompleteTx && (!prevPm || prevPm.status !== 'Concluída')) {
+          db.exec('ROLLBACK;');
+          res.status(403).json({
+            error: `Bloqueio sequencial: conclua primeiro a Missão 0${seqOrder - 1} antes de enviar evidências desta missão.`,
+            code: 'MISSION_LOCKED',
+          });
+          return;
+        }
+      }
+    }
+
+    const existingCompleteTx = findActiveTransactionByEventKeys(targetParticipantId, [
+      `COMPLETE:${targetParticipantId}:${missionId}`,
+      `COMPLETE:${targetParticipantId}:${missionId}:POST_SIM_REV`,
+    ]);
+    const existingPm = db
+      .prepare(
+        'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+      )
+      .get(targetParticipantId, missionId) as { status: string } | undefined;
+    const existingSubmission = db
+      .prepare(
+        "SELECT id, status FROM mission_completions WHERE participant_id = ? AND mission_id = ? AND status IN ('Pendente', 'Aprovada') LIMIT 1"
+      )
+      .get(targetParticipantId, missionId) as { id: string; status: string } | undefined;
+
+    if (
+      existingCompleteTx ||
+      (existingPm && existingPm.status === 'Concluída') ||
+      existingSubmission
+    ) {
+      db.exec('ROLLBACK;');
+      res.status(409).json({
+        error:
+          existingSubmission?.status === 'Pendente'
+            ? 'Você já possui uma validação pendente para esta missão.'
+            : 'Esta missão já foi concluída e validada anteriormente.',
+        code: 'EVIDENCE_ALREADY_SUBMITTED',
+      });
+      return;
+    }
+
     db.prepare(`
       INSERT INTO mission_completions (
         id, participant_id, participant_name, mission_id, mission_title,
@@ -2173,23 +3605,36 @@ app.post('/api/validations', (req, res) => {
     `).run(
       newId,
       targetParticipantId,
-      p.participantName || currentParticipant.name,
-      p.missionId,
-      p.missionTitle,
-      p.startupId,
-      p.startupName,
+      currentParticipant.name,
+      String(missionRow.id),
+      String(missionRow.title),
+      String(missionRow.startup_id),
+      String(missionRow.startup_name),
       nowStr,
-      p.evidenceDescription,
-      p.evidenceCode,
+      evidenceDescription,
+      evidenceCode,
       completionPoints
     );
 
-    db.prepare(
-      "UPDATE participant_missions SET status = 'Aguardando validação' WHERE participant_id = ? AND mission_id = ?"
-    ).run(targetParticipantId, p.missionId);
+    if (isOfficial) {
+      db.prepare(
+        "UPDATE participant_missions SET status = 'Aguardando validação' WHERE participant_id = ? AND mission_id = ?"
+      ).run(targetParticipantId, String(missionRow.id));
+    }
     db.exec('COMMIT;');
-  } catch (err) {
-    db.exec('ROLLBACK;');
+  } catch (err: any) {
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // transação já revertida
+    }
+    if (String(err?.message || '').includes('UNIQUE constraint failed')) {
+      res.status(409).json({
+        error: 'Você já possui uma validação ativa ou aprovada para esta missão.',
+        code: 'EVIDENCE_ALREADY_SUBMITTED',
+      });
+      return;
+    }
     throw err;
   }
 
@@ -2201,7 +3646,15 @@ app.post('/api/validations', (req, res) => {
 
 app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
   const { id } = req.params;
-  const { decision } = req.body as { decision: 'Aprovada' | 'Rejeitada' };
+  const { decision } = (req.body || {}) as { decision?: 'Aprovada' | 'Rejeitada' };
+
+  if (decision !== 'Aprovada' && decision !== 'Rejeitada') {
+    res.status(400).json({
+      error: 'Decisão inválida. Utilize "Aprovada" ou "Rejeitada".',
+      code: 'INVALID_DECISION',
+    });
+    return;
+  }
 
   const row = db
     .prepare('SELECT * FROM mission_completions WHERE id = ?')
@@ -2213,32 +3666,236 @@ app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
   }
 
   const item = mapValidationRow(row);
-  if (item.status === 'Aprovada' && decision === 'Aprovada') {
-    res.status(409).json({ error: 'Este item de validação já foi aprovado anteriormente.' });
+  if (item.status === 'Aprovada') {
+    res.status(409).json({
+      error: 'Este item de validação já foi aprovado anteriormente e não pode ser alterado.',
+      code: 'VALIDATION_ALREADY_APPROVED',
+    });
+    return;
+  }
+  if (item.status === 'Rejeitada') {
+    res.status(409).json({
+      error: 'Este item de validação já foi rejeitado e não pode ser revisado novamente.',
+      code: 'VALIDATION_ALREADY_REJECTED',
+    });
     return;
   }
 
   if (decision === 'Aprovada') {
-    const seqResult = completeSequentialMissionInSql({
-      participantId: item.participantId,
-      missionId: item.missionId,
-      sourceType: 'Missão',
-    });
-    if (!seqResult.ok && seqResult.httpStatus !== 409) {
-      res.status(seqResult.httpStatus).json({ error: seqResult.message });
+    const missionRow = db
+      .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
+      .get(item.missionId) as Record<string, unknown> | undefined;
+
+    if (!missionRow) {
+      res.status(404).json({ error: 'Missão associada à evidência não encontrada.' });
       return;
     }
-    db.prepare('UPDATE mission_completions SET status = ? WHERE id = ?').run(decision, id);
+
+    const isOfficialSequential =
+      missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+
+    if (isOfficialSequential) {
+      // Transição atômica condicional: somente 1 requisição concorrente consegue reivindicar o status 'Pendente'
+      const claimResult = db
+        .prepare("UPDATE mission_completions SET status = 'Aprovada' WHERE id = ? AND status = 'Pendente'")
+        .run(id);
+
+      if (Number(claimResult.changes) === 0) {
+        const latest = db
+          .prepare('SELECT status FROM mission_completions WHERE id = ? LIMIT 1')
+          .get(id) as { status: string } | undefined;
+        res.status(409).json({
+          error:
+            latest?.status === 'Rejeitada'
+              ? 'Este item de validação já foi rejeitado.'
+              : 'Este item de validação já foi revisado anteriormente.',
+          code:
+            latest?.status === 'Rejeitada'
+              ? 'VALIDATION_ALREADY_REJECTED'
+              : 'VALIDATION_ALREADY_APPROVED',
+        });
+        return;
+      }
+
+      const seqResult = completeSequentialMissionInSql({
+        participantId: item.participantId,
+        missionId: item.missionId,
+        sourceType: 'Missão',
+      });
+      if (!seqResult.ok && seqResult.httpStatus !== 409) {
+        db.prepare("UPDATE mission_completions SET status = 'Pendente' WHERE id = ?").run(id);
+        res.status(seqResult.httpStatus).json({ error: seqResult.message });
+        return;
+      }
+    } else {
+      // Missão Extra (fora do circuito sequencial): aprova evidência respeitando teto de 1.000 pts E reserva oficial
+      db.exec('BEGIN IMMEDIATE TRANSACTION;');
+      try {
+        const lockedValidation = db
+          .prepare('SELECT status FROM mission_completions WHERE id = ? LIMIT 1')
+          .get(id) as { status: string } | undefined;
+
+        if (!lockedValidation || lockedValidation.status !== 'Pendente') {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              lockedValidation?.status === 'Rejeitada'
+                ? 'Este item de validação já foi rejeitado.'
+                : 'Este item de validação já foi revisado anteriormente.',
+            code:
+              lockedValidation?.status === 'Rejeitada'
+                ? 'VALIDATION_ALREADY_REJECTED'
+                : 'VALIDATION_ALREADY_APPROVED',
+          });
+          return;
+        }
+
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
+        const participantRow = db
+          .prepare(
+            'SELECT id, name, points, completed_missions_count, visited_startups_json FROM participants WHERE id = ? LIMIT 1'
+          )
+          .get(item.participantId) as
+          | {
+              id: string;
+              name: string;
+              points: number;
+              completed_missions_count: number;
+              visited_startups_json: string;
+            }
+          | undefined;
+
+        if (!participantRow) {
+          db.exec('ROLLBACK;');
+          res.status(404).json({ error: 'Participante não encontrado para aprovação.' });
+          return;
+        }
+
+        const baseEventKey = `COMPLETE:${item.participantId}:${item.missionId}`;
+        const existingTx = findActiveTransactionByEventKeys(item.participantId, [
+          baseEventKey,
+          `${baseEventKey}:POST_SIM_REV`,
+        ]);
+
+        const prevPoints = Number(participantRow.points || 0);
+        const requestedPts = Math.max(0, Math.trunc(Number(missionRow.points || 0)));
+        const reservation = calculateParticipantReservedPoints(item.participantId);
+        const maxAllowedByReserve = Math.max(0, reservation.freeMargin);
+        const pointsDelta = existingTx
+          ? 0
+          : Math.max(0, Math.min(requestedPts, maxAllowedByReserve, MAX_PARTICIPANT_POINTS - prevPoints));
+        const newPoints = prevPoints + pointsDelta;
+
+        const existingPm = db
+          .prepare(
+            'SELECT id FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+          )
+          .get(item.participantId, item.missionId) as { id: number } | undefined;
+
+        if (existingPm) {
+          db.prepare(
+            `UPDATE participant_missions
+             SET status = 'Concluída', completed_at_ms = ?, completion_points_awarded = ?, total_points_awarded = ?
+             WHERE id = ?`
+          ).run(nowMs, pointsDelta, pointsDelta, existingPm.id);
+        } else {
+          db.prepare(
+            `INSERT INTO participant_missions (
+               participant_id, mission_id, sequence_order, status, unlocked_at_ms, completed_at_ms,
+               completion_points_awarded, total_points_awarded
+             ) VALUES (?, ?, 0, 'Concluída', ?, ?, ?, ?)`
+          ).run(item.participantId, item.missionId, nowMs, nowMs, pointsDelta, pointsDelta);
+        }
+
+        if (pointsDelta > 0) {
+          const eventKey = resolveNextIdempotentEventKey(item.participantId, baseEventKey);
+          const visitedList = (() => {
+            try {
+              const parsed = JSON.parse(participantRow.visited_startups_json || '[]');
+              return Array.isArray(parsed) ? parsed : [];
+            } catch {
+              return [];
+            }
+          })();
+          const startupId = String(missionRow.startup_id || '');
+          if (startupId && !visitedList.includes(startupId)) {
+            visitedList.push(startupId);
+          }
+
+          db.prepare(
+            `UPDATE participants
+             SET points = ?, completed_missions_count = completed_missions_count + 1, visited_startups_json = ?
+             WHERE id = ?`
+          ).run(newPoints, JSON.stringify(visitedList), item.participantId);
+
+          db.prepare(
+            `INSERT INTO points_transactions (
+               id, participant_id, participant_name, source_type, source_title,
+               points_delta, previous_balance, new_balance, created_at, created_at_ms, event_key
+             ) VALUES (?, ?, ?, 'Missão', ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            `tx-${nowMs}-${Math.floor(Math.random() * 10000)}`,
+            item.participantId,
+            participantRow.name,
+            `Missão Extra: ${String(missionRow.title || item.missionTitle)}`,
+            pointsDelta,
+            prevPoints,
+            newPoints,
+            nowIso,
+            nowMs,
+            eventKey
+          );
+        }
+
+        db.prepare("UPDATE mission_completions SET status = 'Aprovada', points_awarded = ? WHERE id = ?").run(
+          pointsDelta,
+          id
+        );
+        db.exec('COMMIT;');
+        recalculateRankingsInDb();
+      } catch (err) {
+        try {
+          db.exec('ROLLBACK;');
+        } catch {
+          // transação já revertida
+        }
+        throw err;
+      }
+    }
   } else {
     db.exec('BEGIN IMMEDIATE TRANSACTION;');
     try {
-      db.prepare('UPDATE mission_completions SET status = ? WHERE id = ?').run(decision, id);
+      const lockedValidation = db
+        .prepare('SELECT status FROM mission_completions WHERE id = ? LIMIT 1')
+        .get(id) as { status: string } | undefined;
+
+      if (!lockedValidation || lockedValidation.status !== 'Pendente') {
+        db.exec('ROLLBACK;');
+        res.status(409).json({
+          error:
+            lockedValidation?.status === 'Aprovada'
+              ? 'Este item de validação já foi aprovado e não pode ser convertido em rejeitado.'
+              : 'Este item de validação já foi rejeitado anteriormente.',
+          code:
+            lockedValidation?.status === 'Aprovada'
+              ? 'VALIDATION_ALREADY_APPROVED'
+              : 'VALIDATION_ALREADY_REJECTED',
+        });
+        return;
+      }
+
+      db.prepare("UPDATE mission_completions SET status = 'Rejeitada' WHERE id = ? AND status = 'Pendente'").run(id);
       db.prepare(
         "UPDATE participant_missions SET status = 'Disponível' WHERE participant_id = ? AND mission_id = ? AND status != 'Concluída'"
       ).run(item.participantId, item.missionId);
       db.exec('COMMIT;');
     } catch (err) {
-      db.exec('ROLLBACK;');
+      try {
+        db.exec('ROLLBACK;');
+      } catch {
+        // transação já revertida
+      }
       throw err;
     }
   }
@@ -2296,7 +3953,7 @@ app.patch('/api/qrcodes/:id/toggle', requireAdmin, (req, res) => {
   res.json(rows.map(mapQRCodeRow));
 });
 
-app.post('/api/qrcodes/scan', (req, res) => {
+app.post('/api/qrcodes/scan', requireParticipant, (req: RequestWithAuth, res) => {
   const { code } = req.body as { code?: string };
   const normalized = (code || '').trim().toUpperCase();
 
@@ -2359,10 +4016,20 @@ app.post('/api/qrcodes/scan', (req, res) => {
     return;
   }
 
-  const currentParticipant = getCurrentParticipantFromDb(req);
+  if (linkedMission.requiresEvidence) {
+    res.status(400).json({
+      success: false,
+      status: 'EVIDENCE_REQUIRED',
+      qrCode: qr,
+      message: `A missão "${linkedMission.title}" exige o envio e a aprovação administrativa de evidência pela Central de Missões antes de liberar os pontos.`,
+    });
+    return;
+  }
+
+  const participantId = req.authSession!.userId;
 
   const result = completeSequentialMissionInSql({
-    participantId: currentParticipant.id,
+    participantId,
     missionId: qr.missionId,
     sourceType: 'QR Code',
     qrCodeRow: qr,
@@ -2401,8 +4068,8 @@ app.post('/api/qrcodes/scan', (req, res) => {
 // ============================================================================
 
 app.get('/api/ranking/public', (req, res) => {
-  const currentParticipant = getCurrentParticipantFromDb(req);
-  res.json(getPublicRankingFromDb(currentParticipant?.id));
+  const session = resolveSessionFromRequest(req);
+  res.json(getPublicRankingFromDb(session?.userId));
 });
 
 app.get('/api/ranking/transactions', requireAdmin, (_req, res) => {
@@ -2517,14 +4184,18 @@ app.post('/api/ranking/adjust', requireAdmin, (req, res) => {
   });
 });
 
-app.get('/api/achievements', (req, res) => {
-  const currentParticipant = getCurrentParticipantFromDb(req);
-  res.json(getParticipantAchievementsFromDb(currentParticipant));
-});
-
 // ============================================================================
 // 8. CONFIGURAÇÕES DO EVENTO, MÉTRICAS E GOVERNANÇA — 12 PLANOS (ADMIN ONLY)
 // ============================================================================
+
+app.get('/api/ranking/daily', (req, res) => {
+  const session = resolveSessionFromRequest(req);
+  res.json(getDailyRankingsFromDb(db, { currentUserId: session?.userId }));
+});
+
+app.get('/api/admin/daily-awards', requireAdmin, (_req, res) => {
+  res.json(getDailyRankingsFromDb(db));
+});
 
 app.get('/api/admin/metrics', requireAdmin, (_req, res) => {
   res.json(getAdminMetricsFromDb());
@@ -2789,12 +4460,133 @@ app.put('/api/admin/governance/:id', requireAdmin, (req, res) => {
   res.json(rows.map(mapGovernancePlanRow));
 });
 
+// Middleware global de tratamento de erros (JSON padronizado, sem exposição de stack trace ou caminhos físicos)
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+
+    const status =
+      typeof err?.status === 'number' && err.status >= 400 && err.status < 600
+        ? err.status
+        : typeof err?.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600
+        ? err.statusCode
+        : 500;
+
+    const code =
+      err?.code === 'CORS_ORIGIN_FORBIDDEN'
+        ? 'CORS_ORIGIN_FORBIDDEN'
+        : err?.type === 'entity.too.large' || status === 413
+        ? 'FILE_TOO_LARGE'
+        : err?.type === 'entity.parse.failed'
+        ? 'INVALID_JSON_PAYLOAD'
+        : status >= 500
+        ? 'INTERNAL_SERVER_ERROR'
+        : String(err?.code || 'REQUEST_ERROR');
+
+    const safeMessage =
+      code === 'CORS_ORIGIN_FORBIDDEN'
+        ? 'Origem não autorizada pela política de CORS.'
+        : code === 'FILE_TOO_LARGE'
+        ? 'O arquivo ou payload excede o limite máximo permitido.'
+        : code === 'INVALID_JSON_PAYLOAD'
+        ? 'Corpo da requisição JSON inválido.'
+        : status >= 500
+        ? 'Erro interno no servidor. Tente novamente em instantes.'
+        : String(err?.message || 'Não foi possível processar a requisição.');
+
+    if (status >= 500) {
+      console.error(`[API Error] status=${status} code=${code} message=${err?.message || 'unknown'}`);
+    }
+
+    res.status(status).json({
+      error: safeMessage,
+      code,
+    });
+  }
+);
+
 const server = app.listen(PORT);
+let dailyCloseTimer: ReturnType<typeof setInterval> | null = null;
 
 server.on('listening', () => {
   console.log(`[API + SQLite + RBAC] Servidor Express rodando em http://localhost:${PORT}`);
   console.log(`[API + SQLite + RBAC] Arquivo SQLite ativo: ${DB_FILE_PATH}`);
+
+  // Verificação periódica automática para encerramento diário às 16h30 (Horário de Brasília)
+  // Executa de forma idempotente mesmo sem nenhum administrador ou participante conectado.
+  dailyCloseTimer = setInterval(() => {
+    if (isShuttingDown) return;
+    try {
+      const { closedDates } = ensureDailyRankingsClosedUpTo(db);
+      if (closedDates.length > 0) {
+        console.log(`[DailyRanking] Encerramento automático concluído para: ${closedDates.join(', ')}`);
+      }
+    } catch (err) {
+      console.error('[DailyRanking] Erro na rotina automática de encerramento diário:', err);
+    }
+  }, 15_000);
+  dailyCloseTimer.unref();
 });
+
+const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10_000;
+
+function gracefulShutdown(signal: string): void {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[Shutdown] Sinal ${signal} recebido. Iniciando encerramento controlado...`);
+
+  if (dailyCloseTimer) {
+    clearInterval(dailyCloseTimer);
+    dailyCloseTimer = null;
+  }
+
+  const forceTimer = setTimeout(() => {
+    console.error('[Shutdown] Timeout de encerramento atingido. Finalizando com fechamento do SQLite.');
+    try {
+      closeDatabaseGracefully();
+    } finally {
+      process.exit(1);
+    }
+  }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+  forceTimer.unref();
+
+  server.close((closeErr) => {
+    let exitCode = 0;
+    if (closeErr) {
+      console.error('[Shutdown] Erro ao encerrar servidor HTTP:', closeErr);
+      exitCode = 1;
+    }
+
+    try {
+      // Garante que nenhum fechamento diário pendente seja perdido antes de encerrar
+      ensureDailyRankingsClosedUpTo(db);
+    } catch (err) {
+      console.error('[Shutdown] Erro ao verificar snapshots diários no encerramento:', err);
+    }
+
+    const dbCloseResult = closeDatabaseGracefully();
+    if (!dbCloseResult.closed) {
+      exitCode = 1;
+    }
+
+    clearTimeout(forceTimer);
+    console.log(
+      `[Shutdown] Encerramento concluído (wal_checkpoint=${dbCloseResult.checkpointed}, db_closed=${dbCloseResult.closed}).`
+    );
+    process.exit(exitCode);
+  });
+}
+
+process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.once('SIGINT', () => gracefulShutdown('SIGINT'));
 
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {

@@ -1,9 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import {
-  ArrowRight,
-  Award,
-  Building2,
   CheckCircle2,
   Clock,
   Compass,
@@ -18,7 +15,7 @@ import { GlobalPointsIndicator } from '../components/GlobalPointsIndicator';
 import { formatPoints } from '../utils/formatters';
 
 export const ParticipantDashboard: React.FC = () => {
-  const { participant, missions, startups, achievements, completeMissionInstant } = useAppStore();
+  const { participant, missions } = useAppStore();
 
   const activeMissions = missions.filter((m) => m.active);
   const completedMissionsCount = participant.completedMissionsCount;
@@ -26,10 +23,6 @@ export const ParticipantDashboard: React.FC = () => {
     (m) => m.status === 'Disponível' || m.status === 'Em andamento'
   );
   const recommendedMission = availableMissions[0] || activeMissions[0];
-
-  const unlockedMedals = achievements.filter(
-    (a) => a.unlocked && participant.unlockedAchievementIds.includes(a.id)
-  );
 
   return (
     <div className="space-y-6 sm:space-y-8">
@@ -66,14 +59,29 @@ export const ParticipantDashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Aviso discreto de complementação cadastral para participantes sem telefone */}
+      {!participant.phone && (
+        <div className="tutu-card p-4 sm:px-5 border border-tutu-lime/40 bg-tutu-secondary/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <p className="text-tutu-light/90 leading-relaxed">
+            <strong className="text-tutu-lime">Complete seu cadastro:</strong> informe seu telefone/WhatsApp no seu perfil para contato durante o evento.
+          </p>
+          <Link
+            to="/app/perfil"
+            className="min-h-[38px] px-4 py-2 rounded-xl btn-tutu-lime text-xs font-bold inline-flex items-center justify-center shrink-0"
+          >
+            Informar telefone
+          </Link>
+        </div>
+      )}
+
       {/* Indicador Global de Pontuação (Etapa 4) */}
       <GlobalPointsIndicator variant="hero" />
 
       {/* Key Indicator Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
-        <div className="tutu-card p-4 sm:p-5 space-y-1.5 sm:space-y-2 border-t-4 border-t-tutu-lime col-span-2 sm:col-span-1">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+        <div className="tutu-card p-4 sm:p-5 space-y-1.5 sm:space-y-2 border-t-4 border-t-tutu-lime">
           <div className="flex items-center justify-between text-tutu-light/75 text-xs font-medium gap-1">
-            <span>Pontuação Acumulada</span>
+            <span>Pontuação Global</span>
             <Zap className="w-4 h-4 text-tutu-lime shrink-0" />
           </div>
           <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-lime">
@@ -84,7 +92,7 @@ export const ParticipantDashboard: React.FC = () => {
 
         <div className="tutu-card p-4 sm:p-5 space-y-1.5 sm:space-y-2">
           <div className="flex items-center justify-between text-tutu-light/75 text-xs font-medium gap-1">
-            <span>Posição no Ranking</span>
+            <span>Classificação no Ranking</span>
             <Trophy className="w-4 h-4 text-tutu-lime shrink-0" />
           </div>
           <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
@@ -104,32 +112,6 @@ export const ParticipantDashboard: React.FC = () => {
             {completedMissionsCount}/{activeMissions.length}
           </p>
           <span className="text-[11px] text-tutu-light/70 block">No circuito de 3 dias</span>
-        </div>
-
-        <div className="tutu-card p-4 sm:p-5 space-y-1.5 sm:space-y-2">
-          <div className="flex items-center justify-between text-tutu-light/75 text-xs font-medium gap-1">
-            <span>Startups Visitadas</span>
-            <Building2 className="w-4 h-4 text-tutu-lime shrink-0" />
-          </div>
-          <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
-            {participant.visitedStartupsIds.length}/{startups.filter((s) => s.active).length}
-          </p>
-          <Link to="/app/startups" className="text-[11px] text-tutu-lime hover:underline block py-0.5">
-            Explorar estandes →
-          </Link>
-        </div>
-
-        <div className="tutu-card p-4 sm:p-5 space-y-1.5 sm:space-y-2">
-          <div className="flex items-center justify-between text-tutu-light/75 text-xs font-medium gap-1">
-            <span>Medalhas</span>
-            <Award className="w-4 h-4 text-tutu-lime shrink-0" />
-          </div>
-          <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
-            {unlockedMedals.length}/{achievements.length}
-          </p>
-          <Link to="/app/conquistas" className="text-[11px] text-tutu-lime hover:underline block py-0.5">
-            Ver medalhas →
-          </Link>
         </div>
       </div>
 
@@ -169,8 +151,8 @@ export const ParticipantDashboard: React.FC = () => {
             <span className="text-xs text-tutu-light/70">
               Critério: {recommendedMission.completionCriteria}
             </span>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
-              {recommendedMission.qrCodeRequired && (
+            {recommendedMission.qrCodeRequired && (
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
                 <Link
                   to={`/app/escanear?code=${recommendedMission.qrCodeRequired}`}
                   className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-1.5"
@@ -178,15 +160,8 @@ export const ParticipantDashboard: React.FC = () => {
                   <QrCode className="w-4 h-4 shrink-0" />
                   <span>Validar QR ({recommendedMission.qrCodeRequired})</span>
                 </Link>
-              )}
-              <button
-                onClick={() => completeMissionInstant(recommendedMission.id)}
-                className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-primary text-xs flex items-center justify-center gap-1.5"
-              >
-                <span>Simular Conclusão</span>
-                <ArrowRight className="w-3.5 h-3.5 shrink-0" />
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}

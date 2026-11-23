@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import {
-  Achievement,
   AdminDashboardMetrics,
+  DailyRankingDaySummary,
   EventSettings,
   GovernancePlan,
   Mission,
@@ -21,7 +21,12 @@ import { qrCodeService } from '../services/qrCodeService';
 import { rankingService } from '../services/rankingService';
 import { adminService } from '../services/adminService';
 import { governanceService } from '../services/governanceService';
-import { apiRequest, apiRequestWithStatus } from '../services/apiClient';
+import {
+  apiRequest,
+  apiRequestWithStatus,
+  setAuthToken,
+  uploadEvidenceFileRequest,
+} from '../services/apiClient';
 
 export type QRScanStatus =
   | 'VALIDATED'
@@ -60,10 +65,10 @@ interface BootstrapPayload {
   allParticipants: Participant[];
   startups: Startup[];
   missions: Mission[];
-  achievements: Achievement[];
   qrCodes: QRCode[];
   validationQueue: MissionCompletion[];
   publicRanking: PublicRankingEntry[];
+  dailyRankings?: DailyRankingDaySummary[];
   pointsTransactions: PointsTransaction[];
   eventSettings: EventSettings;
   governancePlans: GovernancePlan[];
@@ -76,10 +81,10 @@ interface AppStoreContextValue {
   allParticipants: Participant[];
   startups: Startup[];
   missions: Mission[];
-  achievements: Achievement[];
   qrCodes: QRCode[];
   validationQueue: MissionCompletion[];
   publicRanking: PublicRankingEntry[];
+  dailyRankings?: DailyRankingDaySummary[];
   pointsTransactions: PointsTransaction[];
   eventSettings: EventSettings;
   governancePlans: GovernancePlan[];
@@ -92,7 +97,10 @@ interface AppStoreContextValue {
   notify: (title: string, message: string, type?: ToastNotice['type']) => void;
   dismissToast: (id: string) => void;
   // Auth & Participant actions
-  loginDemo: (email: string, password?: string) => Promise<void>;
+  loginDemo: (
+    email: string,
+    password?: string
+  ) => Promise<{ ok: boolean; status: number; error?: string }>;
   loginAdmin: (
     email: string,
     password: string
@@ -101,14 +109,30 @@ interface AppStoreContextValue {
   registerDemo: (payload: {
     name: string;
     email: string;
+    phone: string;
     password?: string;
     acceptedTerms: boolean;
-  }) => Promise<void>;
+  }) => Promise<{ ok: boolean; error?: string }>;
   completeMissionInstant: (missionId: string) => void;
   startMission: (missionId: string) => void;
   submitMissionEvidence: (missionId: string, evidenceText: string) => void;
+  uploadMissionEvidence: (
+    missionId: string,
+    file: File,
+    description?: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   scanQRCodeDemo: (code: string) => Promise<QRScanResult>;
-  updateProfile: (updates: Partial<Participant>) => void;
+  updateProfile: (updates: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    currentPassword?: string;
+    newPassword?: string;
+    confirmNewPassword?: string;
+  }) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  updateImagePublicityConsent: (
+    authorized: boolean
+  ) => Promise<{ ok: boolean; error?: string; message?: string }>;
   // Admin actions
   createStartup: (payload: Omit<Startup, 'id'>) => void;
   updateStartup: (id: string, updates: Partial<Startup>) => void;
@@ -127,6 +151,11 @@ interface AppStoreContextValue {
   toggleQRCodeActive: (id: string) => void;
   reviewValidationItem: (id: string, decision: 'Aprovada' | 'Rejeitada') => void;
   updateParticipantStatus: (id: string, status: Participant['status']) => void;
+  resetParticipantPasswordAdmin: (
+    participantId: string,
+    newPassword: string,
+    confirmPassword: string
+  ) => Promise<{ ok: boolean; error?: string; message?: string }>;
   adjustParticipantPointsAdmin: (participantId: string, pointsDelta: number, reason: string) => void;
   updateEventSettings: (updates: Partial<EventSettings>) => void;
   updateGovernancePlan: (id: string, updates: Partial<GovernancePlan>) => void;
@@ -145,9 +174,6 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   );
   const [startups, setStartups] = useState<Startup[]>(() => startupService.getStartups());
   const [missions, setMissions] = useState<Mission[]>(() => missionService.getMissions());
-  const [achievements, setAchievements] = useState<Achievement[]>(() =>
-    participantService.getAchievements()
-  );
   const [qrCodes, setQrCodes] = useState<QRCode[]>(() => qrCodeService.getQRCodes());
   const [validationQueue, setValidationQueue] = useState<MissionCompletion[]>(() =>
     missionService.getValidationQueue()
@@ -155,6 +181,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [publicRanking, setPublicRanking] = useState<PublicRankingEntry[]>(() =>
     rankingService.getPublicRanking()
   );
+  const [dailyRankings, setDailyRankings] = useState<DailyRankingDaySummary[]>([]);
   const [pointsTransactions, setPointsTransactions] = useState<PointsTransaction[]>(() =>
     rankingService.getPointsTransactions()
   );
@@ -193,7 +220,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const syncFromSqliteOrMemory = useCallback(async () => {
+  const syncFromSqliteOrMemory = useCallback(async (): Promise<BootstrapPayload | null> => {
     const data = await apiRequest<BootstrapPayload>('/bootstrap');
     if (data) {
       setSqliteConnected(true);
@@ -201,10 +228,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setAllParticipants(data.allParticipants);
       setStartups(data.startups);
       setMissions(data.missions);
-      setAchievements(data.achievements);
       setQrCodes(data.qrCodes);
       setValidationQueue(data.validationQueue);
       setPublicRanking(data.publicRanking);
+      setDailyRankings(Array.isArray(data.dailyRankings) ? data.dailyRankings : []);
       setPointsTransactions(data.pointsTransactions);
       setEventSettings(data.eventSettings);
       setGovernancePlans(data.governancePlans);
@@ -213,7 +240,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setAuthState(data.auth);
       }
       setIsCheckingAuth(false);
-      return;
+      return data;
     }
 
     setSqliteConnected(false);
@@ -222,13 +249,13 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setAllParticipants(participantService.getAllParticipants());
     setStartups(startupService.getStartups());
     setMissions(missionService.getMissions());
-    setAchievements(participantService.getAchievements());
     setQrCodes(qrCodeService.getQRCodes());
     setValidationQueue(missionService.getValidationQueue());
     setPublicRanking(rankingService.getPublicRanking());
     setPointsTransactions(rankingService.getPointsTransactions());
     setEventSettings(adminService.getEventSettings());
     setGovernancePlans(governanceService.getGovernancePlans());
+    return null;
   }, []);
 
   const [isRefreshingRanking, setIsRefreshingRanking] = useState<boolean>(false);
@@ -246,11 +273,43 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     void syncFromSqliteOrMemory();
   }, [syncFromSqliteOrMemory]);
 
-  const loginDemo = async (email: string, password?: string) => {
+  const loginDemo = async (
+    email: string,
+    password?: string
+  ): Promise<{ ok: boolean; status: number; error?: string }> => {
     const res = await authService.loginDemo(email, password);
+    if (!res.ok || !res.user) {
+      setAuthToken(null);
+      const errorMsg = res.error || 'E-mail ou senha inválidos.';
+      const title =
+        res.status === 429
+          ? 'Muitas Tentativas'
+          : res.status === 0
+          ? 'Erro de Conexão'
+          : 'Falha no Login';
+      notify(title, errorMsg, 'error');
+      return { ok: false, status: res.status, error: errorMsg };
+    }
+
+    const bootstrapData = await syncFromSqliteOrMemory();
+    if (!bootstrapData || !bootstrapData.auth?.authenticated) {
+      setAuthToken(null);
+      setAuthState((prev) => ({
+        ...prev,
+        authenticated: false,
+        role: null,
+        userId: null,
+        email: null,
+      }));
+      const bootstrapError =
+        'Não foi possível confirmar sua sessão autenticada no servidor. Tente novamente.';
+      notify('Sessão Não Confirmada', bootstrapError, 'error');
+      return { ok: false, status: 401, error: bootstrapError };
+    }
+
     participantService.updateParticipantProfile({ email: res.user.email });
-    await syncFromSqliteOrMemory();
-    notify('Sessão Ativa', res.message, 'info');
+    notify('Sessão Ativa', res.message || 'Sessão autenticada com sucesso.', 'success');
+    return { ok: true, status: res.status };
   };
 
   const loginAdmin = async (email: string, password: string) => {
@@ -284,18 +343,32 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const registerDemo = async (payload: {
     name: string;
     email: string;
+    phone: string;
     password?: string;
     acceptedTerms: boolean;
-  }) => {
+  }): Promise<{ ok: boolean; error?: string }> => {
     const res = await authService.registerDemo(payload);
+    if (!res.ok || !res.user) {
+      const errorMsg =
+        res.error || 'Este e-mail já possui cadastro. Faça login para acessar sua conta.';
+      notify(
+        res.status === 409 ? 'E-mail já cadastrado' : 'Cadastro não realizado',
+        errorMsg,
+        'error'
+      );
+      return { ok: false, error: errorMsg };
+    }
+
     participantService.updateParticipantProfile({
       name: res.user.name,
       nickname: res.user.nickname,
       email: res.user.email,
+      phone: res.user.phone,
       avatar: res.user.avatar,
     });
     await syncFromSqliteOrMemory();
-    notify('Cadastro Realizado', res.message, 'success');
+    notify('Cadastro Realizado', res.message || 'Cadastro concluído com sucesso.', 'success');
+    return { ok: true };
   };
 
   const startMission = (missionId: string) => {
@@ -406,6 +479,29 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     );
   };
 
+  const uploadMissionEvidence = async (
+    missionId: string,
+    file: File,
+    description?: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const target = missions.find((m) => m.id === missionId);
+    const res = await uploadEvidenceFileRequest({ missionId, file, description });
+    await syncFromSqliteOrMemory();
+
+    if (res.ok) {
+      notify(
+        'Evidência Enviada',
+        `Seu arquivo para "${target?.title || 'missão'}" foi enviado e está aguardando validação administrativa.`,
+        'success'
+      );
+      return { ok: true };
+    }
+
+    const errorMsg = res.error || 'Não foi possível enviar a evidência. Verifique o arquivo e tente novamente.';
+    notify('Erro ao Enviar Evidência', errorMsg, 'error');
+    return { ok: false, error: errorMsg };
+  };
+
   const scanQRCodeDemo = async (code: string): Promise<QRScanResult> => {
     const normalized = (code || '').trim().toUpperCase();
     if (!normalized) {
@@ -511,13 +607,66 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return failResult;
   };
 
-  const updateProfile = (updates: Partial<Participant>) => {
-    participantService.updateParticipantProfile(updates);
-    void apiRequest('/participants/me', {
+  const updateProfile = async (updates: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    currentPassword?: string;
+    newPassword?: string;
+    confirmNewPassword?: string;
+  }): Promise<{ ok: boolean; error?: string; message?: string }> => {
+    const res = await apiRequestWithStatus<{
+      ok?: boolean;
+      participant?: Participant;
+      message?: string;
+      error?: string;
+    }>('/participants/me', {
       method: 'PUT',
       body: JSON.stringify(updates),
-    }).then(() => syncFromSqliteOrMemory());
-    notify('Perfil Atualizado', 'Suas preferências foram salvas no SQLite.', 'success');
+    });
+
+    if (res.ok && res.data?.participant) {
+      await syncFromSqliteOrMemory();
+      const successMsg = res.data.message || 'Dados cadastrais atualizados com sucesso.';
+      notify('Perfil Atualizado', successMsg, 'success');
+      return { ok: true, message: successMsg };
+    }
+
+    const errorMsg =
+      res.data?.error ||
+      res.error ||
+      'Não foi possível atualizar seu perfil. Verifique os dados informados.';
+    return { ok: false, error: errorMsg };
+  };
+
+  const updateImagePublicityConsent = async (
+    authorized: boolean
+  ): Promise<{ ok: boolean; error?: string; message?: string }> => {
+    const res = await apiRequestWithStatus<{
+      ok?: boolean;
+      authorized?: boolean;
+      updatedAt?: string;
+      message?: string;
+      error?: string;
+    }>('/participants/me/image-consent', {
+      method: 'PUT',
+      body: JSON.stringify({ authorized }),
+    });
+
+    if (res.ok) {
+      await syncFromSqliteOrMemory();
+      const msg =
+        res.data?.message ||
+        (authorized
+          ? 'Autorização de divulgação de imagem registrada.'
+          : 'Autorização de divulgação de imagem revogada.');
+      notify('Preferência de Imagem (LGPD)', msg, 'success');
+      return { ok: true, message: msg };
+    }
+
+    const errorMsg = res.data?.error || res.error || 'Não foi possível atualizar sua preferência de imagem.';
+    notify('Erro ao Atualizar Preferência', errorMsg, 'error');
+    return { ok: false, error: errorMsg };
   };
 
   const createStartup = (payload: Omit<Startup, 'id'>) => {
@@ -650,6 +799,35 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     notify('Status do Participante', `Status atualizado para ${status}.`, 'info');
   };
 
+  const resetParticipantPasswordAdmin = async (
+    participantId: string,
+    newPassword: string,
+    confirmPassword: string
+  ): Promise<{ ok: boolean; error?: string; message?: string }> => {
+    const res = await apiRequestWithStatus<{
+      ok?: boolean;
+      message?: string;
+      error?: string;
+    }>(`/participants/${participantId}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ newPassword, confirmPassword }),
+    });
+
+    if (res.ok && res.data?.ok) {
+      const successMsg =
+        res.data.message || 'Senha do participante redefinida com sucesso.';
+      notify('Senha Redefinida', successMsg, 'success');
+      return { ok: true, message: successMsg };
+    }
+
+    const errorMsg =
+      res.data?.error ||
+      res.error ||
+      'Não foi possível redefinir a senha do participante.';
+    notify('Erro ao Redefinir Senha', errorMsg, 'error');
+    return { ok: false, error: errorMsg };
+  };
+
   const adjustParticipantPointsAdmin = (
     participantId: string,
     pointsDelta: number,
@@ -703,10 +881,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         allParticipants,
         startups,
         missions,
-        achievements,
         qrCodes,
         validationQueue,
         publicRanking,
+        dailyRankings,
         pointsTransactions,
         eventSettings,
         governancePlans,
@@ -725,8 +903,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         completeMissionInstant,
         startMission,
         submitMissionEvidence,
+        uploadMissionEvidence,
         scanQRCodeDemo,
         updateProfile,
+        updateImagePublicityConsent,
         createStartup,
         updateStartup,
         toggleStartupActive,
@@ -739,6 +919,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         toggleQRCodeActive,
         reviewValidationItem,
         updateParticipantStatus,
+        resetParticipantPasswordAdmin,
         adjustParticipantPointsAdmin,
         updateEventSettings,
         updateGovernancePlan,

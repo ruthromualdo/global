@@ -153,6 +153,30 @@ export function requireAuth(req: RequestWithAuth, res: Response, next: NextFunct
 }
 
 /**
+ * Middleware: Exige papel PARTICIPANT validado no servidor SQLite.
+ * Retorna HTTP 401 (AUTH_REQUIRED) para não autenticados e HTTP 403 (PARTICIPANT_ROLE_REQUIRED) para ADMIN.
+ */
+export function requireParticipant(req: RequestWithAuth, res: Response, next: NextFunction): void {
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({
+      error: 'Não autenticado. Faça login como participante para acessar este recurso.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+  if (session.role !== 'PARTICIPANT') {
+    res.status(403).json({
+      error: 'Acesso negado (HTTP 403): operação exclusiva de participantes autenticados.',
+      code: 'PARTICIPANT_ROLE_REQUIRED',
+    });
+    return;
+  }
+  req.authSession = session;
+  next();
+}
+
+/**
  * Middleware: Exige papel ADMIN validado no servidor SQLite.
  * Retorna HTTP 401 para não autenticados e HTTP 403 para PARTICIPANT.
  */

@@ -1,33 +1,69 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
+  AlertCircle,
   ArrowRight,
+  Camera,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Clock,
   Crown,
+  Download,
+  Eye,
+  FileText,
   HelpCircle,
   History,
+  Loader2,
+  Paperclip,
   Play,
   QrCode,
   Send,
   Sparkles,
   Trophy,
+  Upload,
+  X,
   Zap,
 } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
-import { Mission } from '../types';
+import { Mission, MissionCompletion } from '../types';
 import { CategoryPill, MissionStatusBadge } from '../components/UI';
 import { MissionTimer } from '../components/MissionTimer';
 import { formatPoints } from '../utils/formatters';
+import { fetchAuthenticatedEvidenceBlob } from '../services/apiClient';
+
+const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
+
+function formatFileSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '0 KB';
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(2).replace('.', ',')} MB`;
+  }
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function getEvidenceRequirementsLabel(type?: 'photo' | 'file' | 'both'): string {
+  if (type === 'file') return 'Arquivo (PDF, JPG, PNG ou WEBP • máx. 5 MB)';
+  if (type === 'both') return 'Foto ou Arquivo (JPG, PNG, WEBP ou PDF • máx. 5 MB)';
+  return 'Foto (JPG, JPEG, PNG ou WEBP • máx. 5 MB)';
+}
+
+function getEvidenceAcceptAttr(type?: 'photo' | 'file' | 'both'): string {
+  if (type === 'file' || type === 'both') {
+    return 'image/jpeg,image/png,image/webp,application/pdf,.jpg,.jpeg,.png,.webp,.pdf';
+  }
+  return 'image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp';
+}
 
 export const MissionsCenterPage: React.FC = () => {
   const {
+    participant,
     missions,
+    validationQueue,
     startMission,
     completeMissionInstant,
     submitMissionEvidence,
+    uploadMissionEvidence,
     notify,
   } = useAppStore();
   const navigate = useNavigate();
@@ -37,12 +73,119 @@ export const MissionsCenterPage: React.FC = () => {
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
   const [evidenceMission, setEvidenceMission] = useState<Mission | null>(null);
   const [evidenceText, setEvidenceText] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
+  const [previewModal, setPreviewModal] = useState<{ url: string; fileName: string } | null>(null);
+  const [loadingEvidenceId, setLoadingEvidenceId] = useState<string | null>(null);
   const [showCompletedHistory, setShowCompletedHistory] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    };
+  }, [filePreviewUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (previewModal?.url) URL.revokeObjectURL(previewModal.url);
+    };
+  }, [previewModal]);
+
+  const resetEvidenceModal = () => {
+    if (filePreviewUrl) {
+      URL.revokeObjectURL(filePreviewUrl);
+    }
+    setFilePreviewUrl(null);
+    setSelectedFile(null);
+    setUploadError(null);
+    setEvidenceText('');
+    setEvidenceMission(null);
+  };
+
+  const handleOpenOwnEvidence = async (submission: MissionCompletion) => {
+    setLoadingEvidenceId(submission.id);
+    const res = await fetchAuthenticatedEvidenceBlob(submission.id);
+    setLoadingEvidenceId(null);
+
+    if (!res.ok || !res.blob) {
+      notify(
+        'Não foi possível abrir a evidência',
+        res.error || 'Erro ao carregar arquivo autenticado.',
+        'error'
+      );
+      return;
+    }
+
+    const mime = res.mimeType || submission.evidenceMimeType || '';
+    const fileName = res.fileName || submission.evidenceFileName || 'evidencia';
+    const blobUrl = URL.createObjectURL(res.blob);
+
+    if (mime.startsWith('image/')) {
+      setPreviewModal({ url: blobUrl, fileName });
+      return;
+    }
+
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  };
+
+  const handleSelectEvidenceFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    if (filePreviewUrl) {
+      URL.revokeObjectURL(filePreviewUrl);
+      setFilePreviewUrl(null);
+    }
+    setUploadError(null);
+
+    if (!file) {
+      setSelectedFile(null);
+      return;
+    }
+
+    if (file.size > MAX_EVIDENCE_BYTES) {
+      setSelectedFile(null);
+      setUploadError('O arquivo ultrapassa o limite máximo de 5 MB. Escolha um arquivo menor.');
+      return;
+    }
+
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const allowedExts =
+      evidenceMission?.evidenceType === 'file' || evidenceMission?.evidenceType === 'both'
+        ? ['jpg', 'jpeg', 'png', 'webp', 'pdf']
+        : ['jpg', 'jpeg', 'png', 'webp'];
+
+    if (!allowedExts.includes(ext)) {
+      setSelectedFile(null);
+      setUploadError(
+        evidenceMission?.evidenceType === 'photo'
+          ? 'Esta missão aceita somente fotos nos formatos JPG, JPEG, PNG ou WEBP.'
+          : 'Formato não permitido. Envie um arquivo JPG, JPEG, PNG, WEBP ou PDF.'
+      );
+      return;
+    }
+
+    setSelectedFile(file);
+    if (file.type.startsWith('image/')) {
+      setFilePreviewUrl(URL.createObjectURL(file));
+    }
+  };
 
   // Missões sequenciais oficiais do circuito (1: Tutu, 2: Escreve Lab, 3: Futurize, 4: Startup Convidada)
   const sequentialMissions = missions
     .filter((m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined && m.active)
     .sort((a, b) => (a.sequenceOrder || 0) - (b.sequenceOrder || 0));
+
+  // Missões extras ativas que exigem evidência (independentes da sequência oficial)
+  const extraEvidenceMissions = missions.filter(
+    (m) => (m.sequenceOrder === null || m.sequenceOrder === undefined) && m.active && m.requiresEvidence
+  );
 
   // A missão ativa atual é a primeira da sequência cujo status NÃO seja 'Concluída'
   const currentMission = sequentialMissions.find((m) => m.status !== 'Concluída') || null;
@@ -50,6 +193,13 @@ export const MissionsCenterPage: React.FC = () => {
     sequentialMissions.length > 0 &&
     sequentialMissions.every((m) => m.status === 'Concluída');
   const completedMissions = sequentialMissions.filter((m) => m.status === 'Concluída');
+  const getOwnSubmissionForMission = (missionId: string): MissionCompletion | undefined =>
+    validationQueue.find(
+      (v) => v.missionId === missionId && v.participantId === participant.id
+    );
+  const currentMissionSubmission = currentMission
+    ? getOwnSubmissionForMission(currentMission.id)
+    : undefined;
 
   const handleActionClick = (mission: Mission) => {
     if (mission.status === 'Bloqueada') {
@@ -66,9 +216,38 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    // Inicia o cronômetro no servidor quando a missão for iniciada pela primeira vez
-    if (mission.status === 'Disponível') {
+    // Inicia o cronômetro no servidor apenas para missões oficiais da sequência
+    const isOfficialMission =
+      mission.sequenceOrder !== null && mission.sequenceOrder !== undefined;
+    if (isOfficialMission && mission.status === 'Disponível') {
       startMission(mission.id);
+    }
+
+    // Missões com exigência obrigatória de evidência (Etapa 5)
+    if (mission.requiresEvidence) {
+      const existing = getOwnSubmissionForMission(mission.id);
+      if (
+        mission.status === 'Aguardando validação' ||
+        existing?.status === 'Pendente' ||
+        existing?.status === 'Aprovada'
+      ) {
+        notify(
+          'Evidência Já Enviada',
+          'Sua evidência já foi registrada e está aguardando análise da equipe organizadora.',
+          'info'
+        );
+        return;
+      }
+
+      if (filePreviewUrl) {
+        URL.revokeObjectURL(filePreviewUrl);
+        setFilePreviewUrl(null);
+      }
+      setSelectedFile(null);
+      setUploadError(null);
+      setEvidenceText('');
+      setEvidenceMission(mission);
+      return;
     }
 
     if (mission.category === 'Quiz' && mission.quizQuestions?.length) {
@@ -113,11 +292,34 @@ export const MissionsCenterPage: React.FC = () => {
     }
   };
 
-  const handleEvidenceSubmit = (e: React.FormEvent) => {
+  const handleEvidenceSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!evidenceMission) return;
+
+    if (evidenceMission.requiresEvidence) {
+      if (!selectedFile) {
+        setUploadError('Selecione um arquivo válido antes de enviar sua evidência.');
+        return;
+      }
+      setIsUploadingEvidence(true);
+      setUploadError(null);
+      const res = await uploadMissionEvidence(
+        evidenceMission.id,
+        selectedFile,
+        evidenceText.trim() || undefined
+      );
+      setIsUploadingEvidence(false);
+
+      if (res.ok) {
+        resetEvidenceModal();
+      } else {
+        setUploadError(res.error || 'Falha ao enviar evidência.');
+      }
+      return;
+    }
+
     submitMissionEvidence(evidenceMission.id, evidenceText);
-    setEvidenceMission(null);
+    resetEvidenceModal();
   };
 
   return (
@@ -137,7 +339,7 @@ export const MissionsCenterPage: React.FC = () => {
             Central de Missões
           </h1>
           <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed max-w-3xl">
-            Avance progressivamente pelas 4 missões oficiais das startups expositoras. Cada desafio completado desbloqueia automaticamente o próximo da jornada.
+            Avance progressivamente pelas missões oficiais das startups expositoras. Cada desafio completado desbloqueia automaticamente o próximo da jornada.
           </p>
         </div>
 
@@ -147,7 +349,7 @@ export const MissionsCenterPage: React.FC = () => {
           <span>
             {isAllCompleted
               ? 'Circuito 100% Concluído'
-              : `Missão ${currentMission?.sequenceOrder || (completedMissions.length + 1)} de ${sequentialMissions.length || 4}`}
+              : `Missão ${currentMission?.sequenceOrder || (completedMissions.length + 1)} de ${sequentialMissions.length}`}
           </span>
         </div>
       </div>
@@ -166,7 +368,7 @@ export const MissionsCenterPage: React.FC = () => {
               <p className="text-base sm:text-lg font-bold text-tutu-light">
                 {isAllCompleted
                   ? 'Circuito 100% Concluído'
-                  : `Missão ${currentMission?.sequenceOrder || (completedMissions.length + 1)} de ${sequentialMissions.length || 4}`}
+                  : `Missão ${currentMission?.sequenceOrder || (completedMissions.length + 1)} de ${sequentialMissions.length}`}
               </p>
             </div>
           </div>
@@ -176,12 +378,12 @@ export const MissionsCenterPage: React.FC = () => {
               <div
                 className="bg-tutu-lime h-full rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(208,255,0,0.5)]"
                 style={{
-                  width: `${(completedMissions.length / Math.max(1, sequentialMissions.length || 4)) * 100}%`,
+                  width: `${(completedMissions.length / Math.max(1, sequentialMissions.length)) * 100}%`,
                 }}
               />
             </div>
             <span className="text-xs font-mono font-bold text-tutu-lime shrink-0">
-              {completedMissions.length} de {sequentialMissions.length || 4} concluídas
+              {completedMissions.length} de {sequentialMissions.length} concluídas
             </span>
           </div>
         </div>
@@ -200,10 +402,10 @@ export const MissionsCenterPage: React.FC = () => {
               <span>Circuito Oficial Completo</span>
             </div>
             <h2 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
-              Parabéns! Você concluiu todas as 4 missões!
+              Parabéns! Você concluiu todas as missões oficiais!
             </h2>
             <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
-              Você completou com sucesso a jornada pelas quatro startups expositoras (Tutu, Escreve Lab, Futurize e Startup Convidada). Todos os pontos-base e bônus de velocidade foram contabilizados no seu saldo oficial.
+              Você completou com sucesso a jornada pelas startups expositoras do circuito oficial. Todos os pontos de conclusão e bônus de velocidade foram contabilizados no seu saldo oficial.
             </p>
           </div>
 
@@ -219,7 +421,7 @@ export const MissionsCenterPage: React.FC = () => {
               to="/app/perfil"
               className="min-h-[46px] w-full sm:w-auto px-6 py-2.5 rounded-xl btn-tutu-outline text-xs font-semibold flex items-center justify-center gap-2"
             >
-              <span>Ver Perfil e Conquistas</span>
+              <span>Ver Meu Perfil</span>
               <ArrowRight className="w-4 h-4 shrink-0" />
             </Link>
           </div>
@@ -232,7 +434,7 @@ export const MissionsCenterPage: React.FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
-                  Missão Ativa • Missão {currentMission.sequenceOrder} de {sequentialMissions.length || 4}
+                  Missão Ativa • Missão {currentMission.sequenceOrder} de {sequentialMissions.length}
                 </span>
                 <CategoryPill category={currentMission.category} />
                 <span className="text-xs text-tutu-light/80 font-semibold">
@@ -261,7 +463,7 @@ export const MissionsCenterPage: React.FC = () => {
                 <div>
                   <span className="text-[11px] text-tutu-light/65 block">Pontuação de Conclusão</span>
                   <span className="font-display font-bold text-sm text-tutu-lime">
-                    +{formatPoints(currentMission.points)}
+                    +{formatPoints(currentMission.completionPoints ?? currentMission.points)}
                   </span>
                 </div>
               </div>
@@ -273,7 +475,9 @@ export const MissionsCenterPage: React.FC = () => {
                 <div>
                   <span className="text-[11px] text-tutu-light/65 block">Bônus por Velocidade</span>
                   <span className="font-display font-bold text-sm text-tutu-lime">
-                    Até +50 pts extras
+                    {currentMission.maxSpeedBonus !== undefined
+                      ? `Até +${currentMission.maxSpeedBonus} pts extras`
+                      : 'Bônus proporcional por agilidade'}
                   </span>
                 </div>
               </div>
@@ -301,7 +505,80 @@ export const MissionsCenterPage: React.FC = () => {
               completedAtMs={currentMission.completedAtMs}
               elapsedSeconds={currentMission.elapsedSeconds}
               speedBonusAwarded={currentMission.speedBonusAwarded}
+              completionPoints={currentMission.completionPoints ?? currentMission.points}
+              maxSpeedBonus={currentMission.maxSpeedBonus}
+              potentialSpeedBonus={currentMission.potentialSpeedBonus}
             />
+
+            {/* Requisito de Evidência Obrigatória (Etapa 5) */}
+            {currentMission.requiresEvidence && (
+              <div className="p-4 rounded-2xl bg-tutu-blue/15 border border-tutu-blue/40 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-tutu-lime">
+                    {currentMission.evidenceType === 'photo' ? (
+                      <Camera className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <Paperclip className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>Evidência Obrigatória para Conclusão</span>
+                  </div>
+                  <span className="text-[11px] font-semibold text-tutu-light/85 px-2.5 py-0.5 rounded-full bg-tutu-dark/70 border border-tutu-secondary/40">
+                    {getEvidenceRequirementsLabel(currentMission.evidenceType)}
+                  </span>
+                </div>
+                <p className="text-xs text-tutu-light/80 leading-relaxed">
+                  Envie o comprovante exigido para análise administrativa. Os pontos desta missão serão liberados após a aprovação da sua evidência.
+                </p>
+
+                {currentMissionSubmission && (
+                  <div className="pt-2 border-t border-tutu-secondary/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+                    <div className="flex flex-wrap items-center gap-2 min-w-0">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                          currentMissionSubmission.status === 'Aprovada'
+                            ? 'bg-tutu-lime text-tutu-dark'
+                            : currentMissionSubmission.status === 'Rejeitada'
+                            ? 'bg-red-500/20 text-red-200 border border-red-400/40'
+                            : 'bg-tutu-blue text-tutu-light'
+                        }`}
+                      >
+                        Status: {currentMissionSubmission.status}
+                      </span>
+                      {currentMissionSubmission.evidenceFileName && (
+                        <span className="text-tutu-light/80 truncate max-w-xs">
+                          {currentMissionSubmission.evidenceFileName}
+                          {currentMissionSubmission.evidenceSizeBytes
+                            ? ` (${formatFileSize(currentMissionSubmission.evidenceSizeBytes)})`
+                            : ''}
+                        </span>
+                      )}
+                    </div>
+
+                    {currentMissionSubmission.hasFile && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenOwnEvidence(currentMissionSubmission)}
+                        disabled={loadingEvidenceId === currentMissionSubmission.id}
+                        className="px-3 py-1.5 rounded-lg bg-tutu-dark/80 border border-tutu-lime/40 text-tutu-lime hover:bg-tutu-lime/10 text-[11px] font-semibold inline-flex items-center gap-1.5 self-start sm:self-auto shrink-0 disabled:opacity-50"
+                      >
+                        {loadingEvidenceId === currentMissionSubmission.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : currentMissionSubmission.evidenceMimeType?.startsWith('image/') ? (
+                          <Eye className="w-3.5 h-3.5" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {currentMissionSubmission.evidenceMimeType?.startsWith('image/')
+                            ? 'Ver Minha Evidência'
+                            : 'Baixar Minha Evidência'}
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Critérios e Ação Principal */}
             <div className="pt-4 border-t border-tutu-secondary/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -329,7 +606,9 @@ export const MissionsCenterPage: React.FC = () => {
                   <>
                     <Play className="w-4 h-4 shrink-0 fill-current" />
                     <span>
-                      {currentMission.qrCodeRequired
+                      {currentMission.requiresEvidence
+                        ? 'Iniciar Missão & Enviar Evidência'
+                        : currentMission.qrCodeRequired
                         ? `Iniciar Missão & Validar QR (${currentMission.qrCodeRequired})`
                         : currentMission.category === 'Quiz'
                         ? 'Iniciar Missão & Abrir Quiz'
@@ -339,7 +618,16 @@ export const MissionsCenterPage: React.FC = () => {
                 )}
                 {currentMission.status === 'Em andamento' && (
                   <>
-                    {currentMission.category === 'Quiz' ? (
+                    {currentMission.requiresEvidence ? (
+                      <>
+                        <Upload className="w-4 h-4 shrink-0" />
+                        <span>
+                          {currentMissionSubmission?.status === 'Rejeitada'
+                            ? 'Reenviar Evidência Obrigatória'
+                            : 'Enviar Evidência Obrigatória'}
+                        </span>
+                      </>
+                    ) : currentMission.category === 'Quiz' ? (
                       <>
                         <HelpCircle className="w-4 h-4 shrink-0" />
                         <span>Responder Quiz Interativo</span>
@@ -374,6 +662,145 @@ export const MissionsCenterPage: React.FC = () => {
         </div>
       ) : null}
 
+      {/* Missões Extras com Evidência Obrigatória (independentes da sequência oficial) */}
+      {extraEvidenceMissions.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-widest text-tutu-lime block">
+                Atividades Complementares • Fora do Circuito Oficial
+              </span>
+              <h2 className="font-display font-bold text-xl sm:text-2xl text-tutu-light">
+                Missões Extras com Evidência
+              </h2>
+            </div>
+            <span className="text-xs text-tutu-light/65">
+              Não alteram a ordem nem a reserva do circuito oficial.
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {extraEvidenceMissions.map((extraMission) => {
+              const extraSub = getOwnSubmissionForMission(extraMission.id);
+              const isApproved = extraSub?.status === 'Aprovada' || extraMission.status === 'Concluída';
+              const isPending = extraSub?.status === 'Pendente';
+              const isRejected = extraSub?.status === 'Rejeitada';
+
+              return (
+                <div
+                  key={extraMission.id}
+                  className="tutu-card p-5 space-y-4 border border-tutu-secondary/50 bg-tutu-dark/75 flex flex-col justify-between"
+                >
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="px-2.5 py-0.5 rounded-full bg-tutu-secondary/40 border border-tutu-secondary/60 text-[11px] font-bold text-tutu-light">
+                          Missão Extra
+                        </span>
+                        <CategoryPill category={extraMission.category} />
+                      </div>
+                      <span className="text-xs font-display font-bold text-tutu-lime flex items-center gap-1">
+                        <Zap className="w-3.5 h-3.5 fill-tutu-lime" />
+                        +{formatPoints(extraMission.points)}
+                      </span>
+                    </div>
+
+                    <div>
+                      <h3 className="font-display font-bold text-lg text-tutu-light">
+                        {extraMission.title}
+                      </h3>
+                      <p className="text-xs text-tutu-light/70 mt-0.5">
+                        {extraMission.startupName} • {extraMission.period}
+                      </p>
+                      <p className="text-xs text-tutu-light/85 mt-2 leading-relaxed">
+                        {extraMission.description}
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-tutu-blue/15 border border-tutu-blue/35 text-[11px] text-tutu-light/85 space-y-1.5">
+                      <div className="flex items-center gap-1.5 font-bold text-tutu-lime">
+                        {extraMission.evidenceType === 'photo' ? (
+                          <Camera className="w-3.5 h-3.5 shrink-0" />
+                        ) : (
+                          <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                        )}
+                        <span>{getEvidenceRequirementsLabel(extraMission.evidenceType)}</span>
+                      </div>
+                      <p className="text-tutu-light/75">{extraMission.completionCriteria}</p>
+                    </div>
+
+                    {extraSub && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs pt-1">
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                            isApproved
+                              ? 'bg-tutu-lime text-tutu-dark'
+                              : isRejected
+                              ? 'bg-red-500/20 text-red-200 border border-red-400/40'
+                              : 'bg-tutu-blue text-tutu-light'
+                          }`}
+                        >
+                          Evidência: {extraSub.status}
+                        </span>
+                        {extraSub.hasFile && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenOwnEvidence(extraSub)}
+                            disabled={loadingEvidenceId === extraSub.id}
+                            className="px-2.5 py-1 rounded-lg bg-tutu-dark/80 border border-tutu-lime/35 text-tutu-lime hover:bg-tutu-lime/10 text-[11px] font-semibold inline-flex items-center gap-1 disabled:opacity-50"
+                          >
+                            {loadingEvidenceId === extraSub.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : extraSub.evidenceMimeType?.startsWith('image/') ? (
+                              <Eye className="w-3 h-3" />
+                            ) : (
+                              <Download className="w-3 h-3" />
+                            )}
+                            <span>Ver/Baixar Evidência</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleActionClick(extraMission)}
+                    disabled={isApproved || isPending}
+                    className={`min-h-[44px] w-full px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                      isApproved
+                        ? 'bg-tutu-lime/15 text-tutu-lime border border-tutu-lime/40 cursor-default'
+                        : isPending
+                        ? 'bg-tutu-secondary/40 text-tutu-light border border-tutu-secondary/60 cursor-default'
+                        : 'btn-tutu-lime'
+                    }`}
+                  >
+                    {isApproved ? (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>Evidência Aprovada</span>
+                      </>
+                    ) : isPending ? (
+                      <>
+                        <Send className="w-4 h-4 shrink-0" />
+                        <span>Aguardando Validação</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4 shrink-0" />
+                        <span>
+                          {isRejected ? 'Reenviar Evidência' : 'Enviar Evidência'}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Histórico Discreto de Missões Concluídas (Colapsável) */}
       {completedMissions.length > 0 && (
         <div className="tutu-card overflow-hidden border border-tutu-secondary/35 bg-tutu-dark/50">
@@ -402,7 +829,9 @@ export const MissionsCenterPage: React.FC = () => {
 
           {showCompletedHistory && (
             <div className="divide-y divide-tutu-secondary/30 border-t border-tutu-secondary/30 p-2 sm:p-3 bg-tutu-dark/80">
-              {completedMissions.map((m) => (
+              {completedMissions.map((m) => {
+                const ownSub = getOwnSubmissionForMission(m.id);
+                return (
                 <div
                   key={m.id}
                   className="p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl hover:bg-tutu-secondary/15 transition-colors"
@@ -421,7 +850,24 @@ export const MissionsCenterPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0 self-end sm:self-auto text-xs">
+                  <div className="flex flex-wrap items-center gap-2.5 shrink-0 self-end sm:self-auto text-xs">
+                    {ownSub?.hasFile && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenOwnEvidence(ownSub)}
+                        disabled={loadingEvidenceId === ownSub.id}
+                        className="px-2.5 py-1 rounded-lg bg-tutu-dark/80 border border-tutu-lime/35 text-tutu-lime hover:bg-tutu-lime/10 text-[10px] font-semibold inline-flex items-center gap-1 disabled:opacity-50"
+                      >
+                        {loadingEvidenceId === ownSub.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : ownSub.evidenceMimeType?.startsWith('image/') ? (
+                          <Eye className="w-3 h-3" />
+                        ) : (
+                          <Download className="w-3 h-3" />
+                        )}
+                        <span>Evidência</span>
+                      </button>
+                    )}
                     <span className="text-tutu-lime font-bold">
                       +{formatPoints(m.points)}
                     </span>
@@ -435,7 +881,8 @@ export const MissionsCenterPage: React.FC = () => {
                     </span>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -521,44 +968,170 @@ export const MissionsCenterPage: React.FC = () => {
       {/* EVIDENCE SUBMISSION MODAL */}
       {evidenceMission && (
         <div className="fixed inset-0 z-50 bg-tutu-dark/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="tutu-card max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-8 space-y-5 border-2 border-tutu-blue">
-            <div>
-              <span className="text-xs font-bold uppercase text-tutu-lime">
-                Envio para Curadoria
-              </span>
-              <h3 className="font-display font-bold text-xl sm:text-2xl text-tutu-light mt-1">
-                {evidenceMission.title}
-              </h3>
-              <p className="text-xs text-tutu-light/75 mt-1 leading-relaxed">
-                Descreva seu aprendizado ou informe o código recebido no estande para enviar à fila de validação administrativa.
-              </p>
+          <div className="tutu-card max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-8 space-y-5 border-2 border-tutu-lime">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-xs font-bold uppercase text-tutu-lime">
+                  {evidenceMission.requiresEvidence
+                    ? 'Envio de Evidência Obrigatória'
+                    : 'Envio para Curadoria'}
+                </span>
+                <h3 className="font-display font-bold text-xl sm:text-2xl text-tutu-light mt-1">
+                  {evidenceMission.title}
+                </h3>
+                <p className="text-xs text-tutu-light/75 mt-1 leading-relaxed">
+                  {evidenceMission.requiresEvidence
+                    ? `Anexe sua comprovação (${getEvidenceRequirementsLabel(evidenceMission.evidenceType)}) para análise administrativa.`
+                    : 'Descreva seu aprendizado ou informe o código recebido no estande para enviar à fila de validação administrativa.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={resetEvidenceModal}
+                disabled={isUploadingEvidence}
+                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-tutu-secondary/30 text-tutu-light/70 hover:text-tutu-light shrink-0"
+                aria-label="Fechar modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
 
             <form onSubmit={handleEvidenceSubmit} className="space-y-4">
-              <textarea
-                rows={3}
-                required
-                value={evidenceText}
-                onChange={(e) => setEvidenceText(e.target.value)}
-                placeholder="Ex.: Participei da dinâmica no estande e recebi a validação da equipe"
-                className="input-tutu text-xs"
-              />
+              {evidenceMission.requiresEvidence ? (
+                <>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-tutu-light">
+                      Arquivo de Evidência *
+                    </label>
+                    <label className="flex flex-col items-center justify-center gap-2 p-5 rounded-xl border-2 border-dashed border-tutu-lime/40 bg-tutu-dark/70 hover:border-tutu-lime cursor-pointer transition-colors text-center">
+                      <Upload className="w-6 h-6 text-tutu-lime" />
+                      <span className="text-xs font-semibold text-tutu-light">
+                        {selectedFile
+                          ? 'Clique para trocar o arquivo selecionado'
+                          : 'Clique para selecionar ou tirar uma foto'}
+                      </span>
+                      <span className="text-[11px] text-tutu-light/65">
+                        {getEvidenceRequirementsLabel(evidenceMission.evidenceType)}
+                      </span>
+                      <input
+                        type="file"
+                        accept={getEvidenceAcceptAttr(evidenceMission.evidenceType)}
+                        onChange={handleSelectEvidenceFile}
+                        className="hidden"
+                      />
+                    </label>
+
+                    {selectedFile && (
+                      <div className="p-3 rounded-xl bg-tutu-secondary/20 border border-tutu-secondary/40 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <FileText className="w-4 h-4 text-tutu-lime shrink-0" />
+                            <span className="text-tutu-light font-medium truncate">
+                              {selectedFile.name}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-tutu-lime font-mono shrink-0">
+                            {formatFileSize(selectedFile.size)}
+                          </span>
+                        </div>
+                        {filePreviewUrl && (
+                          <div className="rounded-lg overflow-hidden border border-tutu-secondary/40 bg-tutu-dark max-h-56 flex items-center justify-center">
+                            <img
+                              src={filePreviewUrl}
+                              alt="Pré-visualização da evidência"
+                              className="max-h-56 w-auto object-contain"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {uploadError && (
+                      <div className="p-3 rounded-xl bg-red-500/15 border border-red-400/40 text-xs text-red-200 flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-300" />
+                        <span>{uploadError}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-tutu-light/80 mb-1">
+                      Observação (opcional)
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={evidenceText}
+                      onChange={(e) => setEvidenceText(e.target.value)}
+                      placeholder="Ex.: Foto registrada no estande após a demonstração."
+                      className="input-tutu text-xs"
+                    />
+                  </div>
+                </>
+              ) : (
+                <textarea
+                  rows={3}
+                  required
+                  value={evidenceText}
+                  onChange={(e) => setEvidenceText(e.target.value)}
+                  placeholder="Ex.: Participei da dinâmica no estande e recebi a validação da equipe"
+                  className="input-tutu text-xs"
+                />
+              )}
+
               <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 sm:gap-3">
                 <button
                   type="button"
-                  onClick={() => setEvidenceMission(null)}
-                  className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-outline text-xs"
+                  onClick={resetEvidenceModal}
+                  disabled={isUploadingEvidence}
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-outline text-xs disabled:opacity-50"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs"
+                  disabled={
+                    isUploadingEvidence || (Boolean(evidenceMission.requiresEvidence) && !selectedFile)
+                  }
+                  className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
                 >
-                  Enviar para Validação
+                  {isUploadingEvidence && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>
+                    {isUploadingEvidence ? 'Enviando evidência...' : 'Enviar para Validação'}
+                  </span>
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* AUTHENTICATED IMAGE PREVIEW MODAL */}
+      {previewModal && (
+        <div className="fixed inset-0 z-50 bg-tutu-dark/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="tutu-card max-w-3xl w-full p-4 sm:p-6 space-y-4 border-2 border-tutu-lime">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-display font-bold text-base sm:text-lg text-tutu-light truncate">
+                {previewModal.fileName}
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  URL.revokeObjectURL(previewModal.url);
+                  setPreviewModal(null);
+                }}
+                className="min-h-[36px] px-3 py-1 rounded-lg bg-tutu-secondary/30 text-xs text-tutu-light hover:text-tutu-lime flex items-center gap-1"
+              >
+                <X className="w-4 h-4" />
+                <span>Fechar</span>
+              </button>
+            </div>
+            <div className="rounded-xl overflow-hidden bg-tutu-dark border border-tutu-secondary/40 flex items-center justify-center max-h-[70vh]">
+              <img
+                src={previewModal.url}
+                alt={previewModal.fileName}
+                className="max-h-[70vh] w-auto object-contain"
+              />
+            </div>
           </div>
         </div>
       )}

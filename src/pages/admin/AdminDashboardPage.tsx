@@ -4,6 +4,7 @@ import {
   Activity,
   Building2,
   CheckCircle2,
+  Clock,
   QrCode,
   TrendingUp,
   Users,
@@ -14,8 +15,15 @@ import {
 import { useAppStore } from '../../hooks/useAppStore';
 import { formatNumber } from '../../utils/formatters';
 
+function formatAvgDuration(seconds: number | null): string {
+  if (seconds === null) return 'Sem dados';
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return mins > 0 ? `${mins}m ${String(secs).padStart(2, '0')}s` : `${secs}s`;
+}
+
 export const AdminDashboardPage: React.FC = () => {
-  const { adminMetrics, startups, missions, qrCodes, validationQueue } = useAppStore();
+  const { adminMetrics, startups, qrCodes, validationQueue } = useAppStore();
 
   const pendingValidations = validationQueue.filter((v) => v.status === 'Pendente').length;
 
@@ -23,20 +31,33 @@ export const AdminDashboardPage: React.FC = () => {
     {
       label: 'Participantes Cadastrados',
       value: formatNumber(adminMetrics.registeredParticipants),
-      sub: 'Passaportes emitidos',
+      sub: `${formatNumber(adminMetrics.inactiveParticipants)} sem atividade`,
       icon: Users,
     },
     {
-      label: 'Participantes Ativos',
+      label: 'Participantes com Atividade',
       value: formatNumber(adminMetrics.activeParticipants),
-      sub: 'Interagiram nos pavilhões',
+      sub: 'Atividade real registrada',
       icon: Activity,
+    },
+    {
+      label: 'Taxa de Ativação Real',
+      value: `${adminMetrics.participationRate}%`,
+      sub: 'Com atividade / cadastrados',
+      icon: TrendingUp,
+      highlight: true,
     },
     {
       label: 'Missões Concluídas',
       value: formatNumber(adminMetrics.completedMissions),
-      sub: `${missions.filter((m) => m.active).length} missões ativas`,
+      sub: `${formatNumber(adminMetrics.startedMissions)} iniciadas • ${formatNumber(adminMetrics.expiredMissions)} expiradas (${adminMetrics.missionCompletionRate}%)`,
       icon: CheckCircle2,
+    },
+    {
+      label: 'Tempo Médio / Bônus',
+      value: formatAvgDuration(adminMetrics.averageCompletionSeconds),
+      sub: `Bônus velocidade: ${formatNumber(adminMetrics.totalSpeedBonusAwarded)} pts`,
+      icon: Clock,
     },
     {
       label: 'QR Codes Escaneados',
@@ -53,15 +74,8 @@ export const AdminDashboardPage: React.FC = () => {
     {
       label: 'Pontuação Distribuída',
       value: formatNumber(adminMetrics.totalPointsDistributed),
-      sub: 'Pontos creditados',
+      sub: 'Saldo líquido validado',
       icon: Zap,
-    },
-    {
-      label: 'Taxa de Participação',
-      value: `${adminMetrics.participationRate}%`,
-      sub: 'Conversão visitante → ativo',
-      icon: TrendingUp,
-      highlight: true,
     },
   ];
 
@@ -142,16 +156,18 @@ export const AdminDashboardPage: React.FC = () => {
             {(() => {
               const maxDayMetric = Math.max(
                 10,
-                ...adminMetrics.engagementByDay.map((d) => Math.max(d.scans, d.missions))
+                ...adminMetrics.engagementByDay.map((d) =>
+                  Math.max(d.scans, d.missionsStarted, d.missionsCompleted)
+                )
               );
               return adminMetrics.engagementByDay.map((day) => {
-                const scanPct =
-                  day.scans > 0
-                    ? Math.max(6, Math.min(100, Math.round((day.scans / maxDayMetric) * 100)))
+                const startedPct =
+                  day.missionsStarted > 0
+                    ? Math.max(6, Math.min(100, Math.round((day.missionsStarted / maxDayMetric) * 100)))
                     : 0;
                 const missionPct =
-                  day.missions > 0
-                    ? Math.max(6, Math.min(100, Math.round((day.missions / maxDayMetric) * 100)))
+                  day.missionsCompleted > 0
+                    ? Math.max(6, Math.min(100, Math.round((day.missionsCompleted / maxDayMetric) * 100)))
                     : 0;
                 return (
                   <div
@@ -160,26 +176,30 @@ export const AdminDashboardPage: React.FC = () => {
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
                       <span className="text-tutu-light">{day.day}</span>
-                      <span className="text-tutu-lime">{day.activeUsers} usuários ativos</span>
+                      <span className="text-tutu-lime">
+                        {day.activeUsers} ativos • {formatNumber(day.pointsAwarded)} pts
+                      </span>
                     </div>
 
                     <div className="space-y-1.5 text-[11px]">
                       <div className="flex justify-between text-tutu-light/80">
-                        <span>QR Codes Escaneados</span>
-                        <span className="font-bold">{day.scans}</span>
+                        <span>Missões Iniciadas ({day.scans} QR scans)</span>
+                        <span className="font-bold">{day.missionsStarted}</span>
                       </div>
                       <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden">
                         <div
                           className="h-full bg-tutu-lime rounded-full transition-all duration-300"
-                          style={{ width: `${scanPct}%` }}
+                          style={{ width: `${startedPct}%` }}
                         />
                       </div>
                     </div>
 
                     <div className="space-y-1.5 text-[11px]">
                       <div className="flex justify-between text-tutu-light/80">
-                        <span>Missões Concluídas</span>
-                        <span className="font-bold">{day.missions}</span>
+                        <span>
+                          Missões Concluídas ({day.missionsExpired} expiradas • {day.completionRate}%)
+                        </span>
+                        <span className="font-bold">{day.missionsCompleted}</span>
                       </div>
                       <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden">
                         <div
@@ -242,8 +262,12 @@ export const AdminDashboardPage: React.FC = () => {
                     </div>
 
                     <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-tutu-light/75">
-                      <span>{formatNumber(st.visits)} visitas registradas</span>
-                      <span>{formatNumber(st.missionsCompleted)} missões concluídas</span>
+                      <span>{formatNumber(st.uniqueParticipants)} participantes únicos</span>
+                      <span>
+                        {formatNumber(st.missionsStarted)} iniciadas •{' '}
+                        {formatNumber(st.missionsCompleted)} concluídas •{' '}
+                        {formatNumber(st.missionsPending)} pendentes ({st.completionRate}%)
+                      </span>
                     </div>
                   </div>
                 );

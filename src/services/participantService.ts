@@ -1,13 +1,11 @@
 import {
-  initialAchievements,
   initialCurrentParticipant,
   initialParticipantsList,
 } from '../mocks/mockData';
-import { Achievement, Participant } from '../types';
+import { Participant } from '../types';
 
 let participantState: Participant = { ...initialCurrentParticipant };
 let participantsDirectory: Participant[] = initialParticipantsList.map((p) => ({ ...p }));
-let achievementsState: Achievement[] = initialAchievements.map((a) => ({ ...a }));
 
 export const participantService = {
   getParticipantProfile(): Participant {
@@ -55,36 +53,7 @@ export const participantService = {
     });
     participantsDirectory = sorted;
 
-    // Atualizar progresso de conquistas
-    achievementsState = achievementsState.map((ach) => {
-      if (ach.id === 'ach-05') {
-        const nextProgress = Math.min(ach.progressTotal, participantState.points);
-        const unlocked = nextProgress >= ach.progressTotal && participantState.visitedStartupsIds.length >= 4;
-        return {
-          ...ach,
-          progressCurrent: nextProgress,
-          unlocked: ach.unlocked || unlocked,
-          unlockedAt: unlocked && !ach.unlocked ? 'Agora mesmo • Simulação' : ach.unlockedAt,
-        };
-      }
-      if (ach.id === 'ach-03') {
-        const nextProgress = Math.min(ach.progressTotal, ach.progressCurrent + 1);
-        const unlocked = nextProgress >= ach.progressTotal;
-        return {
-          ...ach,
-          progressCurrent: nextProgress,
-          unlocked: ach.unlocked || unlocked,
-          unlockedAt: unlocked && !ach.unlocked ? 'Agora mesmo • Simulação' : ach.unlockedAt,
-        };
-      }
-      return ach;
-    });
-
     return { ...participantState };
-  },
-
-  getAchievements(): Achievement[] {
-    return achievementsState.map((a) => ({ ...a }));
   },
 
   getAllParticipants(): Participant[] {

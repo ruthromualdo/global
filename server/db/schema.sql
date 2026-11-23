@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS participants (
   name TEXT NOT NULL,
   nickname TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
+  phone TEXT,
   password_hash TEXT DEFAULT '',
   role TEXT NOT NULL DEFAULT 'PARTICIPANT',
   avatar TEXT NOT NULL,
@@ -17,13 +18,14 @@ CREATE TABLE IF NOT EXISTS participants (
   ranking_position INTEGER NOT NULL DEFAULT 1,
   completed_missions_count INTEGER NOT NULL DEFAULT 0,
   visited_startups_json TEXT NOT NULL DEFAULT '[]',
-  unlocked_achievements_json TEXT NOT NULL DEFAULT '[]',
   registered_at TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'Ativo',
   show_nickname_in_public_ranking INTEGER NOT NULL DEFAULT 1,
   allow_activity_notifications INTEGER NOT NULL DEFAULT 1,
   share_startup_interests INTEGER NOT NULL DEFAULT 0,
-  is_current_session INTEGER NOT NULL DEFAULT 0
+  is_current_session INTEGER NOT NULL DEFAULT 0,
+  image_publicity_consent INTEGER NOT NULL DEFAULT 0,
+  image_publicity_consent_updated_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_participants_points ON participants(points DESC);
@@ -75,7 +77,9 @@ CREATE TABLE IF NOT EXISTS missions (
   completion_criteria TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1,
   qr_code_required TEXT,
-  quiz_questions_json TEXT
+  quiz_questions_json TEXT,
+  requires_evidence INTEGER NOT NULL DEFAULT 0,
+  evidence_type TEXT
 );
 
 CREATE TABLE IF NOT EXISTS participant_missions (
@@ -110,6 +114,11 @@ CREATE TABLE IF NOT EXISTS mission_completions (
   submitted_at TEXT NOT NULL,
   evidence_description TEXT NOT NULL,
   evidence_code TEXT NOT NULL,
+  evidence_file_name TEXT,
+  evidence_stored_name TEXT,
+  evidence_mime_type TEXT,
+  evidence_size_bytes INTEGER,
+  evidence_sha256 TEXT,
   points_awarded INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Pendente'
 );
@@ -147,22 +156,38 @@ CREATE TABLE IF NOT EXISTS points_transactions (
   previous_balance INTEGER NOT NULL,
   new_balance INTEGER NOT NULL,
   created_at TEXT NOT NULL,
+  created_at_ms INTEGER,
   event_key TEXT,
   mission_id TEXT
 );
 
-CREATE TABLE IF NOT EXISTS achievements (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  unlock_condition TEXT NOT NULL,
-  icon_name TEXT NOT NULL,
-  points_bonus INTEGER NOT NULL DEFAULT 0,
-  unlocked INTEGER NOT NULL DEFAULT 0,
-  unlocked_at TEXT,
-  progress_current INTEGER NOT NULL DEFAULT 0,
-  progress_total INTEGER NOT NULL DEFAULT 1
+CREATE TABLE IF NOT EXISTS daily_ranking_closures (
+  event_date TEXT PRIMARY KEY,
+  day_label TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Aberto',
+  scheduled_close_at_ms INTEGER NOT NULL,
+  closed_at_ms INTEGER,
+  winner_participant_id TEXT,
+  winner_display_name TEXT,
+  winner_avatar TEXT,
+  winner_daily_points INTEGER NOT NULL DEFAULT 0,
+  winner_last_mission_completed_at_ms INTEGER,
+  snapshot_json TEXT NOT NULL DEFAULT '[]'
 );
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_ranking_closures_immutable_update
+BEFORE UPDATE ON daily_ranking_closures
+WHEN OLD.status = 'Encerrado'
+BEGIN
+  SELECT RAISE(ABORT, 'DAILY_RANKING_ALREADY_CLOSED');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_daily_ranking_closures_immutable_delete
+BEFORE DELETE ON daily_ranking_closures
+WHEN OLD.status = 'Encerrado'
+BEGIN
+  SELECT RAISE(ABORT, 'DAILY_RANKING_IMMUTABLE');
+END;
 
 CREATE TABLE IF NOT EXISTS event_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),

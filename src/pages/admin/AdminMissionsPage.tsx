@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Clock, Edit3, Plus, Power, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
+import { Clock, Edit3, Paperclip, Plus, Power, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
 import { Mission, MissionCategory, MissionStatus } from '../../types';
 import { CategoryPill, MissionStatusBadge } from '../../components/UI';
@@ -46,6 +46,8 @@ export const AdminMissionsPage: React.FC = () => {
   const [timerMinutes, setTimerMinutes] = useState<string>('');
   const [missionType, setMissionType] = useState<'official' | 'extra'>('official');
   const [sequenceOrder, setSequenceOrder] = useState<number | ''>(5);
+  const [requiresEvidence, setRequiresEvidence] = useState<boolean>(false);
+  const [evidenceType, setEvidenceType] = useState<'photo' | 'file' | 'both'>('photo');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   const maxSequence = missions
@@ -125,6 +127,8 @@ export const AdminMissionsPage: React.FC = () => {
     setTimerMinutes('');
     setMissionType('official');
     setSequenceOrder(nextSuggestedSequence);
+    setRequiresEvidence(false);
+    setEvidenceType('photo');
     setShowForm(true);
   };
 
@@ -147,6 +151,8 @@ export const AdminMissionsPage: React.FC = () => {
       setMissionType('extra');
       setSequenceOrder('');
     }
+    setRequiresEvidence(Boolean(m.requiresEvidence));
+    setEvidenceType(m.evidenceType || 'photo');
     setShowForm(true);
   };
 
@@ -195,6 +201,8 @@ export const AdminMissionsPage: React.FC = () => {
       timerMinutes: parsedTimerMinutes,
       missionType,
       sequenceOrder: missionType === 'official' ? Number(sequenceOrder) : undefined,
+      requiresEvidence,
+      evidenceType: requiresEvidence ? evidenceType : undefined,
     };
 
     setIsSubmitting(true);
@@ -477,6 +485,55 @@ export const AdminMissionsPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Configuração de Evidência Obrigatória (Etapa 5) */}
+          <div className="p-4 rounded-xl bg-tutu-secondary/15 border border-tutu-secondary/40 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Paperclip className="w-4 h-4 text-tutu-lime shrink-0" />
+                <label className="text-xs font-bold uppercase tracking-wider text-tutu-lime">
+                  Comprovação por Evidência
+                </label>
+              </div>
+              <label className="inline-flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={requiresEvidence}
+                  onChange={(e) => setRequiresEvidence(e.target.checked)}
+                  className="w-4 h-4 accent-tutu-lime rounded cursor-pointer"
+                />
+                <span className="text-xs font-semibold text-tutu-light">
+                  Exige envio de evidência obrigatória
+                </span>
+              </label>
+            </div>
+
+            {requiresEvidence ? (
+              <div className="pt-2 border-t border-tutu-secondary/30 grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                <div>
+                  <label className="block text-xs font-semibold text-tutu-light/90 mb-1">
+                    Tipo de Evidência Aceita *
+                  </label>
+                  <select
+                    value={evidenceType}
+                    onChange={(e) => setEvidenceType(e.target.value as 'photo' | 'file' | 'both')}
+                    className="input-tutu text-xs"
+                  >
+                    <option value="photo">Foto (JPG, JPEG, PNG, WEBP)</option>
+                    <option value="file">Arquivo (PDF ou Imagem)</option>
+                    <option value="both">Foto ou Arquivo (JPG, PNG, WEBP, PDF)</option>
+                  </select>
+                </div>
+                <div className="text-[11px] text-tutu-light/70 leading-relaxed">
+                  Limite de <strong>5 MB</strong> por arquivo. Os pontos só serão creditados após a aprovação administrativa na Fila de Validação. Em missões oficiais, esta configuração fica bloqueada após o início do circuito.
+                </div>
+              </div>
+            ) : (
+              <p className="text-[11px] text-tutu-light/60">
+                Esta missão pode ser concluída sem envio de anexo (fluxo padrão).
+              </p>
+            )}
+          </div>
+
           <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 sm:gap-3">
             <button
               type="button"
@@ -640,6 +697,19 @@ export const AdminMissionsPage: React.FC = () => {
                   <Clock className="w-3 h-3 text-tutu-lime" />
                   {m.timerMinutes ? `${m.timerMinutes} min (individual)` : `${defaultTimerMinutes} min (padrão)`}
                 </span>
+                {m.requiresEvidence && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-tutu-blue/25 border border-tutu-blue/50 text-tutu-light text-[11px] font-semibold">
+                    <Paperclip className="w-3 h-3 text-tutu-lime" />
+                    <span>
+                      Evidência:{' '}
+                      {m.evidenceType === 'file'
+                        ? 'Arquivo'
+                        : m.evidenceType === 'both'
+                        ? 'Foto ou Arquivo'
+                        : 'Foto'}
+                    </span>
+                  </span>
+                )}
               </div>
               <h3 className="font-display font-bold text-lg text-tutu-light break-words">
                 {m.title}

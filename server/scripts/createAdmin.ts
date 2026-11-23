@@ -49,10 +49,10 @@ if (existing) {
     INSERT INTO participants (
       id, name, nickname, email, password_hash, role, avatar, points,
       ranking_position, completed_missions_count, visited_startups_json,
-      unlocked_achievements_json, registered_at, status,
+      registered_at, status,
       show_nickname_in_public_ranking, allow_activity_notifications,
       share_startup_interests, is_current_session
-    ) VALUES (?, ?, ?, ?, ?, 'ADMIN', ?, 0, 1, 0, '[]', '[]', ?, 'Ativo', 1, 1, 0, 0)
+    ) VALUES (?, ?, ?, ?, ?, 'ADMIN', ?, 0, 1, 0, '[]', ?, 'Ativo', 1, 1, 0, 0)
   `).run(
     adminId,
     name,

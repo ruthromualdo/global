@@ -11,6 +11,9 @@ interface MissionTimerProps {
   completedAtMs?: number | null;
   elapsedSeconds?: number;
   speedBonusAwarded?: number;
+  completionPoints?: number;
+  maxSpeedBonus?: number;
+  potentialSpeedBonus?: number;
 }
 
 export const MissionTimer: React.FC<MissionTimerProps> = ({
@@ -20,6 +23,9 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
   targetEndAtMs,
   serverTimeMs,
   speedBonusAwarded = 0,
+  completionPoints,
+  maxSpeedBonus,
+  potentialSpeedBonus: backendPotentialSpeedBonus,
 }) => {
   const [clientOffset] = useState(() => (serverTimeMs ? serverTimeMs - Date.now() : 0));
 
@@ -63,14 +69,21 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
             <CheckCircle className="w-3.5 h-3.5 shrink-0" />
             Missão Concluída
           </span>
-          {speedBonusAwarded > 0 ? (
-            <span className="inline-flex items-center gap-1 text-xs font-bold text-[#C8FFD2] px-2 py-0.5 rounded-md bg-[#C8FFD2]/15 border border-[#C8FFD2]/30">
-              <Zap className="w-3 h-3 shrink-0" />
-              +{speedBonusAwarded} pts bônus
-            </span>
-          ) : (
-            <span className="text-[11px] text-[#D0DED4]">Sem bônus de velocidade</span>
-          )}
+          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            {completionPoints !== undefined && completionPoints > 0 && (
+              <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#FFFFFF] px-2 py-0.5 rounded-md bg-tutu-secondary border border-tutu-blue/40">
+                +{completionPoints} pts conclusão
+              </span>
+            )}
+            {speedBonusAwarded > 0 ? (
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-[#C8FFD2] px-2 py-0.5 rounded-md bg-[#C8FFD2]/15 border border-[#C8FFD2]/30">
+                <Zap className="w-3 h-3 shrink-0" />
+                +{speedBonusAwarded} pts bônus
+              </span>
+            ) : (
+              <span className="text-[11px] text-[#D0DED4]">Sem bônus de velocidade</span>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -91,6 +104,7 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
 
   // 3. Missão Disponível (Ainda não iniciada)
   if (status === 'Disponível' && !startedAtMs) {
+    const hasBonus = maxSpeedBonus !== undefined ? maxSpeedBonus > 0 : true;
     return (
       <div className="p-3 rounded-xl bg-tutu-dark border border-tutu-blue/30 space-y-1">
         <div className="flex items-center justify-between gap-2 text-xs">
@@ -98,13 +112,21 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
             <Clock className="w-3.5 h-3.5 text-[#C8FFD2] shrink-0" />
             Duração: <strong className="text-[#FFFFFF]">{Math.round(durationSeconds / 60)} min</strong>
           </span>
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#DDF8E4]">
-            <Zap className="w-3 h-3 shrink-0" />
-            Até +50 pts de bônus
-          </span>
+          {hasBonus ? (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#DDF8E4]">
+              <Zap className="w-3 h-3 shrink-0" />
+              {maxSpeedBonus !== undefined
+                ? `Até +${maxSpeedBonus} pts de bônus`
+                : 'Bônus de velocidade disponível'}
+            </span>
+          ) : (
+            <span className="text-[11px] text-[#D0DED4]">Sem bônus de velocidade</span>
+          )}
         </div>
         <p className="text-[11px] text-[#D0DED4]">
-          O cronômetro iniciará apenas quando você clicar em iniciar missão.
+          {completionPoints !== undefined
+            ? `Conclua para garantir ${completionPoints} pontos. O cronômetro iniciará quando você clicar em iniciar missão.`
+            : 'O cronômetro iniciará apenas quando você clicar em iniciar missão.'}
         </p>
       </div>
     );
@@ -112,9 +134,16 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
 
   // 4. Missão Em Andamento ou Aguardando Validação
   const isExpired = remainingSeconds <= 0;
+  const effectiveMaxBonus = maxSpeedBonus ?? 0;
+
+  // Usa potentialSpeedBonus retornado pelo backend se disponível; senão calcula proporcionalmente com base em maxSpeedBonus do backend
   const potentialBonus = isExpired
     ? 0
-    : Math.max(0, Math.min(50, Math.round(50 * (remainingSeconds / durationSeconds))));
+    : backendPotentialSpeedBonus !== undefined
+    ? backendPotentialSpeedBonus
+    : effectiveMaxBonus > 0 && durationSeconds > 0
+    ? Math.max(0, Math.min(effectiveMaxBonus, Math.round(effectiveMaxBonus * (remainingSeconds / durationSeconds))))
+    : 0;
 
   const progressPercent = Math.max(0, Math.min(100, (remainingSeconds / durationSeconds) * 100));
 
@@ -143,10 +172,14 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
             <AlertCircle className="w-3 h-3 shrink-0" />
             Tempo esgotado
           </span>
-        ) : (
+        ) : effectiveMaxBonus > 0 ? (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#071812] px-2 py-0.5 rounded-md bg-[#C8FFD2] border border-[#C8FFD2]">
             <Zap className="w-3 h-3 shrink-0" />
             Bônus atual: +{potentialBonus} pts
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#D0DED4] px-2 py-0.5 rounded-md bg-tutu-secondary border border-tutu-blue/40">
+            Sem bônus de velocidade
           </span>
         )}
       </div>
@@ -163,11 +196,19 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
 
       {isExpired ? (
         <p className="text-[11px] text-[#D0DED4] leading-tight">
-          Bônus de velocidade indisponível. Conclua a missão para receber os 180 pontos normais.
+          {completionPoints !== undefined
+            ? `Bônus de velocidade indisponível. Conclua a missão para receber os ${completionPoints} pontos de conclusão.`
+            : 'Bônus de velocidade indisponível. Conclua a missão para receber os pontos de conclusão.'}
         </p>
       ) : (
         <p className="text-[11px] text-[#D0DED4] leading-tight">
-          Complete a missão dentro do prazo para garantir pontuação máxima de velocidade!
+          {completionPoints !== undefined
+            ? `Conclua a missão para receber ${completionPoints} pontos de conclusão${
+                effectiveMaxBonus > 0
+                  ? ` mais até +${effectiveMaxBonus} pontos de bônus por agilidade!`
+                  : '!'
+              }`
+            : 'Complete a missão dentro do prazo para garantir pontuação máxima de velocidade!'}
         </p>
       )}
     </div>

@@ -1,22 +1,25 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, KeyRound, Lock, Mail, ShieldCheck, User } from 'lucide-react';
+import { ArrowRight, CheckCircle2, KeyRound, Lock, Mail, Phone, ShieldCheck, User } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
 import { authService } from '../services/authService';
+import { maskBrazilianPhoneInput, validateBrazilianPhone } from '../utils/formatters';
 
 export const LoginPage: React.FC = () => {
   const { loginDemo } = useAppStore();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('ruth.c.romualdo@gmail.com');
-  const [password, setPassword] = useState('••••••••••••');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    await loginDemo(email, password);
+    const res = await loginDemo(email, password);
     setLoading(false);
-    navigate('/app/dashboard');
+    if (res.ok) {
+      navigate('/app/dashboard');
+    }
   };
 
   return (
@@ -122,12 +125,22 @@ export const RegisterPage: React.FC = () => {
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const phoneValidation = validateBrazilianPhone(phone);
+    if (!phoneValidation.valid) {
+      notify(
+        'Telefone inválido',
+        phoneValidation.error || 'Informe um telefone ou WhatsApp brasileiro válido com DDD.',
+        'error'
+      );
+      return;
+    }
     if (password !== confirmPassword) {
       notify('Senhas divergentes', 'A confirmação de senha deve coincidir com a senha informada.', 'error');
       return;
@@ -137,8 +150,16 @@ export const RegisterPage: React.FC = () => {
       return;
     }
 
-    await registerDemo({ name, email, password, acceptedTerms });
-    navigate('/app/dashboard');
+    const res = await registerDemo({
+      name,
+      email,
+      phone: phoneValidation.normalized,
+      password,
+      acceptedTerms,
+    });
+    if (res.ok) {
+      navigate('/app/dashboard');
+    }
   };
 
   return (
@@ -196,6 +217,28 @@ export const RegisterPage: React.FC = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="voce@exemplo.com.br"
+                className="input-tutu pl-10 text-sm"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="register-phone"
+              className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+            >
+              Telefone / WhatsApp
+            </label>
+            <div className="relative">
+              <Phone className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                id="register-phone"
+                type="tel"
+                required
+                autoComplete="tel"
+                value={phone}
+                onChange={(e) => setPhone(maskBrazilianPhoneInput(e.target.value))}
+                placeholder="(61) 99999-9999"
                 className="input-tutu pl-10 text-sm"
               />
             </div>
@@ -401,13 +444,22 @@ export const PrivacyPolicyPage: React.FC = () => (
       </div>
       <div className="space-y-4 text-sm text-tutu-light/85 leading-relaxed">
         <p>
-          <strong>1. Minimização de Dados no Ranking Público:</strong> Em conformidade com as boas práticas de privacidade, o Ranking Geral exibe exclusivamente a posição, o nome ou apelido configurado pelo usuário, a pontuação, medalhas e missões concluídas. E-mails, telefones ou documentos pessoais jamais são exibidos publicamente.
+          <strong>1. Minimização de Dados no Ranking Público:</strong> Em conformidade com as boas práticas de privacidade, o Ranking Geral exibe exclusivamente a posição, o nome ou apelido configurado pelo usuário, a pontuação e missões concluídas. E-mails, telefones ou documentos pessoais jamais são exibidos publicamente.
         </p>
         <p>
           <strong>2. Controle pelo Participante:</strong> Na tela de Perfil, o participante pode gerenciar a qualquer momento suas preferências de exibição de apelido, notificações de atividades e compartilhamento de interesses com as startups expositoras.
         </p>
         <p>
           <strong>3. Persistência e Segurança:</strong> Os dados são armazenados de forma segura no banco SQLite com controle de acesso baseado em papéis (RBAC) e senhas protegidas por hash criptográfico.
+        </p>
+        <p>
+          <strong>4. Evidências de Missões (Validação Interna — LGPD, Art. 7º, V):</strong> Fotos ou documentos enviados para comprovação de missões obrigatórias são armazenados em diretório privado, acessíveis exclusivamente pelo próprio participante e pela equipe administrativa para fins estritos de validação de participação e pontuação, sem publicação automática.
+        </p>
+        <p>
+          <strong>5. Autorização Opcional de Divulgação Pública de Imagem (LGPD, Art. 7º, I):</strong> Qualquer utilização promocional ou institucional de imagens depende de autorização específica, opcional e inequívoca registrada pelo participante na tela de Perfil, podendo ser revogada a qualquer momento sem prejuízo à participação, ao envio de evidências ou à pontuação no evento.
+        </p>
+        <p>
+          <strong>6. Retenção e Exclusão Pós-Evento:</strong> Os registros de pontuação e validações são mantidos pelo prazo estritamente necessário à auditoria, prestação de contas e premiação do evento, sendo eliminados ou anonimizados após o encerramento do prazo operacional e legal aplicável.
         </p>
       </div>
       <div className="pt-4">

@@ -12,7 +12,16 @@ import { useAppStore } from '../../hooks/useAppStore';
 import { formatNumber, formatPoints } from '../../utils/formatters';
 
 export const AdminReportsPage: React.FC = () => {
-  const { adminMetrics, missions, publicRanking, notify } = useAppStore();
+  const { adminMetrics, publicRanking, notify } = useAppStore();
+
+  const avgDurationLabel =
+    adminMetrics.averageCompletionSeconds === null
+      ? 'Sem dados'
+      : adminMetrics.averageCompletionSeconds >= 60
+      ? `${Math.floor(adminMetrics.averageCompletionSeconds / 60)}m ${String(
+          adminMetrics.averageCompletionSeconds % 60
+        ).padStart(2, '0')}s`
+      : `${adminMetrics.averageCompletionSeconds}s`;
 
   const handleSimulatedExport = (format: 'CSV' | 'PDF', reportName: string) => {
     notify(
@@ -73,16 +82,22 @@ export const AdminReportsPage: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div className="p-3.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40">
-              <span className="text-tutu-light/70">Taxa de Ativação</span>
+              <span className="text-tutu-light/70">Taxa de Ativação Real</span>
               <p className="font-display font-bold text-xl sm:text-2xl text-tutu-lime mt-0.5">
                 {adminMetrics.participationRate}%
               </p>
+              <span className="text-[11px] text-tutu-light/60">
+                {adminMetrics.activeParticipants} ativos / {adminMetrics.inactiveParticipants} sem atividade
+              </span>
             </div>
             <div className="p-3.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40">
-              <span className="text-tutu-light/70">Total de Leituras QR</span>
+              <span className="text-tutu-light/70">Conclusão & Tempo Médio</span>
               <p className="font-display font-bold text-xl sm:text-2xl text-tutu-light mt-0.5">
-                {formatNumber(adminMetrics.qrCodesScanned)}
+                {adminMetrics.missionCompletionRate}% • {avgDurationLabel}
               </p>
+              <span className="text-[11px] text-tutu-light/60">
+                {adminMetrics.startedMissions} iniciadas • {adminMetrics.expiredMissions} expiradas • Bônus: {formatNumber(adminMetrics.totalSpeedBonusAwarded)} pts
+              </span>
             </div>
           </div>
 
@@ -94,8 +109,10 @@ export const AdminReportsPage: React.FC = () => {
               >
                 <span className="font-semibold text-tutu-light">{d.day}</span>
                 <span className="text-tutu-light/80">
-                  {d.scans} leituras • {d.missions} missões •{' '}
-                  <strong className="text-tutu-lime">{d.activeUsers} ativos</strong>
+                  {d.missionsStarted} iniciadas • {d.missionsCompleted} concluídas • {d.missionsExpired} expiradas ({d.completionRate}%) •{' '}
+                  <strong className="text-tutu-lime">
+                    {d.activeUsers} ativos • {formatNumber(d.pointsAwarded)} pts
+                  </strong>
                 </span>
               </div>
             ))}
@@ -126,7 +143,7 @@ export const AdminReportsPage: React.FC = () => {
                 <div className="min-w-0">
                   <p className="font-bold text-sm text-tutu-light break-words">{s.startupName}</p>
                   <p className="text-tutu-light/70">
-                    {formatNumber(s.visits)} visitas • {formatNumber(s.missionsCompleted)} missões
+                    {formatNumber(s.uniqueParticipants)} participantes únicos • {formatNumber(s.missionsStarted)} iniciadas • {formatNumber(s.missionsCompleted)} concluídas • {formatNumber(s.missionsPending)} pendentes ({s.completionRate}%)
                   </p>
                 </div>
                 <span className="font-display font-bold text-sm text-tutu-lime shrink-0">
@@ -155,21 +172,29 @@ export const AdminReportsPage: React.FC = () => {
           </div>
 
           <div className="space-y-2.5">
-            {missions.slice(0, 5).map((m, idx) => (
-              <div
-                key={m.id}
-                className="p-3 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 flex items-center justify-between gap-3 text-xs"
-              >
-                <div className="min-w-0">
-                  <span className="font-bold text-tutu-lime mr-2">#{idx + 1}</span>
-                  <span className="font-semibold text-tutu-light break-words">{m.title}</span>
-                  <p className="text-[11px] text-tutu-light/65 mt-0.5">
-                    {m.startupName} • Categoria: {m.category}
-                  </p>
+            {adminMetrics.missionPerformance.length === 0 ? (
+              <p className="text-xs text-tutu-light/65 italic">
+                Nenhuma missão ativa cadastrada para exibição.
+              </p>
+            ) : (
+              adminMetrics.missionPerformance.map((m, idx) => (
+                <div
+                  key={m.missionId}
+                  className="p-3 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 flex items-center justify-between gap-3 text-xs"
+                >
+                  <div className="min-w-0">
+                    <span className="font-bold text-tutu-lime mr-2">#{idx + 1}</span>
+                    <span className="font-semibold text-tutu-light break-words">{m.title}</span>
+                    <p className="text-[11px] text-tutu-light/65 mt-0.5">
+                      {m.startupName} • {formatNumber(m.starts)} inícios • {formatNumber(m.completions)} conclusões
+                    </p>
+                  </div>
+                  <span className="font-bold text-tutu-lime shrink-0">
+                    {formatNumber(m.completions)} concl.
+                  </span>
                 </div>
-                <span className="font-bold text-tutu-lime shrink-0">{formatPoints(m.points)}</span>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
 

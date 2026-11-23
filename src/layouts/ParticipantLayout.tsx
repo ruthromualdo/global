@@ -1,7 +1,6 @@
 import React from 'react';
 import { Link, NavLink, Outlet } from 'react-router-dom';
 import {
-  Award,
   Building2,
   Compass,
   Home,
@@ -24,7 +23,6 @@ export const ParticipantLayout: React.FC = () => {
     { to: '/app/escanear', label: 'Escanear QR', icon: QrCode, highlight: true },
     { to: '/app/startups', label: 'Startups', icon: Building2 },
     { to: '/app/ranking', label: 'Ranking', icon: Trophy },
-    { to: '/app/conquistas', label: 'Conquistas', icon: Award },
     { to: '/app/perfil', label: 'Perfil', icon: User },
   ];
 
@@ -113,7 +111,7 @@ export const ParticipantLayout: React.FC = () => {
           </div>
         </div>
 
-        {/* Sub-bar on mobile/tablet for Startups, Conquistas & Admin access (only if ADMIN) */}
+        {/* Sub-bar on mobile/tablet for Startups & Admin access (only if ADMIN) */}
         <div className="lg:hidden border-t border-tutu-secondary/30 px-3 sm:px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto text-xs">
           <div className="flex items-center gap-2">
             <NavLink
@@ -128,19 +126,6 @@ export const ParticipantLayout: React.FC = () => {
             >
               <Building2 className="w-3.5 h-3.5 text-tutu-lime" />
               <span>Startups Expositoras</span>
-            </NavLink>
-            <NavLink
-              to="/app/conquistas"
-              className={({ isActive }) =>
-                `px-3 py-2 rounded-xl font-medium whitespace-nowrap inline-flex items-center gap-1.5 ${
-                  isActive
-                    ? 'bg-tutu-blue text-tutu-light font-semibold'
-                    : 'bg-tutu-secondary/25 text-tutu-light/85'
-                }`
-              }
-            >
-              <Award className="w-3.5 h-3.5 text-tutu-lime" />
-              <span>Medalhas & Conquistas</span>
             </NavLink>
           </div>
           {isAdminAuthenticated && (

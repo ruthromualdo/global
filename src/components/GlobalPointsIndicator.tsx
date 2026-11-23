@@ -16,7 +16,7 @@ export interface GlobalPointsIndicatorProps {
    */
   pointsOverride?: number;
   /**
-   * Exibir marcadores das 4 missões (250, 500, 750, 1000 pts)
+   * Exibir marcadores das missões oficiais do circuito
    */
   showMilestones?: boolean;
   className?: string;
@@ -30,7 +30,7 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
   showMilestones = true,
   className = '',
 }) => {
-  const { participant } = useAppStore();
+  const { participant, missions } = useAppStore();
 
   const currentPoints = Math.min(
     MAX_POINTS,
@@ -41,12 +41,12 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
   const remainingPoints = Math.max(0, MAX_POINTS - currentPoints);
   const isMaxReached = currentPoints >= MAX_POINTS;
 
-  const milestones = [
-    { target: 250, label: 'Missão 01', shortLabel: 'M1 (250 pts)' },
-    { target: 500, label: 'Missão 02', shortLabel: 'M2 (500 pts)' },
-    { target: 750, label: 'Missão 03', shortLabel: 'M3 (750 pts)' },
-    { target: 1000, label: 'Missão 04 (Teto)', shortLabel: 'M4 (1.000 pts)' },
-  ];
+  const officialMissions = (missions || [])
+    .filter((m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined && m.active !== false)
+    .sort((a, b) => (a.sequenceOrder || 0) - (b.sequenceOrder || 0));
+
+  const totalOfficialMissions = officialMissions.length;
+  const completedOfficialMissionsCount = participant.completedMissionsCount ?? 0;
 
   if (variant === 'compact') {
     return (
@@ -137,32 +137,55 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
           </div>
         </div>
 
-        {/* Milestones Markers */}
-        {showMilestones && (
-          <div className="grid grid-cols-4 gap-1 sm:gap-2 pt-1">
-            {milestones.map((m) => {
-              const reached = currentPoints >= m.target;
+        {/* Marcadores Dinâmicos das Missões Oficiais */}
+        {showMilestones && totalOfficialMissions > 0 && (
+          <div
+            className="grid gap-1 sm:gap-2 pt-1"
+            style={{
+              gridTemplateColumns: `repeat(${totalOfficialMissions}, minmax(0, 1fr))`,
+            }}
+          >
+            {officialMissions.map((m, idx) => {
+              const seq = m.sequenceOrder ?? idx + 1;
+              const isCompleted =
+                m.status === 'Concluída' ||
+                (participant.completedMissionsCount !== undefined &&
+                  seq <= participant.completedMissionsCount);
+              const isCurrent =
+                !isCompleted &&
+                (m.status === 'Em andamento' ||
+                  m.status === 'Disponível' ||
+                  m.status === 'Aguardando validação');
+
               return (
                 <div
-                  key={m.target}
+                  key={m.id || `mission-seq-${seq}`}
                   className={`p-2 rounded-xl text-center border transition-all ${
-                    reached
+                    isCompleted
                       ? 'bg-[#C8FFD2]/15 border-[#C8FFD2]/60 text-[#C8FFD2]'
+                      : isCurrent
+                      ? 'bg-tutu-dark border-[#C8FFD2]/60 text-[#FFFFFF] shadow-sm'
                       : 'bg-tutu-dark/70 border-tutu-blue/30 text-[#D0DED4]/60'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-1">
-                    {reached ? (
+                    {isCompleted ? (
                       <CheckCircle2 className="w-3 h-3 text-[#C8FFD2] shrink-0" />
+                    ) : isCurrent ? (
+                      <span className="w-2 h-2 rounded-full bg-[#C8FFD2] shrink-0 animate-pulse" />
                     ) : (
                       <span className="w-1.5 h-1.5 rounded-full bg-[#D0DED4]/40 shrink-0" />
                     )}
                     <span className="font-display font-bold text-xs sm:text-sm">
-                      {m.target} pts
+                      {`M${seq}`}
                     </span>
                   </div>
                   <span className="text-[10px] hidden sm:block truncate opacity-80 mt-0.5 text-[#D0DED4]">
-                    {m.label}
+                    {isCompleted
+                      ? 'Concluída'
+                      : isCurrent
+                      ? (m.status === 'Em andamento' ? 'Em curso' : m.status)
+                      : 'Bloqueada'}
                   </span>
                 </div>
               );
@@ -190,7 +213,12 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
         </div>
 
         <div className="flex items-center gap-2 shrink-0 text-[11px] text-[#D0DED4]">
-          <span>{milestones.filter((m) => currentPoints >= m.target).length} de 4 marcos</span>
+          <CheckCircle2 className="w-3.5 h-3.5 text-[#C8FFD2] shrink-0" />
+          <span>
+            {totalOfficialMissions > 0
+              ? `${completedOfficialMissionsCount} de ${totalOfficialMissions} missões oficiais concluídas`
+              : `${completedOfficialMissionsCount} missões concluídas`}
+          </span>
         </div>
       </div>
     </div>

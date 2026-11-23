@@ -1,17 +1,11 @@
 import React from 'react';
 import {
-  Award,
-  Brain,
   CheckCircle2,
-  Compass,
-  Footprints,
-  Globe,
   Info,
-  Rocket,
   X,
   AlertCircle,
 } from 'lucide-react';
-import { Achievement, MissionCategory, MissionStatus } from '../types';
+import { MissionCategory, MissionStatus } from '../types';
 import { useAppStore } from '../hooks/useAppStore';
 
 export const ToastContainer: React.FC = () => {
@@ -89,27 +83,6 @@ export const CategoryPill: React.FC<{ category: MissionCategory }> = ({ category
     <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-medium bg-[#10271D] text-[#D0DED4] border border-[#397B55]/40 whitespace-nowrap">
       {category}
     </span>
-  );
-};
-
-export const AchievementIcon: React.FC<{
-  iconName: Achievement['iconName'];
-  unlocked: boolean;
-}> = ({ iconName, unlocked }) => {
-  const iconClass = unlocked ? 'w-6 h-6 text-[#071812]' : 'w-6 h-6 text-[#D0DED4]/50';
-  const wrapperClass = unlocked
-    ? 'w-12 h-12 rounded-2xl bg-[#C8FFD2] flex items-center justify-center shrink-0 shadow-sm'
-    : 'w-12 h-12 rounded-2xl bg-[#10271D] border border-[#397B55]/50 flex items-center justify-center shrink-0';
-
-  return (
-    <div className={wrapperClass}>
-      {iconName === 'compass' && <Compass className={iconClass} />}
-      {iconName === 'footprints' && <Footprints className={iconClass} />}
-      {iconName === 'brain' && <Brain className={iconClass} />}
-      {iconName === 'globe' && <Globe className={iconClass} />}
-      {iconName === 'rocket' && <Rocket className={iconClass} />}
-      {iconName === 'award' && <Award className={iconClass} />}
-    </div>
   );
 };
 

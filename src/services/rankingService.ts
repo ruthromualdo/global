@@ -19,7 +19,6 @@ export const rankingService = {
       displayName: p.privacyPreferences.showNicknameInPublicRanking ? p.nickname : p.name,
       avatar: p.avatar,
       points: p.points,
-      medalsCount: p.unlockedAchievementIds.length,
       completedMissionsCount: p.completedMissionsCount,
       isCurrentUser: p.id === current.id,
     }));

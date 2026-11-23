@@ -1,13 +1,100 @@
-import React, { useState } from 'react';
-import { Calendar, CheckCircle2, Mail, Search, Users, Zap } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import {
+  AlertCircle,
+  Calendar,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Loader2,
+  Lock,
+  Mail,
+  Phone,
+  Search,
+  Users,
+  X,
+  Zap,
+} from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
-import { ParticipantStatus } from '../../types';
-import { formatPoints } from '../../utils/formatters';
+import { Participant, ParticipantStatus } from '../../types';
+import { formatBrazilianPhone, formatPoints } from '../../utils/formatters';
 
 export const AdminParticipantsPage: React.FC = () => {
-  const { allParticipants, updateParticipantStatus } = useAppStore();
+  const { allParticipants, updateParticipantStatus, resetParticipantPasswordAdmin } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'Todos' | ParticipantStatus>('Todos');
+
+  // Estado do modal de redefinição administrativa de senha
+  const [resetTarget, setResetTarget] = useState<Participant | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [isResetting, setIsResetting] = useState(false);
+
+  const openResetModal = (p: Participant) => {
+    setResetTarget(p);
+    setNewPassword('');
+    setConfirmPassword('');
+    setShowNewPassword(false);
+    setShowConfirmPassword(false);
+    setResetError(null);
+  };
+
+  const closeResetModal = () => {
+    if (isResetting) return;
+    setResetTarget(null);
+    setNewPassword('');
+    setConfirmPassword('');
+    setShowNewPassword(false);
+    setShowConfirmPassword(false);
+    setResetError(null);
+  };
+
+  useEffect(() => {
+    if (!resetTarget) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isResetting) {
+        closeResetModal();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [resetTarget, isResetting]);
+
+  const handleConfirmReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetTarget || isResetting) return;
+    setResetError(null);
+
+    if (newPassword.length < 6) {
+      setResetError('A nova senha deve conter pelo menos 6 caracteres.');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setResetError('A nova senha e a confirmação não coincidem.');
+      return;
+    }
+
+    setIsResetting(true);
+    try {
+      const res = await resetParticipantPasswordAdmin(resetTarget.id, newPassword, confirmPassword);
+      if (!res.ok) {
+        setResetError(res.error || 'Não foi possível redefinir a senha.');
+        return;
+      }
+      setResetTarget(null);
+      setNewPassword('');
+      setConfirmPassword('');
+      setShowNewPassword(false);
+      setShowConfirmPassword(false);
+      setResetError(null);
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   const filtered = allParticipants
     .filter((p) => (statusFilter === 'Todos' ? true : p.status === statusFilter))
@@ -15,7 +102,8 @@ export const AdminParticipantsPage: React.FC = () => {
       (p) =>
         p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         p.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        p.nickname.toLowerCase().includes(searchTerm.toLowerCase())
+        p.nickname.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (p.phone || '').includes(searchTerm.replace(/\D/g, '') || searchTerm)
     );
 
   return (
@@ -40,7 +128,7 @@ export const AdminParticipantsPage: React.FC = () => {
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Pesquisar por nome, apelido ou e-mail..."
+            placeholder="Pesquisar por nome, apelido, e-mail ou telefone..."
             aria-label="Pesquisar participantes"
             className="input-tutu pl-10 text-sm"
           />
@@ -92,6 +180,12 @@ export const AdminParticipantsPage: React.FC = () => {
                         <Mail className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
                         <span>{p.email}</span>
                       </p>
+                      <p className="text-xs text-tutu-light/80 font-mono flex items-center gap-1.5 mt-1">
+                        <Phone className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
+                        <span className={p.phone ? '' : 'text-tutu-light/50 italic font-sans'}>
+                          {p.phone ? formatBrazilianPhone(p.phone) : 'Não informado'}
+                        </span>
+                      </p>
                     </div>
                     <span className="font-display font-bold text-sm text-tutu-lime inline-flex items-center gap-1 shrink-0">
                       <Zap className="w-3.5 h-3.5 shrink-0" />
@@ -110,20 +204,30 @@ export const AdminParticipantsPage: React.FC = () => {
                     </span>
                   </div>
 
-                  <div className="pt-2 border-t border-tutu-secondary/25 flex items-center justify-between gap-3">
-                    <span className="text-xs text-tutu-light/70 font-medium">Status da Conta:</span>
-                    <select
-                      value={p.status}
-                      onChange={(e) =>
-                        updateParticipantStatus(p.id, e.target.value as ParticipantStatus)
-                      }
-                      aria-label={`Alterar status de ${p.name}`}
-                      className="min-h-[40px] bg-tutu-dark border border-tutu-secondary/60 rounded-xl px-3 py-1.5 text-xs font-bold text-tutu-lime"
+                  <div className="pt-2 border-t border-tutu-secondary/25 flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-tutu-light/70 font-medium">Status:</span>
+                      <select
+                        value={p.status}
+                        onChange={(e) =>
+                          updateParticipantStatus(p.id, e.target.value as ParticipantStatus)
+                        }
+                        aria-label={`Alterar status de ${p.name}`}
+                        className="min-h-[40px] bg-tutu-dark border border-tutu-secondary/60 rounded-xl px-3 py-1.5 text-xs font-bold text-tutu-lime"
+                      >
+                        <option value="Ativo">Ativo</option>
+                        <option value="Pendente">Pendente</option>
+                        <option value="Inativo">Inativo</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openResetModal(p)}
+                      className="min-h-[40px] px-3 py-1.5 rounded-xl bg-tutu-secondary/25 border border-tutu-secondary/50 hover:border-tutu-lime text-xs font-semibold text-tutu-light hover:text-tutu-lime inline-flex items-center gap-1.5 transition-colors"
                     >
-                      <option value="Ativo">Ativo</option>
-                      <option value="Pendente">Pendente</option>
-                      <option value="Inativo">Inativo</option>
-                    </select>
+                      <KeyRound className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
+                      <span>Redefinir senha</span>
+                    </button>
                   </div>
                 </div>
               ))}
@@ -136,10 +240,12 @@ export const AdminParticipantsPage: React.FC = () => {
                   <tr className="border-b border-tutu-secondary/40 text-[11px] uppercase tracking-wider text-tutu-light/70 bg-tutu-dark/60">
                     <th className="py-3.5 px-4">Nome</th>
                     <th className="py-3.5 px-4">E-mail</th>
+                    <th className="py-3.5 px-4">Telefone / WhatsApp</th>
                     <th className="py-3.5 px-4">Pontuação</th>
                     <th className="py-3.5 px-4">Missões Concluídas</th>
                     <th className="py-3.5 px-4">Data de Cadastro</th>
                     <th className="py-3.5 px-4">Status</th>
+                    <th className="py-3.5 px-4 text-right">Ações</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-tutu-secondary/30 text-xs sm:text-sm">
@@ -153,6 +259,13 @@ export const AdminParticipantsPage: React.FC = () => {
                       </td>
                       <td className="py-3.5 px-4 text-tutu-light/80 font-mono text-xs">
                         {p.email}
+                      </td>
+                      <td className="py-3.5 px-4 text-tutu-light/80 font-mono text-xs whitespace-nowrap">
+                        {p.phone ? (
+                          formatBrazilianPhone(p.phone)
+                        ) : (
+                          <span className="text-tutu-light/50 italic font-sans">Não informado</span>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 font-display font-bold text-tutu-lime whitespace-nowrap">
                         <span className="inline-flex items-center gap-1">
@@ -180,6 +293,16 @@ export const AdminParticipantsPage: React.FC = () => {
                           <option value="Inativo">Inativo</option>
                         </select>
                       </td>
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => openResetModal(p)}
+                          className="px-3 py-1.5 rounded-lg bg-tutu-secondary/25 border border-tutu-secondary/50 hover:border-tutu-lime text-xs font-semibold text-tutu-light hover:text-tutu-lime inline-flex items-center gap-1.5 transition-colors"
+                        >
+                          <KeyRound className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
+                          <span>Redefinir senha</span>
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -188,6 +311,147 @@ export const AdminParticipantsPage: React.FC = () => {
           </>
         )}
       </div>
+
+      {/* Modal de Redefinição Administrativa de Senha */}
+      {resetTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-tutu-dark/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="admin-reset-password-title"
+        >
+          <div className="tutu-card max-w-md w-full p-5 sm:p-7 space-y-5 border-2 border-tutu-lime">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-tutu-lime flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                  <span>Ação Administrativa Segura</span>
+                </span>
+                <h2
+                  id="admin-reset-password-title"
+                  className="font-display font-bold text-xl text-tutu-light mt-1"
+                >
+                  Redefinir Senha
+                </h2>
+                <p className="text-xs text-tutu-light/75 mt-1 break-words">
+                  Participante: <strong className="text-tutu-light">{resetTarget.name}</strong> ({resetTarget.email})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeResetModal}
+                disabled={isResetting}
+                aria-label="Fechar modal"
+                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-tutu-secondary/30 text-tutu-light/70 hover:text-tutu-light shrink-0 disabled:opacity-50"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmReset} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="admin-new-password"
+                  className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+                >
+                  Nova Senha (mínimo 6 caracteres)
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    id="admin-new-password"
+                    type={showNewPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Digite a nova senha"
+                    className="input-tutu pl-10 pr-10 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword((prev) => !prev)}
+                    aria-label={showNewPassword ? 'Ocultar nova senha' : 'Visualizar nova senha'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-tutu-light/60 hover:text-tutu-lime"
+                  >
+                    {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="admin-confirm-password"
+                  className="block text-xs font-semibold uppercase tracking-wider text-tutu-light/80 mb-1.5"
+                >
+                  Confirmar Nova Senha
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-tutu-light/50 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    id="admin-confirm-password"
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Repita a nova senha"
+                    className="input-tutu pl-10 pr-10 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword((prev) => !prev)}
+                    aria-label={
+                      showConfirmPassword
+                        ? 'Ocultar confirmação de senha'
+                        : 'Visualizar confirmação de senha'
+                    }
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-tutu-light/60 hover:text-tutu-lime"
+                  >
+                    {showConfirmPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-tutu-light/65 leading-relaxed">
+                Ao confirmar, a senha será salva com hash criptográfico seguro e todas as sessões anteriores deste participante serão encerradas automaticamente.
+              </p>
+
+              {resetError && (
+                <div className="p-3 rounded-xl bg-red-500/15 border border-red-400/40 text-xs text-red-200 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-300" />
+                  <span>{resetError}</span>
+                </div>
+              )}
+
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 sm:gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={closeResetModal}
+                  disabled={isResetting}
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-outline text-xs disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isResetting || !newPassword || !confirmPassword}
+                  className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs font-bold inline-flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isResetting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>{isResetting ? 'Redefinindo...' : 'Confirmar redefinição'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

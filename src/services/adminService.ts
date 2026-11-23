@@ -10,6 +10,7 @@ export const adminService = {
       ...metricsStore,
       engagementByDay: metricsStore.engagementByDay.map((d) => ({ ...d })),
       participationByStartup: metricsStore.participationByStartup.map((s) => ({ ...s })),
+      missionPerformance: metricsStore.missionPerformance.map((m) => ({ ...m })),
     };
   },
 

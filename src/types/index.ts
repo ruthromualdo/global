@@ -24,13 +24,13 @@ export interface Participant {
   name: string;
   nickname: string;
   email: string;
+  phone?: string | null;
   role?: UserRole;
   avatar: string;
   points: number;
   rankingPosition: number;
   completedMissionsCount: number;
   visitedStartupsIds: string[];
-  unlockedAchievementIds: string[];
   registeredAt: string;
   status: ParticipantStatus;
   privacyPreferences: {
@@ -38,6 +38,8 @@ export interface Participant {
     allowActivityNotifications: boolean;
     shareStartupInterests: boolean;
   };
+  imagePublicityConsent?: boolean;
+  imagePublicityConsentUpdatedAt?: string | null;
 }
 
 export interface Startup {
@@ -92,6 +94,8 @@ export interface Mission {
   potentialSpeedBonus?: number;
   speedBonusAwarded?: number;
   serverTimeMs?: number;
+  requiresEvidence?: boolean;
+  evidenceType?: 'photo' | 'file' | 'both';
 }
 
 export interface MissionCompletion {
@@ -105,6 +109,10 @@ export interface MissionCompletion {
   submittedAt: string;
   evidenceDescription: string;
   evidenceCode: string;
+  evidenceFileName?: string;
+  evidenceMimeType?: string;
+  evidenceSizeBytes?: number;
+  hasFile?: boolean;
   pointsAwarded: number;
   status: 'Pendente' | 'Aprovada' | 'Rejeitada';
 }
@@ -113,25 +121,12 @@ export interface PointsTransaction {
   id: string;
   participantId: string;
   participantName: string;
-  sourceType: 'Missão' | 'QR Code' | 'Conquista' | 'Ajuste Administrativo';
+  sourceType: 'Missão' | 'QR Code' | 'Ajuste Administrativo';
   sourceTitle: string;
   pointsDelta: number;
   previousBalance: number;
   newBalance: number;
   createdAt: string;
-}
-
-export interface Achievement {
-  id: string;
-  name: string;
-  description: string;
-  unlockCondition: string;
-  iconName: 'compass' | 'footprints' | 'brain' | 'globe' | 'rocket' | 'award';
-  pointsBonus: number;
-  unlocked: boolean;
-  unlockedAt?: string;
-  progressCurrent: number;
-  progressTotal: number;
 }
 
 export interface QRCode {
@@ -182,19 +177,90 @@ export interface PublicRankingEntry {
   displayName: string;
   avatar: string;
   points: number;
-  medalsCount: number;
   completedMissionsCount: number;
   isCurrentUser?: boolean;
+}
+
+export interface DailyRankingEntry {
+  position: number;
+  participantId: string;
+  displayName: string;
+  avatar: string;
+  dailyPoints: number;
+  completedMissionsInDay: number;
+  lastMissionCompletedAtMs: number | null;
+  isCurrentUser?: boolean;
+}
+
+export interface DailyAwardWinner {
+  participantId: string;
+  displayName: string;
+  avatar: string;
+  dailyPoints: number;
+  lastMissionCompletedAtMs: number | null;
+}
+
+export interface DailyRankingDaySummary {
+  eventDate: string;
+  dayLabel: string;
+  status: 'Aberto' | 'Encerrado';
+  scheduledCloseAtMs: number;
+  scheduledCloseLabel: string;
+  closedAtMs: number | null;
+  winner: DailyAwardWinner | null;
+  ranking: DailyRankingEntry[];
+}
+
+export interface DailyEngagementMetric {
+  date: string; // YYYY-MM-DD (America/Sao_Paulo)
+  day: string;
+  scans: number;
+  missions: number; // alias para missionsCompleted (compatibilidade)
+  missionsStarted: number;
+  missionsCompleted: number;
+  missionsExpired: number;
+  completionRate: number;
+  pointsAwarded: number;
+  activeUsers: number;
+}
+
+export interface StartupParticipationMetric {
+  startupId: string;
+  startupName: string;
+  visits: number; // participantes únicos com atividade/visita na startup
+  uniqueParticipants: number;
+  missionsStarted: number;
+  missionsCompleted: number;
+  missionsPending: number;
+  completionRate: number;
+  pointsIssued: number;
+}
+
+export interface MissionPerformanceMetric {
+  missionId: string;
+  title: string;
+  startupName: string;
+  category: string;
+  points: number;
+  starts: number;
+  completions: number;
 }
 
 export interface AdminDashboardMetrics {
   registeredParticipants: number;
   activeParticipants: number;
+  inactiveParticipants: number;
+  startedMissions: number;
   completedMissions: number;
+  expiredMissions: number;
+  missionCompletionRate: number;
+  averageCompletionSeconds: number | null;
+  totalSpeedBonusAwarded: number;
   qrCodesScanned: number;
   registeredStartups: number;
   totalPointsDistributed: number;
   participationRate: number;
-  engagementByDay: { day: string; scans: number; missions: number; activeUsers: number }[];
-  participationByStartup: { startupName: string; visits: number; missionsCompleted: number; pointsIssued: number }[];
+  engagementByDay: DailyEngagementMetric[];
+  participationByStartup: StartupParticipationMetric[];
+  missionPerformance: MissionPerformanceMetric[];
 }

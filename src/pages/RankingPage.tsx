@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   AlertCircle,
-  Award,
+  Calendar,
   CheckCircle2,
+  Clock,
   Crown,
+  Lock,
   Medal,
   RefreshCw,
   ShieldCheck,
@@ -16,14 +18,34 @@ import { useAppStore } from '../hooks/useAppStore';
 import { formatPoints } from '../utils/formatters';
 import { GlobalPointsIndicator } from '../components/GlobalPointsIndicator';
 
+function formatBrasiliaTime(ms: number | null): string {
+  if (!ms) return '—';
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(ms));
+}
+
 export const RankingPage: React.FC = () => {
   const {
     publicRanking,
+    dailyRankings = [],
     participant,
+    missions,
     eventSettings,
     refreshRanking,
     isRefreshingRanking,
   } = useAppStore();
+
+  const [selectedDayIdx, setSelectedDayIdx] = useState(0);
+  const selectedDaily = dailyRankings[selectedDayIdx] || dailyRankings[0] || null;
+
+  const officialMissions = (missions || []).filter(
+    (m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined && m.active !== false
+  );
+  const totalOfficialMissions = officialMissions.length;
 
   const topThree = publicRanking.slice(0, 3);
   const currentUserEntry = publicRanking.find(
@@ -50,7 +72,7 @@ export const RankingPage: React.FC = () => {
             Ranking Geral de Participantes
           </h1>
           <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed max-w-3xl">
-            Acompanhe a pontuação oficial acumulada com base nas 4 missões e nos bônus de velocidade. Dados pessoais sensíveis são protegidos por privacidade e jamais expostos.
+            Acompanhe a pontuação oficial acumulada com base nas missões oficiais e nos bônus de velocidade. Dados pessoais sensíveis são protegidos por privacidade e jamais expostos.
           </p>
         </div>
 
@@ -88,7 +110,9 @@ export const RankingPage: React.FC = () => {
                 <span>Sua Classificação</span>
               </span>
               <span className="text-xs text-tutu-light/70 font-mono">
-                {participant.completedMissionsCount}/4 missões
+                {totalOfficialMissions > 0
+                  ? `${participant.completedMissionsCount}/${totalOfficialMissions} missões`
+                  : `${participant.completedMissionsCount} missões`}
               </span>
             </div>
 
@@ -121,7 +145,7 @@ export const RankingPage: React.FC = () => {
                 </span>
               ) : (
                 <span>
-                  Cada bônus de velocidade concede até <strong>50 pontos extras</strong> por missão. Continue avançando para alcançar o Top 3!
+                  O bônus de velocidade é distribuído dinamicamente entre as missões oficiais e concedido conforme seu tempo de conclusão. Continue avançando para alcançar o Top 3!
                 </span>
               )}
             </p>
@@ -143,13 +167,182 @@ export const RankingPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Indicador Global Completo com Marcadores das 4 Missões */}
+        {/* Indicador Global Completo com Marcadores das Missões Oficiais */}
         <div className="lg:col-span-7 flex flex-col justify-center">
           <GlobalPointsIndicator variant="card" showMilestones={true} />
         </div>
       </div>
 
-      {/* TOP 3 PODIUM CARDS */}
+      {/* RANKING E PREMIAÇÃO DIÁRIA (SEPARADO DO RANKING GERAL ACUMULADO) */}
+      {dailyRankings.length > 0 && selectedDaily && (
+        <div className="tutu-card p-5 sm:p-6 border border-tutu-lime/40 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-widest text-tutu-lime flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 shrink-0" />
+                <span>Premiação Diária • Independente do Ranking Geral</span>
+              </span>
+              <h2 className="font-display font-bold text-xl sm:text-2xl text-tutu-light mt-0.5">
+                Ranking do Dia (Encerramento às 16h30 — Brasília)
+              </h2>
+              <p className="text-xs text-tutu-light/70 mt-0.5">
+                Considera exclusivamente os pontos conquistados em cada dia. O Ranking Geral acumulado continua abaixo.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {dailyRankings.map((day, idx) => (
+                <button
+                  key={day.eventDate}
+                  type="button"
+                  onClick={() => setSelectedDayIdx(idx)}
+                  className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                    idx === selectedDayIdx
+                      ? 'bg-tutu-lime text-tutu-dark'
+                      : 'bg-tutu-dark/80 text-tutu-light/80 border border-tutu-secondary/50 hover:border-tutu-lime/50'
+                  }`}
+                >
+                  Dia {idx + 1} ({day.eventDate.slice(8, 10)}/{day.eventDate.slice(5, 7)})
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 text-xs">
+            <div className="flex items-center gap-2">
+              {selectedDaily.status === 'Encerrado' ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-tutu-secondary text-tutu-lime font-bold">
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Ranking Encerrado • Resultado Congelado</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-tutu-lime text-tutu-dark font-bold">
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>Aberto • Fecha às 16h30</span>
+                </span>
+              )}
+              <span className="text-tutu-light/75">{selectedDaily.dayLabel}</span>
+            </div>
+            <span className="text-tutu-light/70">
+              Fechamento previsto: <strong>{selectedDaily.scheduledCloseLabel}</strong>
+            </span>
+          </div>
+
+          {selectedDaily.status === 'Encerrado' && (
+            <div className="p-4 rounded-xl bg-tutu-lime/10 border border-tutu-lime/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-tutu-lime text-tutu-dark font-display font-bold flex items-center justify-center shrink-0">
+                  <Crown className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="text-[11px] uppercase tracking-wider font-bold text-tutu-lime block">
+                    Vencedor Oficial do Dia
+                  </span>
+                  {selectedDaily.winner ? (
+                    <p className="font-display font-bold text-lg text-tutu-light">
+                      {selectedDaily.winner.displayName} •{' '}
+                      <span className="text-tutu-lime">
+                        {formatPoints(selectedDaily.winner.dailyPoints)} no dia
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="text-xs text-tutu-light/75">
+                      Nenhum participante registrou pontos até às 16h30 neste dia.
+                    </p>
+                  )}
+                </div>
+              </div>
+              {selectedDaily.winner?.lastMissionCompletedAtMs && (
+                <span className="text-xs text-tutu-light/75 font-mono">
+                  Última conclusão: {formatBrasiliaTime(selectedDaily.winner.lastMissionCompletedAtMs)}
+                </span>
+              )}
+            </div>
+          )}
+
+          {selectedDaily.ranking.length === 0 ? (
+            <p className="text-xs text-tutu-light/65 italic py-2">
+              Nenhum participante pontuou em {selectedDaily.dayLabel} até o momento.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {selectedDaily.ranking.slice(0, 10).map((row) => (
+                <div
+                  key={row.participantId}
+                  className={`p-3 rounded-xl border flex items-center justify-between gap-3 text-xs ${
+                    row.isCurrentUser
+                      ? 'bg-tutu-lime/10 border-tutu-lime/60'
+                      : 'bg-tutu-dark/70 border-tutu-secondary/40'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-7 h-7 rounded-lg bg-tutu-secondary text-tutu-lime font-display font-bold flex items-center justify-center shrink-0">
+                      #{row.position}
+                    </span>
+                    <span className="font-semibold text-tutu-light truncate">{row.displayName}</span>
+                    {row.isCurrentUser && (
+                      <span className="px-2 py-0.5 rounded-full bg-tutu-lime text-tutu-dark text-[10px] font-bold">
+                        Você
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {row.lastMissionCompletedAtMs && (
+                      <span className="hidden sm:inline text-[11px] text-tutu-light/60 font-mono">
+                        {formatBrasiliaTime(row.lastMissionCompletedAtMs)}
+                      </span>
+                    )}
+                    <span className="font-display font-bold text-sm text-tutu-lime">
+                      {formatPoints(row.dailyPoints)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Histórico de Premiações dos 3 Dias */}
+          <div className="pt-3 border-t border-tutu-secondary/40">
+            <span className="text-[11px] uppercase tracking-wider font-bold text-tutu-light/70 block mb-2.5">
+              Histórico de Premiações dos 3 Dias
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+              {dailyRankings.map((day) => (
+                <div
+                  key={day.eventDate}
+                  className="p-3 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-1"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-tutu-light">{day.dayLabel}</span>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        day.status === 'Encerrado'
+                          ? 'bg-tutu-secondary text-tutu-lime'
+                          : 'bg-tutu-lime/20 text-tutu-lime'
+                      }`}
+                    >
+                      {day.status}
+                    </span>
+                  </div>
+                  {day.status === 'Encerrado' ? (
+                    day.winner ? (
+                      <p className="text-tutu-lime font-semibold truncate">
+                        🏆 {day.winner.displayName} ({formatPoints(day.winner.dailyPoints)})
+                      </p>
+                    ) : (
+                      <p className="text-tutu-light/60 italic">Sem vencedor registrado</p>
+                    )
+                  ) : (
+                    <p className="text-tutu-light/65">Em andamento até 16h30</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TOP 3 PODIUM CARDS (RANKING GERAL ACUMULADO) */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light flex items-center gap-2">
@@ -235,17 +428,11 @@ export const RankingPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 pt-3 border-t border-tutu-secondary/40 text-xs">
+                  <div className="pt-3 border-t border-tutu-secondary/40 text-xs">
                     <div className="p-2.5 rounded-xl bg-tutu-dark/70 flex items-center gap-2 border border-tutu-secondary/30">
                       <CheckCircle2 className="w-4 h-4 text-tutu-lime shrink-0" />
                       <span className="truncate">
-                        <strong>{entry.completedMissionsCount}</strong> missões
-                      </span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-tutu-dark/70 flex items-center gap-2 border border-tutu-secondary/30">
-                      <Award className="w-4 h-4 text-tutu-lime shrink-0" />
-                      <span className="truncate">
-                        <strong>{entry.medalsCount}</strong> medalhas
+                        <strong>{entry.completedMissionsCount}</strong> missões concluídas
                       </span>
                     </div>
                   </div>
@@ -332,11 +519,9 @@ export const RankingPage: React.FC = () => {
                   <div className="flex items-center justify-between text-xs text-tutu-light/80 pl-11">
                     <span className="inline-flex items-center gap-1">
                       <CheckCircle2 className="w-3.5 h-3.5 text-tutu-lime" />
-                      {row.completedMissionsCount} missões
-                    </span>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-tutu-dark/70 border border-tutu-secondary/40">
-                      <Award className="w-3.5 h-3.5 text-tutu-lime" />
-                      {row.medalsCount} medalhas
+                      {totalOfficialMissions > 0
+                        ? `${row.completedMissionsCount}/${totalOfficialMissions} missões`
+                        : `${row.completedMissionsCount} missões`}
                     </span>
                   </div>
                 </div>
@@ -351,7 +536,6 @@ export const RankingPage: React.FC = () => {
                     <th className="py-3.5 px-5">Posição</th>
                     <th className="py-3.5 px-5">Participante</th>
                     <th className="py-3.5 px-5">Missões Concluídas</th>
-                    <th className="py-3.5 px-5">Medalhas</th>
                     <th className="py-3.5 px-5 text-right">Pontuação Oficial</th>
                   </tr>
                 </thead>
@@ -398,13 +582,11 @@ export const RankingPage: React.FC = () => {
                       <td className="py-3.5 px-5 text-tutu-light/85">
                         <span className="inline-flex items-center gap-1.5">
                           <CheckCircle2 className="w-3.5 h-3.5 text-tutu-lime" />
-                          <span>{row.completedMissionsCount} de 4 missões</span>
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-5 text-tutu-light/85">
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-tutu-dark/70 text-xs border border-tutu-secondary/40">
-                          <Award className="w-3.5 h-3.5 text-tutu-lime" />
-                          <span>{row.medalsCount}</span>
+                          <span>
+                            {totalOfficialMissions > 0
+                              ? `${row.completedMissionsCount} de ${totalOfficialMissions} missões`
+                              : `${row.completedMissionsCount} missões`}
+                          </span>
                         </span>
                       </td>
                       <td className="py-3.5 px-5 text-right font-display font-bold text-base text-tutu-lime">

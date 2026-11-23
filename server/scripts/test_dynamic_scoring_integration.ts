@@ -89,9 +89,9 @@ function createTestDatabase(): DatabaseSync {
       active INTEGER NOT NULL DEFAULT 1,
       sequence_order INTEGER,
       timer_minutes INTEGER DEFAULT 5,
-      unlock_points INTEGER NOT NULL DEFAULT 20,
-      completion_points INTEGER NOT NULL DEFAULT 180,
-      max_speed_bonus INTEGER NOT NULL DEFAULT 50
+      unlock_points INTEGER,
+      completion_points INTEGER,
+      max_speed_bonus INTEGER
     );
 
     CREATE TABLE participant_missions (
@@ -206,11 +206,12 @@ function completeMissionInTest(db: DatabaseSync, participantId: string, missionI
     .prepare('SELECT * FROM missions WHERE id = ?')
     .get(missionId) as Record<string, unknown> | undefined;
 
-  if (!missionRow || !missionRow.active || missionRow.sequence_order === null) {
+  if (!missionRow || !missionRow.active) {
     return { ok: false, error: 'INVALID_MISSION' };
   }
 
-  const seqOrder = Number(missionRow.sequence_order);
+  const isOfficial = missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+  const seqOrder = isOfficial ? Number(missionRow.sequence_order) : null;
   const completeEventKey = `COMPLETE:${participantId}:${missionId}`;
   const existingComplete = db
     .prepare('SELECT id FROM points_transactions WHERE event_key = ?')
@@ -220,8 +221,8 @@ function completeMissionInTest(db: DatabaseSync, participantId: string, missionI
     return { ok: false, error: 'ALREADY_COMPLETED' };
   }
 
-  // Sequencialidade estrita
-  if (seqOrder > 1) {
+  // Sequencialidade estrita para oficial
+  if (isOfficial && seqOrder !== null && seqOrder > 1) {
     const prevMission = db
       .prepare('SELECT id FROM missions WHERE sequence_order = ? AND active = 1')
       .get(seqOrder - 1) as { id: string } | undefined;
@@ -235,128 +236,179 @@ function completeMissionInTest(db: DatabaseSync, participantId: string, missionI
     }
   }
 
-  const nowMs = Date.now();
-  const unlockPoints = Number(missionRow.unlock_points);
-  const completionPoints = Number(missionRow.completion_points);
-  const maxSpeedBonus = Number(missionRow.max_speed_bonus);
+  const spName = `sp_comp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  db.exec(`SAVEPOINT ${spName};`);
 
-  // Bônus proporcional dinâmico
-  const speedBonus = Math.max(0, Math.min(maxSpeedBonus, Math.round(maxSpeedBonus * (1 - elapsedRatio))));
+  try {
+    const nowMs = Date.now();
+    let unlockPoints = 0;
+    let completionPoints = 0;
+    let maxSpeedBonus = 0;
 
-  // Missão 1 credita unlock na conclusão
-  let awardedUnlockPoints = 0;
-  if (seqOrder === 1) {
-    const unlockKey = `UNLOCK:${participantId}:${missionId}`;
-    const unlockCredit = creditPointsInTest(db, {
+    if (isOfficial) {
+      const rawUnlock = missionRow.unlock_points;
+      const rawCompletion = missionRow.completion_points;
+      const rawBonus = missionRow.max_speed_bonus;
+
+      if (
+        rawUnlock === null || rawUnlock === undefined ||
+        rawCompletion === null || rawCompletion === undefined ||
+        rawBonus === null || rawBonus === undefined ||
+        !Number.isInteger(Number(rawUnlock)) || Number(rawUnlock) < 0 ||
+        !Number.isInteger(Number(rawCompletion)) || Number(rawCompletion) <= 0 ||
+        !Number.isInteger(Number(rawBonus)) || Number(rawBonus) < 0
+      ) {
+        db.exec(`ROLLBACK TO ${spName};`);
+        db.exec(`RELEASE ${spName};`);
+        return { ok: false, error: 'INVALID_CIRCUIT_SCORING' };
+      }
+
+      unlockPoints = Number(rawUnlock);
+      completionPoints = Number(rawCompletion);
+      maxSpeedBonus = Number(rawBonus);
+    } else {
+      // Missão extra
+      completionPoints = Number(missionRow.points || 0);
+      unlockPoints = 0;
+      maxSpeedBonus = 0;
+    }
+
+    // Bônus proporcional dinâmico
+    const speedBonus = maxSpeedBonus > 0 ? Math.max(0, Math.min(maxSpeedBonus, Math.round(maxSpeedBonus * (1 - elapsedRatio)))) : 0;
+
+    // Missão 1 credita unlock na conclusão
+    let awardedUnlockPoints = 0;
+    if (isOfficial && seqOrder === 1) {
+      const unlockKey = `UNLOCK:${participantId}:${missionId}`;
+      const unlockCredit = creditPointsInTest(db, {
+        participantId,
+        pointsDelta: unlockPoints,
+        eventKey: unlockKey,
+        missionId,
+      });
+      awardedUnlockPoints = unlockCredit.effectiveDelta;
+    } else if (isOfficial) {
+      const existingUnlock = db
+        .prepare('SELECT points_delta FROM points_transactions WHERE event_key = ?')
+        .get(`UNLOCK:${participantId}:${missionId}`) as { points_delta: number } | undefined;
+      awardedUnlockPoints = existingUnlock?.points_delta ?? unlockPoints;
+    }
+
+    // Crédito de conclusão dinâmico
+    const compCredit = creditPointsInTest(db, {
       participantId,
-      pointsDelta: unlockPoints,
-      eventKey: unlockKey,
+      pointsDelta: completionPoints,
+      eventKey: completeEventKey,
       missionId,
     });
-    awardedUnlockPoints = unlockCredit.effectiveDelta;
-  } else {
-    const existingUnlock = db
-      .prepare('SELECT points_delta FROM points_transactions WHERE event_key = ?')
-      .get(`UNLOCK:${participantId}:${missionId}`) as { points_delta: number } | undefined;
-    awardedUnlockPoints = existingUnlock?.points_delta ?? unlockPoints;
-  }
+    const awardedCompletionPoints = compCredit.effectiveDelta;
 
-  // Crédito de conclusão dinâmico
-  const compCredit = creditPointsInTest(db, {
-    participantId,
-    pointsDelta: completionPoints,
-    eventKey: completeEventKey,
-    missionId,
-  });
-  const awardedCompletionPoints = compCredit.effectiveDelta;
+    // Bônus de velocidade
+    let awardedSpeedBonus = 0;
+    if (speedBonus > 0) {
+      const bonusKey = `SPEED_BONUS:${participantId}:${missionId}`;
+      const bonusCredit = creditPointsInTest(db, {
+        participantId,
+        pointsDelta: speedBonus,
+        eventKey: bonusKey,
+        missionId,
+      });
+      awardedSpeedBonus = bonusCredit.effectiveDelta;
+    }
 
-  // Bônus de velocidade
-  let awardedSpeedBonus = 0;
-  if (speedBonus > 0) {
-    const bonusKey = `SPEED_BONUS:${participantId}:${missionId}`;
-    const bonusCredit = creditPointsInTest(db, {
-      participantId,
-      pointsDelta: speedBonus,
-      eventKey: bonusKey,
-      missionId,
-    });
-    awardedSpeedBonus = bonusCredit.effectiveDelta;
-  }
-
-  // Atualizar participant_missions
-  db.prepare(`
-    INSERT INTO participant_missions (
-      id, participant_id, mission_id, sequence_order, status,
-      unlocked_at_ms, completed_at_ms, unlock_points_awarded,
-      completion_points_awarded, speed_bonus_awarded, total_points_awarded
-    ) VALUES (?, ?, ?, ?, 'Concluída', ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(participant_id, mission_id) DO UPDATE SET
-      status = 'Concluída',
-      completed_at_ms = excluded.completed_at_ms,
-      unlock_points_awarded = excluded.unlock_points_awarded,
-      completion_points_awarded = excluded.completion_points_awarded,
-      speed_bonus_awarded = excluded.speed_bonus_awarded,
-      total_points_awarded = excluded.total_points_awarded
-  `).run(
-    `pm-${participantId}-${missionId}`,
-    participantId,
-    missionId,
-    seqOrder,
-    nowMs,
-    nowMs,
-    awardedUnlockPoints,
-    awardedCompletionPoints,
-    awardedSpeedBonus,
-    awardedUnlockPoints + awardedCompletionPoints + awardedSpeedBonus
-  );
-
-  // Desbloqueio da próxima missão oficial com valores dinâmicos
-  let nextAwardedUnlock = 0;
-  const nextMissionRow = db
-    .prepare('SELECT * FROM missions WHERE sequence_order = ? AND active = 1')
-    .get(seqOrder + 1) as Record<string, unknown> | undefined;
-
-  if (nextMissionRow) {
-    const nextMissionId = String(nextMissionRow.id);
-    const nextUnlockPoints = Number(nextMissionRow.unlock_points);
-    const nextUnlockKey = `UNLOCK:${participantId}:${nextMissionId}`;
-
-    const nextCredit = creditPointsInTest(db, {
-      participantId,
-      pointsDelta: nextUnlockPoints,
-      eventKey: nextUnlockKey,
-      missionId: nextMissionId,
-    });
-    nextAwardedUnlock = nextCredit.effectiveDelta;
-
+    // Atualizar participant_missions
     db.prepare(`
       INSERT INTO participant_missions (
         id, participant_id, mission_id, sequence_order, status,
-        unlocked_at_ms, unlock_points_awarded, completion_points_awarded,
-        speed_bonus_awarded, total_points_awarded
-      ) VALUES (?, ?, ?, ?, 'Disponível', ?, ?, 0, 0, ?)
+        unlocked_at_ms, completed_at_ms, unlock_points_awarded,
+        completion_points_awarded, speed_bonus_awarded, total_points_awarded
+      ) VALUES (?, ?, ?, ?, 'Concluída', ?, ?, ?, ?, ?, ?)
       ON CONFLICT(participant_id, mission_id) DO UPDATE SET
-        status = CASE WHEN participant_missions.status = 'Concluída' THEN 'Concluída' ELSE 'Disponível' END,
+        status = 'Concluída',
+        completed_at_ms = excluded.completed_at_ms,
         unlock_points_awarded = excluded.unlock_points_awarded,
-        total_points_awarded = excluded.unlock_points_awarded
+        completion_points_awarded = excluded.completion_points_awarded,
+        speed_bonus_awarded = excluded.speed_bonus_awarded,
+        total_points_awarded = excluded.total_points_awarded
     `).run(
-      `pm-${participantId}-${nextMissionId}`,
+      `pm-${participantId}-${missionId}`,
       participantId,
-      nextMissionId,
-      seqOrder + 1,
+      missionId,
+      seqOrder || 0,
       nowMs,
-      nextAwardedUnlock,
-      nextAwardedUnlock
+      nowMs,
+      awardedUnlockPoints,
+      awardedCompletionPoints,
+      awardedSpeedBonus,
+      awardedUnlockPoints + awardedCompletionPoints + awardedSpeedBonus
     );
-  }
 
-  return {
-    ok: true,
-    awardedUnlockPoints,
-    awardedCompletionPoints,
-    awardedSpeedBonus,
-    nextAwardedUnlock,
-  };
+    // Desbloqueio da próxima missão oficial com valores dinâmicos
+    let nextAwardedUnlock = 0;
+    if (isOfficial && seqOrder !== null) {
+      const nextMissionRow = db
+        .prepare('SELECT * FROM missions WHERE sequence_order = ? AND active = 1')
+        .get(seqOrder + 1) as Record<string, unknown> | undefined;
+
+      if (nextMissionRow) {
+        const nextMissionId = String(nextMissionRow.id);
+        const rawNextUnlock = nextMissionRow.unlock_points;
+
+        if (
+          rawNextUnlock === null || rawNextUnlock === undefined ||
+          !Number.isInteger(Number(rawNextUnlock)) || Number(rawNextUnlock) < 0
+        ) {
+          db.exec(`ROLLBACK TO ${spName};`);
+          db.exec(`RELEASE ${spName};`);
+          return { ok: false, error: 'INVALID_CIRCUIT_SCORING' };
+        }
+
+        const nextUnlockPoints = Number(rawNextUnlock);
+
+        const nextUnlockKey = `UNLOCK:${participantId}:${nextMissionId}`;
+        const nextCredit = creditPointsInTest(db, {
+          participantId,
+          pointsDelta: nextUnlockPoints,
+          eventKey: nextUnlockKey,
+          missionId: nextMissionId,
+        });
+        nextAwardedUnlock = nextCredit.effectiveDelta;
+
+        db.prepare(`
+          INSERT INTO participant_missions (
+            id, participant_id, mission_id, sequence_order, status,
+            unlocked_at_ms, unlock_points_awarded, completion_points_awarded,
+            speed_bonus_awarded, total_points_awarded
+          ) VALUES (?, ?, ?, ?, 'Disponível', ?, ?, 0, 0, ?)
+          ON CONFLICT(participant_id, mission_id) DO UPDATE SET
+            status = CASE WHEN participant_missions.status = 'Concluída' THEN 'Concluída' ELSE 'Disponível' END,
+            unlock_points_awarded = excluded.unlock_points_awarded,
+            total_points_awarded = excluded.unlock_points_awarded
+        `).run(
+          `pm-${participantId}-${nextMissionId}`,
+          participantId,
+          nextMissionId,
+          seqOrder + 1,
+          nowMs,
+          nextAwardedUnlock,
+          nextAwardedUnlock
+        );
+      }
+    }
+
+    db.exec(`RELEASE ${spName};`);
+    return {
+      ok: true,
+      awardedUnlockPoints,
+      awardedCompletionPoints,
+      awardedSpeedBonus,
+      nextAwardedUnlock,
+    };
+  } catch (err) {
+    db.exec(`ROLLBACK TO ${spName};`);
+    db.exec(`RELEASE ${spName};`);
+    throw err;
+  }
 }
 
 function calculateReservedPointsInTest(db: DatabaseSync, participantId: string) {
@@ -746,6 +798,145 @@ runTest('11. Falha em etapa intermediária reverte atomicamente sem transações
 
   const txCount = db.prepare("SELECT COUNT(*) as count FROM points_transactions WHERE event_key = 'FAIL_TEST:p1'").get() as { count: number };
   assert(txCount.count === 0, 'Transação não deve existir após rollback');
+});
+
+// ============================================================================
+// CENÁRIO 12: Campo NULL em pontuação oficial rejeita conclusão sem créditos parciais
+// ============================================================================
+runTest('12. Campo NULL em completion_points ou unlock_points rejeita com INVALID_CIRCUIT_SCORING sem crédito parcial', () => {
+  const db = createTestDatabase();
+  db.prepare("INSERT INTO participants (id, name, points) VALUES ('p1', 'Leo', 0)").run();
+  db.prepare("INSERT INTO missions (id, title, sequence_order, unlock_points, completion_points, max_speed_bonus) VALUES ('m1', 'Missão 1', 1, 20, NULL, 50)").run();
+
+  const res = completeMissionInTest(db, 'p1', 'm1', 0);
+  assert(!res.ok, 'Conclusão de missão com campo NULL deve falhar');
+  assert(res.error === 'INVALID_CIRCUIT_SCORING', `Erro esperado INVALID_CIRCUIT_SCORING, obteve ${res.error}`);
+
+  // Verifica que saldo permanece zero e nenhuma transação foi registrada
+  const part = db.prepare('SELECT points FROM participants WHERE id = ?').get('p1') as { points: number };
+  assert(part.points === 0, `Saldo deve ser 0 após rejeição, obteve ${part.points}`);
+
+  const txCount = db.prepare('SELECT COUNT(*) as count FROM points_transactions WHERE participant_id = ?').get('p1') as { count: number };
+  assert(txCount.count === 0, 'Nenhuma transação deve ter sido gerada');
+});
+
+// ============================================================================
+// CENÁRIO 13: Campo negativo ou zero inválido em pontuação oficial é rejeitado
+// ============================================================================
+runTest('13. Pontuação negativa ou zero em completion_points é rejeitada com erro', () => {
+  const db = createTestDatabase();
+  db.prepare("INSERT INTO participants (id, name, points) VALUES ('p1', 'Mia', 0)").run();
+  db.prepare("INSERT INTO missions (id, title, sequence_order, unlock_points, completion_points, max_speed_bonus) VALUES ('m1', 'Missão 1', 1, 20, -50, 50)").run();
+
+  const res = completeMissionInTest(db, 'p1', 'm1', 0);
+  assert(!res.ok, 'Conclusão com pontuação negativa deve falhar');
+  assert(res.error === 'INVALID_CIRCUIT_SCORING', `Erro esperado INVALID_CIRCUIT_SCORING, obteve ${res.error}`);
+
+  const part = db.prepare('SELECT points FROM participants WHERE id = ?').get('p1') as { points: number };
+  assert(part.points === 0, `Saldo deve ser 0, obteve ${part.points}`);
+});
+
+// ============================================================================
+// CENÁRIO 14: Próxima missão com unlock_points inválido provoca rollback integral
+// ============================================================================
+runTest('14. Próxima missão com unlock_points inválido provoca rollback integral da conclusão anterior', () => {
+  const db = createTestDatabase();
+  db.prepare("INSERT INTO participants (id, name, points) VALUES ('p1', 'Noah', 0)").run();
+  // M1 é válida, mas M2 (próxima) tem unlock_points NULL
+  db.prepare("INSERT INTO missions (id, title, sequence_order, unlock_points, completion_points, max_speed_bonus) VALUES ('m1', 'Missão 1', 1, 20, 180, 50)").run();
+  db.prepare("INSERT INTO missions (id, title, sequence_order, unlock_points, completion_points, max_speed_bonus) VALUES ('m2', 'Missão 2', 2, NULL, 180, 50)").run();
+
+  const res = completeMissionInTest(db, 'p1', 'm1', 0);
+  assert(!res.ok, 'Operação deve falhar por inconsistência na próxima missão');
+  assert(res.error === 'INVALID_CIRCUIT_SCORING', `Erro esperado INVALID_CIRCUIT_SCORING, obteve ${res.error}`);
+
+  // ROLLBACK INTEGRAL: os pontos de M1 NÃO devem ser creditados!
+  const part = db.prepare('SELECT points FROM participants WHERE id = ?').get('p1') as { points: number };
+  assert(part.points === 0, `Saldo deve ser 0 após rollback integral, obteve ${part.points}`);
+
+  const txCount = db.prepare('SELECT COUNT(*) as count FROM points_transactions WHERE participant_id = ?').get('p1') as { count: number };
+  assert(txCount.count === 0, 'Nenhuma transação contábil órfã deve existir');
+
+  const pm1 = db.prepare("SELECT status FROM participant_missions WHERE participant_id = 'p1' AND mission_id = 'm1'").get() as { status: string } | undefined;
+  assert(!pm1 || pm1.status !== 'Concluída', 'M1 não pode constar como Concluída após rollback');
+});
+
+// ============================================================================
+// CENÁRIO 15: Bônus de velocidade com max_speed_bonus inválido não assume 50
+// ============================================================================
+runTest('15. Bônus de velocidade com max_speed_bonus NULL não assume 50 e é rejeitado', () => {
+  const db = createTestDatabase();
+  db.prepare("INSERT INTO participants (id, name, points) VALUES ('p1', 'Olivia', 0)").run();
+  db.prepare("INSERT INTO missions (id, title, sequence_order, unlock_points, completion_points, max_speed_bonus) VALUES ('m1', 'Missão 1', 1, 20, 180, NULL)").run();
+
+  const res = completeMissionInTest(db, 'p1', 'm1', 0);
+  assert(!res.ok, 'max_speed_bonus NULL deve rejeitar');
+  assert(res.error === 'INVALID_CIRCUIT_SCORING', `Erro esperado INVALID_CIRCUIT_SCORING, obteve ${res.error}`);
+
+  const part = db.prepare('SELECT points FROM participants WHERE id = ?').get('p1') as { points: number };
+  assert(part.points === 0, `Saldo deve ser 0, obteve ${part.points}`);
+});
+
+// ============================================================================
+// CENÁRIO 16: Evidência manual rejeita missão oficial sem completion_points dinâmico válido
+// ============================================================================
+runTest('16. Validação de evidência rejeita missão oficial sem completion_points dinâmico válido', () => {
+  const db = createTestDatabase();
+  db.prepare("INSERT INTO participants (id, name, points) VALUES ('p1', 'Peter', 0)").run();
+  db.prepare("INSERT INTO missions (id, title, sequence_order, completion_points) VALUES ('m1', 'Missão 1', 1, NULL)").run();
+
+  const mRow = db.prepare('SELECT * FROM missions WHERE id = ?').get('m1') as Record<string, unknown>;
+  const isOfficial = mRow.sequence_order !== null;
+  const rawComp = Number(mRow.completion_points);
+
+  let validationOk = true;
+  if (isOfficial && (!Number.isInteger(rawComp) || rawComp <= 0)) {
+    validationOk = false;
+  }
+
+  assert(!validationOk, 'Evidência para missão oficial com completion_points inválido deve ser rejeitada');
+});
+
+// ============================================================================
+// CENÁRIO 17: Missões extras continuam funcionando normalmente
+// ============================================================================
+runTest('17. Missões extras com pontuação manual concluem e creditam normalmente sem exigir partição dinâmica', () => {
+  const db = createTestDatabase();
+  db.prepare("INSERT INTO participants (id, name, points) VALUES ('p1', 'Quinn', 0)").run();
+  db.prepare("INSERT INTO missions (id, title, sequence_order, points, unlock_points, completion_points, max_speed_bonus) VALUES ('extra1', 'Extra Especial', NULL, 85, 0, 85, 0)").run();
+
+  const res = completeMissionInTest(db, 'p1', 'extra1', 0);
+  assert(res.ok, 'Missão extra deve concluir com sucesso');
+  assert(res.awardedCompletionPoints === 85, `Crédito de conclusão deve ser 85, obteve ${res.awardedCompletionPoints}`);
+  assert(res.awardedUnlockPoints === 0, 'Missão extra não possui unlock points');
+  assert(res.awardedSpeedBonus === 0, 'Missão extra não possui speed bonus');
+
+  const part = db.prepare('SELECT points FROM participants WHERE id = ?').get('p1') as { points: number };
+  assert(part.points === 85, `Saldo do participante deve ser 85, obteve ${part.points}`);
+});
+
+// ============================================================================
+// CENÁRIO 18: Idempotência e teto de 1.000 pontos estritamente preservados
+// ============================================================================
+runTest('18. Idempotência e teto de 1.000 pontos permanecem invioláveis com as validações estritas', () => {
+  const db = createTestDatabase();
+  db.prepare("INSERT INTO participants (id, name, points) VALUES ('p1', 'Rose', 980)").run();
+  db.prepare("INSERT INTO missions (id, title, sequence_order, unlock_points, completion_points, max_speed_bonus) VALUES ('m1', 'Missão 1', 1, 10, 100, 20)").run();
+
+  // Tenta concluir missão que concederia 10 (unlock) + 100 (completion) + 20 (bonus) = 130 pts
+  // Mas saldo atual é 980, teto é 1.000 -> saldo só pode subir 20 pontos
+  const res = completeMissionInTest(db, 'p1', 'm1', 0);
+  assert(res.ok, 'Conclusão deve ter sucesso');
+
+  const part = db.prepare('SELECT points FROM participants WHERE id = ?').get('p1') as { points: number };
+  assert(part.points === 1000, `Saldo deve ser exatamente 1.000 (teto), obteve ${part.points}`);
+
+  // Idempotência: segunda conclusão deve ser rejeitada
+  const secondRes = completeMissionInTest(db, 'p1', 'm1', 0);
+  assert(!secondRes.ok && secondRes.error === 'ALREADY_COMPLETED', 'Segunda tentativa deve falhar com ALREADY_COMPLETED');
+
+  const part2 = db.prepare('SELECT points FROM participants WHERE id = ?').get('p1') as { points: number };
+  assert(part2.points === 1000, 'Saldo deve permanecer 1.000');
 });
 
 // ============================================================================

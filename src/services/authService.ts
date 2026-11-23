@@ -8,29 +8,51 @@ export const authService = {
   async loginDemo(
     email: string,
     password?: string
-  ): Promise<{ user: Participant; message: string }> {
-    const apiRes = await apiRequest<{
+  ): Promise<{
+    ok: boolean;
+    status: number;
+    user?: Participant;
+    message?: string;
+    error?: string;
+  }> {
+    const res = await apiRequestWithStatus<{
       token?: string;
-      user: Participant;
-      message: string;
+      expiresAt?: number;
+      user?: Participant;
+      message?: string;
+      error?: string;
     }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    if (apiRes) {
-      if (apiRes.token) {
-        setAuthToken(apiRes.token);
-      }
-      currentSessionParticipant = { ...apiRes.user };
-      return apiRes;
+
+    const hasValidToken =
+      typeof res.data?.token === 'string' && res.data.token.trim().length > 0;
+    const hasValidUser = Boolean(res.data?.user?.id && res.data?.user?.email);
+
+    if (res.ok && hasValidToken && hasValidUser && res.data?.user && res.data?.token) {
+      setAuthToken(res.data.token);
+      currentSessionParticipant = { ...res.data.user };
+      return {
+        ok: true,
+        status: res.status,
+        user: res.data.user,
+        message: res.data.message || 'Sessão autenticada com sucesso.',
+      };
     }
 
+    setAuthToken(null);
+    const errorMsg =
+      res.status === 0
+        ? 'Não foi possível conectar ao servidor de autenticação. Verifique sua conexão e tente novamente.'
+        : res.ok
+        ? 'Resposta de autenticação inválida do servidor.'
+        : res.data?.error || res.error || 'E-mail ou senha inválidos.';
+
     return {
-      user: {
-        ...currentSessionParticipant,
-        email: email || currentSessionParticipant.email,
-      },
-      message: 'Acesso realizado com sucesso.',
+      ok: false,
+      status: res.ok ? 502 : res.status,
+      error: errorMsg,
     };
   },
 
@@ -79,44 +101,46 @@ export const authService = {
   async registerDemo(payload: {
     name: string;
     email: string;
+    phone: string;
     password?: string;
     acceptedTerms: boolean;
-  }): Promise<{ user: Participant; message: string }> {
-    const apiRes = await apiRequest<{
+  }): Promise<{
+    ok: boolean;
+    status: number;
+    user?: Participant;
+    message?: string;
+    error?: string;
+  }> {
+    const res = await apiRequestWithStatus<{
       token?: string;
       user: Participant;
       message: string;
+      error?: string;
     }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    if (apiRes) {
-      if (apiRes.token) {
-        setAuthToken(apiRes.token);
+
+    if (res.ok && res.data?.user) {
+      if (res.data.token) {
+        setAuthToken(res.data.token);
       }
-      currentSessionParticipant = { ...apiRes.user };
-      return apiRes;
+      currentSessionParticipant = { ...res.data.user };
+      return {
+        ok: true,
+        status: res.status,
+        user: res.data.user,
+        message: res.data.message,
+      };
     }
 
-    const initials = payload.name
-      .trim()
-      .split(/\s+/)
-      .map((p) => p[0])
-      .join('')
-      .slice(0, 2)
-      .toUpperCase();
-
-    currentSessionParticipant = {
-      ...currentSessionParticipant,
-      name: payload.name || currentSessionParticipant.name,
-      nickname: payload.name.split(' ')[0] || currentSessionParticipant.nickname,
-      email: payload.email || currentSessionParticipant.email,
-      avatar: initials || 'RR',
-    };
-
     return {
-      user: { ...currentSessionParticipant },
-      message: 'Cadastro concluído! Bem-vindo(a) ao Desafio Global Summit 2026.',
+      ok: false,
+      status: res.status,
+      error:
+        res.data?.error ||
+        res.error ||
+        'Não foi possível concluir o cadastro. Verifique os dados informados.',
     };
   },
 
