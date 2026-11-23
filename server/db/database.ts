@@ -40,6 +40,8 @@ export const MISSION_COMPLETION_POINTS = 180;
 export const MISSION_MAX_SPEED_BONUS = 50;
 export const SEQUENTIAL_MISSION_IDS = ['ms-01', 'ms-04', 'ms-06', 'ms-08'] as const;
 
+export * from './circuitScoring';
+
 export const DEFAULT_MISSION_TIMER_MINUTES = 5;
 export const MIN_MISSION_TIMER_MINUTES = 1;
 export const MAX_MISSION_TIMER_MINUTES = 30;
@@ -182,18 +184,18 @@ export function calculateParticipantReservedPoints(
       (pm !== undefined &&
         (String(pm.status) === 'Concluída' || Number(pm.completion_points_awarded || 0) > 0));
 
-    // 1. Desbloqueio: se não foi creditado efetivamente ainda, reservar 20 pts
-    const remainingUnlock = hasEffectiveUnlockPoints ? 0 : Number(m.unlock_points) || MISSION_UNLOCK_POINTS;
+    // 1. Desbloqueio: se não foi creditado efetivamente ainda, reservar o unlock_points dinâmico da missão
+    const missionUnlock = m.unlock_points !== null && m.unlock_points !== undefined ? Number(m.unlock_points) : 0;
+    const remainingUnlock = hasEffectiveUnlockPoints ? 0 : missionUnlock;
 
-    // 2. Conclusão: se não foi creditado ainda, reservar 180 pts
-    const remainingCompletion = isCompleted
-      ? 0
-      : Number(m.completion_points) || MISSION_COMPLETION_POINTS;
+    // 2. Conclusão: se não foi creditado ainda, reservar o completion_points dinâmico da missão
+    const missionCompletion = m.completion_points !== null && m.completion_points !== undefined ? Number(m.completion_points) : 0;
+    const remainingCompletion = isCompleted ? 0 : missionCompletion;
 
-    // 3. Bônus potencial de velocidade: preservar até 50 pontos por missão pendente
+    // 3. Bônus potencial de velocidade: reservar o max_speed_bonus dinâmico da missão
     // Quando a missão é concluída, o bônus de velocidade já foi avaliado e creditado
     // no saldo do participante (ou 0 se expirada), portanto deixa de ser reservado.
-    const maxBonus = Number(m.max_speed_bonus) || MISSION_MAX_SPEED_BONUS;
+    const maxBonus = m.max_speed_bonus !== null && m.max_speed_bonus !== undefined ? Number(m.max_speed_bonus) : 0;
     const awardedBonus = pm ? Number(pm.speed_bonus_awarded || 0) : 0;
     const remainingSpeedBonus = isCompleted ? 0 : Math.max(0, maxBonus - awardedBonus);
 

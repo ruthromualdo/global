@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import {
   calculateParticipantReservedPoints,
+  compactCircuitSequencesInDb,
   db,
   DB_FILE_PATH,
   DEFAULT_MISSION_TIMER_MINUTES,
@@ -10,6 +11,7 @@ import {
   getMissionConfiguredDurationSeconds,
   getParticipantAchievementsFromDb,
   getPublicRankingFromDb,
+  hasOfficialCircuitStartedInDb,
   initializeDatabase,
   mapEventSettingsRow,
   mapGovernancePlanRow,
@@ -22,9 +24,8 @@ import {
   MAX_MISSION_TIMER_MINUTES,
   MAX_PARTICIPANT_POINTS,
   MIN_MISSION_TIMER_MINUTES,
-  MISSION_COMPLETION_POINTS,
-  MISSION_UNLOCK_POINTS,
   ParticipantPointsReservation,
+  recalculateCircuitMissionPointsInDb,
   recalculateRankingsInDb,
 } from './db/database';
 import {
@@ -277,10 +278,11 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
     const completedAtMs = pm?.completed_at_ms ? Number(pm.completed_at_ms) : null;
     const speedBonusAwarded = Number(pm?.speed_bonus_awarded || 0);
 
+    const missionMaxBonus = Number(m.maxSpeedBonus ?? mRow.max_speed_bonus ?? 50);
     let elapsedSeconds = 0;
     let remainingSeconds = durationSeconds;
     let isExpired = false;
-    let potentialSpeedBonus = 50;
+    let potentialSpeedBonus = missionMaxBonus;
 
     if (isCompleted) {
       if (startedAtMs && completedAtMs) {
@@ -300,7 +302,7 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
         ? 0
         : Math.max(
             0,
-            Math.min(50, Math.round(50 * (remainingSeconds / durationSeconds)))
+            Math.min(missionMaxBonus, Math.round(missionMaxBonus * (remainingSeconds / durationSeconds)))
           );
     }
 
@@ -456,6 +458,10 @@ function completeSequentialMissionInSql(params: {
       ? `Conclusão (${params.qrCodeRow.code}): ${mission.title}`
       : `Conclusão: ${mission.title}`;
 
+    const missionUnlockPoints = Number(mission.unlockPoints ?? missionRow.unlock_points ?? 20);
+    const missionCompletionPoints = Number(mission.completionPoints ?? missionRow.completion_points ?? 180);
+    const missionMaxSpeedBonus = Number(mission.maxSpeedBonus ?? missionRow.max_speed_bonus ?? 50);
+
     const startedAtMs = pmRow?.started_at_ms ? Number(pmRow.started_at_ms) : null;
     const durationSeconds = pmRow?.duration_seconds
       ? Number(pmRow.duration_seconds)
@@ -468,12 +474,12 @@ function completeSequentialMissionInSql(params: {
       elapsedSeconds = Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
       const remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
       if (remainingSeconds > 0 && durationSeconds > 0) {
-        speedBonus = Math.round(50 * (remainingSeconds / durationSeconds));
-        speedBonus = Math.max(0, Math.min(50, speedBonus));
+        speedBonus = Math.round(missionMaxSpeedBonus * (remainingSeconds / durationSeconds));
+        speedBonus = Math.max(0, Math.min(missionMaxSpeedBonus, speedBonus));
       }
     }
 
-    // Etapa 6: Se for a Missão 1 (seqOrder === 1), credita os 20 pontos de desbloqueio
+    // Etapa 6 & Etapa 3: Se for a Missão 1 (seqOrder === 1), credita os pontos dinâmicos de desbloqueio
     // SOMENTE AGORA, no momento da conclusão/validação efetiva da missão!
     let awardedUnlockPoints = 0;
     if (seqOrder === 1) {
@@ -498,7 +504,7 @@ function completeSequentialMissionInSql(params: {
 
         const unlockCredit = creditPointsInSql({
           participantId: params.participantId,
-          pointsDelta: MISSION_UNLOCK_POINTS,
+          pointsDelta: missionUnlockPoints,
           sourceType: 'Missão',
           sourceTitle: `Desbloqueio: ${mission.title}`,
           incrementMissionCount: false,
@@ -509,7 +515,7 @@ function completeSequentialMissionInSql(params: {
       } else {
         awardedUnlockPoints = validatedUnlockTx
           ? Number(validatedUnlockTx.points_delta)
-          : Number(legacyUnlockTx?.points_delta || MISSION_UNLOCK_POINTS);
+          : Number(legacyUnlockTx?.points_delta || missionUnlockPoints);
       }
     } else {
       const existingUnlockTx = db
@@ -517,13 +523,13 @@ function completeSequentialMissionInSql(params: {
         .get(`UNLOCK:${params.participantId}:${mission.id}`) as { points_delta: number } | undefined;
       awardedUnlockPoints = existingUnlockTx
         ? Number(existingUnlockTx.points_delta)
-        : Number(pmRow?.unlock_points_awarded || MISSION_UNLOCK_POINTS);
+        : Number(pmRow?.unlock_points_awarded || missionUnlockPoints);
     }
 
-    // 1. Concede 180 pontos pela conclusão válida da missão
+    // 1. Concede pontos dinâmicos pela conclusão válida da missão
     const completionCredit = creditPointsInSql({
       participantId: params.participantId,
-      pointsDelta: MISSION_COMPLETION_POINTS,
+      pointsDelta: missionCompletionPoints,
       sourceType: params.sourceType,
       sourceTitle: completionSourceTitle,
       visitedStartupId: mission.startupId,
@@ -534,7 +540,7 @@ function completeSequentialMissionInSql(params: {
 
     const awardedCompletionPoints = completionCredit?.effectiveDelta ?? 0;
 
-    // 1.5 Concede até 50 pontos de bônus de velocidade proporcional (Etapa 3)
+    // 1.5 Concede bônus de velocidade proporcional dinâmico (Etapa 3)
     let awardedSpeedBonus = 0;
     if (speedBonus > 0) {
       const speedBonusEventKey = `SPEED_BONUS:${params.participantId}:${mission.id}`;
@@ -573,7 +579,7 @@ function completeSequentialMissionInSql(params: {
       mission.id
     );
 
-    // 2. Desbloqueia automaticamente a próxima missão na sequência (se houver, i.e., seqOrder < 4) e concede +20 pts
+    // 2. Desbloqueia automaticamente a próxima missão na sequência (se houver) e concede seus unlock_points dinâmicos
     let nextMissionUnlockedTitle: string | null = null;
     let awardedNextUnlockPoints = 0;
 
@@ -584,11 +590,12 @@ function completeSequentialMissionInSql(params: {
     if (nextMissionRow) {
       const nextMissionId = String(nextMissionRow.id);
       const nextMissionTitle = String(nextMissionRow.title);
+      const nextUnlockPoints = Number(nextMissionRow.unlock_points ?? 20);
       const nextUnlockEventKey = `UNLOCK:${params.participantId}:${nextMissionId}`;
 
       const unlockCredit = creditPointsInSql({
         participantId: params.participantId,
-        pointsDelta: MISSION_UNLOCK_POINTS,
+        pointsDelta: nextUnlockPoints,
         sourceType: 'Missão',
         sourceTitle: `Desbloqueio: ${nextMissionTitle}`,
         incrementMissionCount: false,
@@ -633,7 +640,7 @@ function completeSequentialMissionInSql(params: {
         : ' (sem bônus de velocidade adicional).';
     const unlockMsg = nextMissionUnlockedTitle
       ? ` Próxima missão "${nextMissionUnlockedTitle}" desbloqueada automaticamente (+${awardedNextUnlockPoints} pts)!`
-      : ' Você concluiu todas as 4 missões principais do circuito!';
+      : ' Você concluiu todas as missões principais do circuito!';
 
     return {
       ok: true,
@@ -1321,276 +1328,505 @@ app.post('/api/missions', requireAdmin, (req, res) => {
       p.sequenceOrder !== undefined &&
       p.sequenceOrder !== '');
 
-  let sequenceOrder: number | null = null;
-  if (isOfficial) {
-    const parsedSeq = Number(p.sequenceOrder);
-    if (!Number.isInteger(parsedSeq) || parsedSeq < 1) {
-      res.status(400).json({
-        error: 'A ordem sequencial é obrigatória e deve ser um número inteiro positivo para missões do circuito oficial.',
-        code: 'INVALID_SEQUENCE_ORDER',
-      });
-      return;
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    let sequenceOrder: number | null = null;
+    if (isOfficial) {
+      if (hasOfficialCircuitStartedInDb(db)) {
+        db.exec('ROLLBACK;');
+        res.status(409).json({
+          error:
+            'O circuito oficial já foi iniciado por participantes. A criação de novas missões oficiais está bloqueada.',
+          code: 'CIRCUIT_LOCKED',
+        });
+        return;
+      }
+
+      const parsedSeq = Number(p.sequenceOrder);
+      if (!Number.isInteger(parsedSeq) || parsedSeq < 1) {
+        db.exec('ROLLBACK;');
+        res.status(400).json({
+          error:
+            'A ordem sequencial é obrigatória e deve ser um número inteiro positivo para missões do circuito oficial.',
+          code: 'INVALID_SEQUENCE_ORDER',
+        });
+        return;
+      }
+
+      // Validação de unicidade da ordem sequencial
+      const existingSeq = db
+        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? LIMIT 1')
+        .get(parsedSeq) as { id: string; title: string } | undefined;
+
+      if (existingSeq) {
+        db.exec('ROLLBACK;');
+        res.status(409).json({
+          error: `A posição ${parsedSeq} já está ocupada pela missão "${existingSeq.title}". Escolha outra ordem sequencial.`,
+          code: 'SEQUENCE_ORDER_DUPLICATE',
+        });
+        return;
+      }
+
+      sequenceOrder = parsedSeq;
     }
 
-    // Validação de unicidade da ordem sequencial
-    const existingSeq = db
-      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? LIMIT 1')
-      .get(parsedSeq) as { id: string; title: string } | undefined;
+    const parsedTimerMinutes =
+      p.timerMinutes !== null && p.timerMinutes !== undefined && p.timerMinutes !== ''
+        ? Math.max(1, Math.min(30, Math.trunc(Number(p.timerMinutes))))
+        : null;
 
-    if (existingSeq) {
-      res.status(409).json({
-        error: `A posição ${parsedSeq} já está ocupada pela missão "${existingSeq.title}". Escolha outra ordem sequencial.`,
-        code: 'SEQUENCE_ORDER_DUPLICATE',
-      });
-      return;
+    const points = Number(p.points || (isOfficial ? 180 : 200));
+    const unlockPoints = isOfficial ? Number(p.unlockPoints || 20) : 0;
+    const completionPoints = isOfficial ? Number(p.completionPoints || 180) : points;
+    const maxSpeedBonus = isOfficial ? Number(p.maxSpeedBonus ?? 50) : 0;
+
+    const newId = `ms-${Date.now()}`;
+    db.prepare(`
+      INSERT INTO missions (
+        id, title, description, startup_id, startup_name, category,
+        points, estimated_time, status, period, completion_criteria,
+        active, qr_code_required, quiz_questions_json,
+        sequence_order, timer_minutes, unlock_points, completion_points, max_speed_bonus
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      newId,
+      p.title,
+      p.description,
+      p.startupId,
+      p.startupName,
+      p.category,
+      points,
+      p.estimatedTime || '4 min',
+      p.status || 'Disponível',
+      p.period || '24 a 26/11/2026',
+      p.completionCriteria || '',
+      p.active === false ? 0 : 1,
+      p.qrCodeRequired || null,
+      p.quizQuestions ? JSON.stringify(p.quizQuestions) : null,
+      sequenceOrder,
+      parsedTimerMinutes,
+      unlockPoints,
+      completionPoints,
+      maxSpeedBonus
+    );
+
+    // Se for oficial e ativa, compacta a sequência e recalcula os 1.000 pontos
+    if (isOfficial && p.active !== false) {
+      compactCircuitSequencesInDb(db);
+      recalculateCircuitMissionPointsInDb(db);
     }
 
-    sequenceOrder = parsedSeq;
+    db.exec('COMMIT;');
+
+    const created = db
+      .prepare('SELECT * FROM missions WHERE id = ?')
+      .get(newId) as Record<string, unknown>;
+    res.status(201).json(mapMissionRow(created));
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
   }
-
-  const parsedTimerMinutes =
-    p.timerMinutes !== null && p.timerMinutes !== undefined && p.timerMinutes !== ''
-      ? Math.max(1, Math.min(30, Math.trunc(Number(p.timerMinutes))))
-      : null;
-
-  const points = Number(p.points || (isOfficial ? 180 : 200));
-  const unlockPoints = isOfficial ? Number(p.unlockPoints || 20) : 0;
-  const completionPoints = isOfficial ? Number(p.completionPoints || 180) : points;
-  const maxSpeedBonus = isOfficial ? Number(p.maxSpeedBonus ?? 50) : 0;
-
-  const newId = `ms-${Date.now()}`;
-  db.prepare(`
-    INSERT INTO missions (
-      id, title, description, startup_id, startup_name, category,
-      points, estimated_time, status, period, completion_criteria,
-      active, qr_code_required, quiz_questions_json,
-      sequence_order, timer_minutes, unlock_points, completion_points, max_speed_bonus
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    newId,
-    p.title,
-    p.description,
-    p.startupId,
-    p.startupName,
-    p.category,
-    points,
-    p.estimatedTime || '4 min',
-    p.status || 'Disponível',
-    p.period || '24 a 26/11/2026',
-    p.completionCriteria || '',
-    p.active === false ? 0 : 1,
-    p.qrCodeRequired || null,
-    p.quizQuestions ? JSON.stringify(p.quizQuestions) : null,
-    sequenceOrder,
-    parsedTimerMinutes,
-    unlockPoints,
-    completionPoints,
-    maxSpeedBonus
-  );
-
-  const created = db
-    .prepare('SELECT * FROM missions WHERE id = ?')
-    .get(newId) as Record<string, unknown>;
-  res.status(201).json(mapMissionRow(created));
 });
 
 app.put('/api/missions/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
-  const row = db
-    .prepare('SELECT * FROM missions WHERE id = ?')
-    .get(id) as Record<string, unknown> | undefined;
-  if (!row) {
-    res.status(404).json({ error: 'Missão não encontrada' });
-    return;
-  }
-  const current = mapMissionRow(row);
-  const u = req.body;
-
-  let newSequenceOrder: number | null = current.sequenceOrder ?? null;
-  if (u.missionType === 'extra') {
-    newSequenceOrder = null;
-  } else if (
-    u.missionType === 'official' ||
-    (u.sequenceOrder !== undefined && u.sequenceOrder !== null && u.sequenceOrder !== '')
-  ) {
-    const parsedSeq = Number(u.sequenceOrder);
-    if (!Number.isInteger(parsedSeq) || parsedSeq < 1) {
-      res.status(400).json({
-        error: 'A ordem sequencial deve ser um número inteiro positivo para missões do circuito oficial.',
-        code: 'INVALID_SEQUENCE_ORDER',
-      });
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    const row = db
+      .prepare('SELECT * FROM missions WHERE id = ?')
+      .get(id) as Record<string, unknown> | undefined;
+    if (!row) {
+      db.exec('ROLLBACK;');
+      res.status(404).json({ error: 'Missão não encontrada' });
       return;
     }
-    const duplicate = db
-      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND id != ? LIMIT 1')
-      .get(parsedSeq, id) as { id: string; title: string } | undefined;
-    if (duplicate) {
-      res.status(409).json({
-        error: `A posição ${parsedSeq} já está ocupada pela missão "${duplicate.title}". Escolha outra ordem sequencial.`,
-        code: 'SEQUENCE_ORDER_DUPLICATE',
-      });
-      return;
+    const current = mapMissionRow(row);
+    const u = req.body;
+    const currentIsOfficial = current.sequenceOrder !== null && current.sequenceOrder !== undefined;
+    const isStarted = hasOfficialCircuitStartedInDb(db);
+
+    if (isStarted) {
+      if (currentIsOfficial) {
+        // Missão oficial quando o circuito já iniciou:
+        // Bloquear rebaixamento para extra
+        if (u.missionType === 'extra' || (u.sequenceOrder === null && u.missionType !== 'official')) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. Não é permitido rebaixar uma missão oficial para extra.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        // Bloquear alteração de sequence_order
+        if (
+          u.sequenceOrder !== undefined &&
+          u.sequenceOrder !== null &&
+          Number(u.sequenceOrder) !== current.sequenceOrder
+        ) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. A ordem sequencial das missões oficiais está bloqueada.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        // Bloquear ativação/desativação
+        if (u.active !== undefined && Boolean(u.active) !== Boolean(current.active)) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. Não é permitido desativar ou alterar o status ativo de missões oficiais.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        // Bloquear alteração de timer_minutes
+        if (
+          u.timerMinutes !== undefined &&
+          (u.timerMinutes === null
+            ? current.timerMinutes !== null
+            : Number(u.timerMinutes) !== current.timerMinutes)
+        ) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. O tempo do cronômetro das missões oficiais está bloqueado.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        // Bloquear alteração de critérios de conclusão
+        if (
+          u.completionCriteria !== undefined &&
+          String(u.completionCriteria).trim() !== String(current.completionCriteria).trim()
+        ) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. Os critérios de conclusão das missões oficiais estão bloqueados.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        // Bloquear alteração manual de pontos
+        if (u.points !== undefined && Number(u.points) !== current.points) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. A pontuação das missões oficiais é gerenciada dinamicamente pelo sistema.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        // Operações permitidas em missão oficial: editar apenas título e descrição
+        db.prepare(`
+          UPDATE missions
+          SET title = ?, description = ?
+          WHERE id = ?
+        `).run(
+          u.title ?? current.title,
+          u.description ?? current.description,
+          id
+        );
+
+        db.exec('COMMIT;');
+        const rows = db
+          .prepare(
+            'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+          )
+          .all() as Record<string, unknown>[];
+        res.json(rows.map(mapMissionRow));
+        return;
+      } else {
+        // Missão atual é EXTRA, com circuito oficial já iniciado
+        // Bloquear promoção de extra para oficial
+        const wantsOfficial =
+          u.missionType === 'official' ||
+          (u.sequenceOrder !== undefined && u.sequenceOrder !== null && u.sequenceOrder !== '');
+        if (wantsOfficial) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error:
+              'O circuito oficial já foi iniciado por participantes. Não é permitido promover missões extras para o circuito oficial.',
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        // Edição normal permitida para missão extra
+        const parsedTimerMinutes =
+          u.timerMinutes !== undefined
+            ? u.timerMinutes !== null && u.timerMinutes !== ''
+              ? Math.max(1, Math.min(30, Math.trunc(Number(u.timerMinutes))))
+              : null
+            : (current.timerMinutes ?? null);
+
+        db.prepare(`
+          UPDATE missions
+          SET title = ?, description = ?, startup_id = ?, startup_name = ?,
+              category = ?, points = ?, estimated_time = ?, status = ?,
+              period = ?, completion_criteria = ?, active = ?,
+              sequence_order = NULL, timer_minutes = ?
+          WHERE id = ?
+        `).run(
+          u.title ?? current.title,
+          u.description ?? current.description,
+          u.startupId ?? current.startupId,
+          u.startupName ?? current.startupName,
+          u.category ?? current.category,
+          Number(u.points ?? current.points),
+          u.estimatedTime ?? current.estimatedTime,
+          u.status ?? current.status,
+          u.period ?? current.period,
+          u.completionCriteria ?? current.completionCriteria,
+          (u.active ?? current.active) ? 1 : 0,
+          parsedTimerMinutes,
+          id
+        );
+
+        db.exec('COMMIT;');
+        const rows = db
+          .prepare(
+            'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+          )
+          .all() as Record<string, unknown>[];
+        res.json(rows.map(mapMissionRow));
+        return;
+      }
     }
-    newSequenceOrder = parsedSeq;
+
+    // Circuito AINDA NÃO iniciou (isStarted === false):
+    // Gestão estrutural normal permitida
+    let newSequenceOrder: number | null = current.sequenceOrder ?? null;
+    if (u.missionType === 'extra') {
+      newSequenceOrder = null;
+    } else if (
+      u.missionType === 'official' ||
+      (u.sequenceOrder !== undefined && u.sequenceOrder !== null && u.sequenceOrder !== '')
+    ) {
+      const parsedSeq = Number(u.sequenceOrder);
+      if (!Number.isInteger(parsedSeq) || parsedSeq < 1) {
+        db.exec('ROLLBACK;');
+        res.status(400).json({
+          error:
+            'A ordem sequencial deve ser um número inteiro positivo para missões do circuito oficial.',
+          code: 'INVALID_SEQUENCE_ORDER',
+        });
+        return;
+      }
+      const duplicate = db
+        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND id != ? LIMIT 1')
+        .get(parsedSeq, id) as { id: string; title: string } | undefined;
+      if (duplicate) {
+        db.exec('ROLLBACK;');
+        res.status(409).json({
+          error: `A posição ${parsedSeq} já está ocupada pela missão "${duplicate.title}". Escolha outra ordem sequencial.`,
+          code: 'SEQUENCE_ORDER_DUPLICATE',
+        });
+        return;
+      }
+      newSequenceOrder = parsedSeq;
+    }
+
+    const parsedTimerMinutes =
+      u.timerMinutes !== undefined
+        ? u.timerMinutes !== null && u.timerMinutes !== ''
+          ? Math.max(1, Math.min(30, Math.trunc(Number(u.timerMinutes))))
+          : null
+        : (current.timerMinutes ?? null);
+
+    const willBeActive = (u.active ?? current.active) ? 1 : 0;
+    // Se desativar uma missão oficial, zera a ordem sequencial dela
+    if (willBeActive === 0 && newSequenceOrder !== null) {
+      newSequenceOrder = null;
+    }
+
+    db.prepare(`
+      UPDATE missions
+      SET title = ?, description = ?, startup_id = ?, startup_name = ?,
+          category = ?, points = ?, estimated_time = ?, status = ?,
+          period = ?, completion_criteria = ?, active = ?,
+          sequence_order = ?, timer_minutes = ?
+      WHERE id = ?
+    `).run(
+      u.title ?? current.title,
+      u.description ?? current.description,
+      u.startupId ?? current.startupId,
+      u.startupName ?? current.startupName,
+      u.category ?? current.category,
+      Number(u.points ?? current.points),
+      u.estimatedTime ?? current.estimatedTime,
+      u.status ?? current.status,
+      u.period ?? current.period,
+      u.completionCriteria ?? current.completionCriteria,
+      willBeActive,
+      newSequenceOrder,
+      parsedTimerMinutes,
+      id
+    );
+
+    // Se qualquer missão oficial ativa estiver presente, compacta e recalcula
+    const hasOfficial = db
+      .prepare(
+        'SELECT COUNT(*) as count FROM missions WHERE active = 1 AND sequence_order IS NOT NULL'
+      )
+      .get() as { count: number };
+    if (hasOfficial.count > 0) {
+      compactCircuitSequencesInDb(db);
+      recalculateCircuitMissionPointsInDb(db);
+    }
+
+    db.exec('COMMIT;');
+    const rows = db
+      .prepare(
+        'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+      )
+      .all() as Record<string, unknown>[];
+    res.json(rows.map(mapMissionRow));
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
   }
-
-  const parsedTimerMinutes =
-    u.timerMinutes !== undefined
-      ? u.timerMinutes !== null && u.timerMinutes !== ''
-        ? Math.max(1, Math.min(30, Math.trunc(Number(u.timerMinutes))))
-        : null
-      : (current.timerMinutes ?? null);
-
-  db.prepare(`
-    UPDATE missions
-    SET title = ?, description = ?, startup_id = ?, startup_name = ?,
-        category = ?, points = ?, estimated_time = ?, status = ?,
-        period = ?, completion_criteria = ?, active = ?,
-        sequence_order = ?, timer_minutes = ?
-    WHERE id = ?
-  `).run(
-    u.title ?? current.title,
-    u.description ?? current.description,
-    u.startupId ?? current.startupId,
-    u.startupName ?? current.startupName,
-    u.category ?? current.category,
-    Number(u.points ?? current.points),
-    u.estimatedTime ?? current.estimatedTime,
-    u.status ?? current.status,
-    u.period ?? current.period,
-    u.completionCriteria ?? current.completionCriteria,
-    (u.active ?? current.active) ? 1 : 0,
-    newSequenceOrder,
-    parsedTimerMinutes,
-    id
-  );
-
-  const rows = db
-    .prepare(
-      'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
-    )
-    .all() as Record<string, unknown>[];
-  res.json(rows.map(mapMissionRow));
 });
 
 // Helper centralizado para iniciar a missão com controle de cronômetro e idempotência
 function startMissionForParticipant(participantId: string, missionId: string) {
-  ensureParticipantFirstMissionUnlockedInDb(participantId);
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    ensureParticipantFirstMissionUnlockedInDb(participantId);
 
-  const missionRow = db
-    .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
-    .get(missionId) as Record<string, unknown> | undefined;
+    const missionRow = db
+      .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
+      .get(missionId) as Record<string, unknown> | undefined;
 
-  if (!missionRow || !missionRow.active || missionRow.sequence_order === null) {
-    return {
-      ok: false,
-      httpStatus: 404,
-      errorCode: 'MISSION_NOT_FOUND',
-      error: 'Missão não encontrada ou inativa.',
-    };
-  }
+    if (!missionRow || !missionRow.active || missionRow.sequence_order === null) {
+      db.exec('ROLLBACK;');
+      return {
+        ok: false,
+        httpStatus: 404,
+        errorCode: 'MISSION_NOT_FOUND',
+        error: 'Missão não encontrada ou inativa.',
+      };
+    }
 
-  const seqOrder = Number(missionRow.sequence_order);
+    const seqOrder = Number(missionRow.sequence_order);
 
-  // Se for missão > 1, exige que a missão anterior esteja Concluída pelo participante
-  if (seqOrder > 1) {
-    const prevMission = db
-      .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-      .get(seqOrder - 1) as { id: string; title: string } | undefined;
+    // Se for missão > 1, exige que a missão anterior esteja Concluída pelo participante
+    if (seqOrder > 1) {
+      const prevMission = db
+        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
+        .get(seqOrder - 1) as { id: string; title: string } | undefined;
 
-    if (prevMission) {
-      const prevCompleteTx = db
-        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
-        .get(`COMPLETE:${participantId}:${prevMission.id}`);
-      const prevPm = db
-        .prepare(
-          'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
-        )
-        .get(participantId, prevMission.id) as { status: string } | undefined;
+      if (prevMission) {
+        const prevCompleteTx = db
+          .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+          .get(`COMPLETE:${participantId}:${prevMission.id}`);
+        const prevPm = db
+          .prepare(
+            'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+          )
+          .get(participantId, prevMission.id) as { status: string } | undefined;
 
-      const isPrevCompleted =
-        Boolean(prevCompleteTx) || (prevPm && String(prevPm.status) === 'Concluída');
-      if (!isPrevCompleted) {
-        return {
-          ok: false,
-          httpStatus: 403,
-          errorCode: 'MISSION_LOCKED',
-          error: `Missão bloqueada: conclua primeiro a Missão 0${seqOrder - 1} ("${prevMission.title}") para desbloquear esta missão.`,
-        };
+        const isPrevCompleted =
+          Boolean(prevCompleteTx) || (prevPm && String(prevPm.status) === 'Concluída');
+        if (!isPrevCompleted) {
+          db.exec('ROLLBACK;');
+          return {
+            ok: false,
+            httpStatus: 403,
+            errorCode: 'MISSION_LOCKED',
+            error: `Missão bloqueada: conclua primeiro a Missão 0${seqOrder - 1} ("${prevMission.title}") para desbloquear esta missão.`,
+          };
+        }
       }
     }
-  }
 
-  const currentPm = db
-    .prepare(
-      'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
-    )
-    .get(participantId, missionId) as Record<string, unknown> | undefined;
+    const currentPm = db
+      .prepare(
+        'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+      )
+      .get(participantId, missionId) as Record<string, unknown> | undefined;
 
-  if (currentPm && String(currentPm.status) === 'Concluída') {
+    if (currentPm && String(currentPm.status) === 'Concluída') {
+      db.exec('ROLLBACK;');
+      return {
+        ok: false,
+        httpStatus: 409,
+        errorCode: 'ALREADY_COMPLETED',
+        error: 'Esta missão já foi concluída anteriormente.',
+      };
+    }
+
+    const nowMs = Date.now();
+    const durationSeconds = currentPm?.duration_seconds
+      ? Number(currentPm.duration_seconds)
+      : getMissionConfiguredDurationSeconds(missionId);
+    const targetEndAtMs = currentPm?.target_end_at_ms
+      ? Number(currentPm.target_end_at_ms)
+      : nowMs + durationSeconds * 1000;
+
+    // Atualiza com COALESCE: se já foi iniciada, NÃO reinicia os timestamps nem a duração!
+    db.prepare(`
+      UPDATE participant_missions
+      SET status = 'Em andamento',
+          started_at_ms = COALESCE(started_at_ms, ?),
+          duration_seconds = COALESCE(duration_seconds, ?),
+          target_end_at_ms = COALESCE(target_end_at_ms, ?)
+      WHERE participant_id = ? AND mission_id = ?
+    `).run(nowMs, durationSeconds, targetEndAtMs, participantId, missionId);
+
+    const updatedPm = db
+      .prepare(
+        'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+      )
+      .get(participantId, missionId) as Record<string, unknown>;
+
+    const effectiveStartedAtMs = Number(updatedPm.started_at_ms || nowMs);
+    const effectiveDurationSeconds = Number(updatedPm.duration_seconds || durationSeconds);
+    const effectiveTargetEndAtMs = Number(updatedPm.target_end_at_ms || targetEndAtMs);
+    const elapsedSeconds = Math.max(0, Math.round((nowMs - effectiveStartedAtMs) / 1000));
+    const remainingSeconds = Math.max(0, Math.ceil((effectiveTargetEndAtMs - nowMs) / 1000));
+    const isExpired = remainingSeconds <= 0;
+    const missionMaxBonus = Number(missionRow.max_speed_bonus ?? 50);
+    const potentialSpeedBonus = isExpired
+      ? 0
+      : Math.max(
+          0,
+          Math.min(missionMaxBonus, Math.round(missionMaxBonus * (remainingSeconds / effectiveDurationSeconds)))
+        );
+
+    db.exec('COMMIT;');
+
     return {
-      ok: false,
-      httpStatus: 409,
-      errorCode: 'ALREADY_COMPLETED',
-      error: 'Esta missão já foi concluída anteriormente.',
+      ok: true,
+      httpStatus: 200,
+      data: {
+        success: true,
+        missionId,
+        status: 'Em andamento' as const,
+        startedAtMs: effectiveStartedAtMs,
+        durationSeconds: effectiveDurationSeconds,
+        targetEndAtMs: effectiveTargetEndAtMs,
+        serverTimeMs: nowMs,
+        elapsedSeconds,
+        remainingSeconds,
+        potentialSpeedBonus,
+        isExpired,
+        message: `Missão "${missionRow.title}" iniciada! Tempo de execução: ${Math.round(effectiveDurationSeconds / 60)} min.`,
+      },
     };
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
   }
-
-  const nowMs = Date.now();
-  const durationSeconds = currentPm?.duration_seconds
-    ? Number(currentPm.duration_seconds)
-    : getMissionConfiguredDurationSeconds(missionId);
-  const targetEndAtMs = currentPm?.target_end_at_ms
-    ? Number(currentPm.target_end_at_ms)
-    : nowMs + durationSeconds * 1000;
-
-  // Atualiza com COALESCE: se já foi iniciada, NÃO reinicia os timestamps nem a duração!
-  db.prepare(`
-    UPDATE participant_missions
-    SET status = 'Em andamento',
-        started_at_ms = COALESCE(started_at_ms, ?),
-        duration_seconds = COALESCE(duration_seconds, ?),
-        target_end_at_ms = COALESCE(target_end_at_ms, ?)
-    WHERE participant_id = ? AND mission_id = ?
-  `).run(nowMs, durationSeconds, targetEndAtMs, participantId, missionId);
-
-  const updatedPm = db
-    .prepare(
-      'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
-    )
-    .get(participantId, missionId) as Record<string, unknown>;
-
-  const effectiveStartedAtMs = Number(updatedPm.started_at_ms || nowMs);
-  const effectiveDurationSeconds = Number(updatedPm.duration_seconds || durationSeconds);
-  const effectiveTargetEndAtMs = Number(updatedPm.target_end_at_ms || targetEndAtMs);
-  const elapsedSeconds = Math.max(0, Math.round((nowMs - effectiveStartedAtMs) / 1000));
-  const remainingSeconds = Math.max(0, Math.ceil((effectiveTargetEndAtMs - nowMs) / 1000));
-  const isExpired = remainingSeconds <= 0;
-  const potentialSpeedBonus = isExpired
-    ? 0
-    : Math.max(
-        0,
-        Math.min(50, Math.round(50 * (remainingSeconds / effectiveDurationSeconds)))
-      );
-
-  return {
-    ok: true,
-    httpStatus: 200,
-    data: {
-      success: true,
-      missionId,
-      status: 'Em andamento' as const,
-      startedAtMs: effectiveStartedAtMs,
-      durationSeconds: effectiveDurationSeconds,
-      targetEndAtMs: effectiveTargetEndAtMs,
-      serverTimeMs: nowMs,
-      elapsedSeconds,
-      remainingSeconds,
-      potentialSpeedBonus,
-      isExpired,
-      message: `Missão "${missionRow.title}" iniciada! Tempo de execução: ${Math.round(effectiveDurationSeconds / 60)} min.`,
-    },
-  };
 }
 
 // Iniciação explícita da missão e do cronômetro (Etapa 3)
@@ -1622,6 +1858,12 @@ app.get('/api/missions/:id/timer', (req, res) => {
     )
     .get(currentParticipant.id, id) as Record<string, unknown> | undefined;
 
+  const missionRow = db
+    .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
+    .get(id) as Record<string, unknown> | undefined;
+
+  const missionMaxBonus = Number(missionRow?.max_speed_bonus ?? 50);
+
   const nowMs = Date.now();
   const durationSeconds = pm?.duration_seconds
     ? Number(pm.duration_seconds)
@@ -1637,7 +1879,7 @@ app.get('/api/missions/:id/timer', (req, res) => {
       serverTimeMs: nowMs,
       elapsedSeconds: 0,
       remainingSeconds: durationSeconds,
-      potentialSpeedBonus: 50,
+      potentialSpeedBonus: missionMaxBonus,
       speedBonusAwarded: 0,
       isExpired: false,
     });
@@ -1666,7 +1908,7 @@ app.get('/api/missions/:id/timer', (req, res) => {
     ? 0
     : isExpired
     ? 0
-    : Math.max(0, Math.min(50, Math.round(50 * (remainingSeconds / durationSeconds))));
+    : Math.max(0, Math.min(missionMaxBonus, Math.round(missionMaxBonus * (remainingSeconds / durationSeconds))));
 
   res.json({
     missionId: id,
@@ -1752,26 +1994,120 @@ app.post('/api/missions/:id/complete', (req, res) => {
 
 app.patch('/api/missions/:id/toggle', requireAdmin, (req, res) => {
   const { id } = req.params;
-  db.prepare('UPDATE missions SET active = CASE WHEN active = 1 THEN 0 ELSE 1 END WHERE id = ?').run(
-    id
-  );
-  const rows = db
-    .prepare(
-      'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
-    )
-    .all() as Record<string, unknown>[];
-  res.json(rows.map(mapMissionRow));
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    const row = db
+      .prepare('SELECT id, active, sequence_order FROM missions WHERE id = ?')
+      .get(id) as { id: string; active: number; sequence_order: number | null } | undefined;
+
+    if (!row) {
+      db.exec('ROLLBACK;');
+      res.status(404).json({ error: 'Missão não encontrada' });
+      return;
+    }
+
+    const isOfficial = row.sequence_order !== null && row.sequence_order !== undefined;
+    const isStarted = hasOfficialCircuitStartedInDb(db);
+
+    if (isStarted && isOfficial) {
+      db.exec('ROLLBACK;');
+      res.status(409).json({
+        error:
+          'O circuito oficial já foi iniciado por participantes. Não é permitido ativar ou desativar missões oficiais.',
+        code: 'CIRCUIT_LOCKED',
+      });
+      return;
+    }
+
+    const newActive = row.active === 1 ? 0 : 1;
+    // Se estiver desativando uma missão oficial antes do início, limpa a sequence_order dela
+    const newSeqOrder = newActive === 0 && isOfficial ? null : row.sequence_order;
+
+    db.prepare('UPDATE missions SET active = ?, sequence_order = ? WHERE id = ?').run(
+      newActive,
+      newSeqOrder,
+      id
+    );
+
+    // Se houver missões oficiais ativas, compacta sequências e recalcula os 1.000 pontos
+    const hasOfficial = db
+      .prepare(
+        'SELECT COUNT(*) as count FROM missions WHERE active = 1 AND sequence_order IS NOT NULL'
+      )
+      .get() as { count: number };
+    if (hasOfficial.count > 0) {
+      compactCircuitSequencesInDb(db);
+      recalculateCircuitMissionPointsInDb(db);
+    }
+
+    db.exec('COMMIT;');
+
+    const rows = db
+      .prepare(
+        'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+      )
+      .all() as Record<string, unknown>[];
+    res.json(rows.map(mapMissionRow));
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
 });
 
 app.delete('/api/missions/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
-  db.prepare('DELETE FROM missions WHERE id = ?').run(id);
-  const rows = db
-    .prepare(
-      'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
-    )
-    .all() as Record<string, unknown>[];
-  res.json(rows.map(mapMissionRow));
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    const row = db
+      .prepare('SELECT id, active, sequence_order FROM missions WHERE id = ?')
+      .get(id) as { id: string; active: number; sequence_order: number | null } | undefined;
+
+    if (!row) {
+      db.exec('ROLLBACK;');
+      res.status(404).json({ error: 'Missão não encontrada' });
+      return;
+    }
+
+    const isOfficial = row.sequence_order !== null && row.sequence_order !== undefined;
+    const isStarted = hasOfficialCircuitStartedInDb(db);
+
+    if (isStarted && isOfficial) {
+      db.exec('ROLLBACK;');
+      res.status(409).json({
+        error:
+          'O circuito oficial já foi iniciado por participantes. A exclusão de missões oficiais está bloqueada.',
+        code: 'CIRCUIT_LOCKED',
+      });
+      return;
+    }
+
+    db.prepare('DELETE FROM missions WHERE id = ?').run(id);
+
+    // Se era missão oficial antes de iniciar, compacta as remanescentes e recalcula
+    if (isOfficial) {
+      compactCircuitSequencesInDb(db);
+      const hasOfficial = db
+        .prepare(
+          'SELECT COUNT(*) as count FROM missions WHERE active = 1 AND sequence_order IS NOT NULL'
+        )
+        .get() as { count: number };
+      if (hasOfficial.count > 0) {
+        recalculateCircuitMissionPointsInDb(db);
+      }
+    }
+
+    db.exec('COMMIT;');
+
+    const rows = db
+      .prepare(
+        'SELECT * FROM missions ORDER BY CASE WHEN sequence_order IS NOT NULL THEN 0 ELSE 1 END, sequence_order ASC, rowid ASC'
+      )
+      .all() as Record<string, unknown>[];
+    res.json(rows.map(mapMissionRow));
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
 });
 
 app.get('/api/validations', requireAdmin, (_req, res) => {
@@ -1822,6 +2158,10 @@ app.post('/api/validations', (req, res) => {
     minute: '2-digit',
   });
 
+  const completionPoints = missionRow
+    ? Number(missionRow.completion_points ?? missionRow.points ?? 180)
+    : 180;
+
   db.exec('BEGIN IMMEDIATE TRANSACTION;');
   try {
     db.prepare(`
@@ -1841,7 +2181,7 @@ app.post('/api/validations', (req, res) => {
       nowStr,
       p.evidenceDescription,
       p.evidenceCode,
-      MISSION_COMPLETION_POINTS
+      completionPoints
     );
 
     db.prepare(
@@ -2282,6 +2622,8 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
 
   db.exec('BEGIN IMMEDIATE TRANSACTION;');
   try {
+    const isStarted = hasOfficialCircuitStartedInDb(db);
+
     if (body.defaultTimerMinutes !== undefined) {
       const defMin = Math.trunc(Number(body.defaultTimerMinutes));
       if (isNaN(defMin) || defMin < MIN_MISSION_TIMER_MINUTES || defMin > MAX_MISSION_TIMER_MINUTES) {
@@ -2291,6 +2633,30 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
         });
         return;
       }
+
+      if (isStarted) {
+        const settingsRowCurrent = db
+          .prepare('SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1')
+          .get() as { default_mission_timer_minutes?: number } | undefined;
+        const currentDef = Number(settingsRowCurrent?.default_mission_timer_minutes || 5);
+        if (defMin !== currentDef) {
+          const hasOfficialUsingDefault = db
+            .prepare(
+              'SELECT COUNT(*) as count FROM missions WHERE active = 1 AND sequence_order IS NOT NULL AND timer_minutes IS NULL'
+            )
+            .get() as { count: number };
+          if (hasOfficialUsingDefault.count > 0) {
+            db.exec('ROLLBACK;');
+            res.status(409).json({
+              error:
+                'O circuito oficial já foi iniciado por participantes. A alteração do tempo padrão global que afeta missões oficiais está bloqueada.',
+              code: 'CIRCUIT_LOCKED',
+            });
+            return;
+          }
+        }
+      }
+
       db.prepare(
         'UPDATE event_settings SET default_mission_timer_minutes = ? WHERE id = 1'
       ).run(defMin);
@@ -2299,14 +2665,36 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
     if (body.missionTimers && typeof body.missionTimers === 'object') {
       const updateMissionTimer = db.prepare('UPDATE missions SET timer_minutes = ? WHERE id = ?');
       for (const [mId, val] of Object.entries(body.missionTimers)) {
-        if (val === null || val === undefined || String(val) === '') {
+        const mMission = db
+          .prepare('SELECT id, sequence_order, timer_minutes FROM missions WHERE id = ?')
+          .get(mId) as
+          | { id: string; sequence_order: number | null; timer_minutes: number | null }
+          | undefined;
+        if (!mMission) continue;
+
+        const isOfficial = mMission.sequence_order !== null && mMission.sequence_order !== undefined;
+        const currentVal = mMission.timer_minutes;
+        const targetVal =
+          val === null || val === undefined || String(val) === ''
+            ? null
+            : Math.trunc(Number(val));
+
+        if (isStarted && isOfficial && targetVal !== currentVal) {
+          db.exec('ROLLBACK;');
+          res.status(409).json({
+            error: `O circuito oficial já foi iniciado por participantes. A alteração do cronômetro da missão oficial "${mId}" está bloqueada.`,
+            code: 'CIRCUIT_LOCKED',
+          });
+          return;
+        }
+
+        if (targetVal === null) {
           updateMissionTimer.run(null, mId);
         } else {
-          const numVal = Math.trunc(Number(val));
           if (
-            isNaN(numVal) ||
-            numVal < MIN_MISSION_TIMER_MINUTES ||
-            numVal > MAX_MISSION_TIMER_MINUTES
+            isNaN(targetVal) ||
+            targetVal < MIN_MISSION_TIMER_MINUTES ||
+            targetVal > MAX_MISSION_TIMER_MINUTES
           ) {
             db.exec('ROLLBACK;');
             res.status(400).json({
@@ -2314,7 +2702,7 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
             });
             return;
           }
-          updateMissionTimer.run(numVal, mId);
+          updateMissionTimer.run(targetVal, mId);
         }
       }
     }
