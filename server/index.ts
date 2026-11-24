@@ -1,6 +1,8 @@
+import './env';
 import express from 'express';
 import cors from 'cors';
 import fs from 'node:fs';
+import path from 'node:path';
 import { VALID_BRAZILIAN_DDDS } from '../src/utils/formatters';
 import {
   calculateParticipantReservedPoints,
@@ -57,8 +59,12 @@ import { createInMemoryRateLimiter } from './security/rateLimiter';
 initializeDatabase();
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3001;
+const PORT = Number(process.env.PORT) || 3002;
 let isShuttingDown = false;
+
+if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
 
 app.use((_req, res, next) => {
   if (isShuttingDown) {
@@ -4786,6 +4792,25 @@ app.put('/api/admin/governance/:id', requireAdmin, (req, res) => {
     .all() as Record<string, unknown>[];
   res.json(rows.map(mapGovernancePlanRow));
 });
+
+// Garante resposta JSON 404 para rotas /api/* inexistentes antes do fallback do frontend
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'Endpoint da API não encontrado.', code: 'API_NOT_FOUND' });
+});
+
+// Serve o frontend compilado (dist/) em produção / deploy único na Hostinger
+const DIST_DIR = path.resolve(process.cwd(), 'dist');
+const DIST_INDEX_FILE = path.join(DIST_DIR, 'index.html');
+if (fs.existsSync(DIST_INDEX_FILE)) {
+  app.use(express.static(DIST_DIR, { index: 'index.html' }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      next();
+      return;
+    }
+    res.sendFile(DIST_INDEX_FILE);
+  });
+}
 
 // Middleware global de tratamento de erros (JSON padronizado, sem exposição de stack trace ou caminhos físicos)
 app.use(

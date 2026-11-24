@@ -6,9 +6,13 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const DEFAULT_EVIDENCE_DIR = fs.existsSync(path.join(__dirname, 'schema.sql'))
+  ? path.resolve(__dirname, '../storage/evidences')
+  : path.resolve(process.cwd(), 'server/storage/evidences');
+
 export const EVIDENCE_STORAGE_DIR = process.env.DESAFIO_EVIDENCE_DIR
   ? path.resolve(process.env.DESAFIO_EVIDENCE_DIR)
-  : path.resolve(__dirname, '../storage/evidences');
+  : DEFAULT_EVIDENCE_DIR;
 export const MAX_EVIDENCE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB para fotos, prints e PDF
 export const MAX_VIDEO_EVIDENCE_SIZE_BYTES = Number(
   process.env.MAX_VIDEO_EVIDENCE_BYTES || 25 * 1024 * 1024

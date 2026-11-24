@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { DailyRankingDaySummary, DailyRankingEntry } from '../../src/types';
 
 export interface OfficialEventDayConfig {

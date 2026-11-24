@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,12 +27,16 @@ import { hashPassword } from '../security/auth';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const DB_DIR = fs.existsSync(path.join(__dirname, 'schema.sql'))
+  ? __dirname
+  : path.resolve(process.cwd(), 'server/db');
+
 export const DB_FILE_PATH = process.env.DESAFIO_DB_PATH
   ? path.resolve(process.env.DESAFIO_DB_PATH)
-  : path.join(__dirname, 'desafio_global.sqlite');
-const SCHEMA_FILE_PATH = path.join(__dirname, 'schema.sql');
+  : path.join(DB_DIR, 'desafio_global.sqlite');
+const SCHEMA_FILE_PATH = path.join(DB_DIR, 'schema.sql');
 
-export const db = new DatabaseSync(DB_FILE_PATH);
+export const db = new Database(DB_FILE_PATH);
 
 let isDatabaseClosed = false;
 
