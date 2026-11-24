@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +36,7 @@ export const DB_FILE_PATH = process.env.DESAFIO_DB_PATH
   : path.join(DB_DIR, 'desafio_global.sqlite');
 const SCHEMA_FILE_PATH = path.join(DB_DIR, 'schema.sql');
 
-export const db = new Database(DB_FILE_PATH);
+export const db = new DatabaseSync(DB_FILE_PATH);
 
 let isDatabaseClosed = false;
 

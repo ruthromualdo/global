@@ -98,7 +98,7 @@ var VALID_BRAZILIAN_DDDS = /* @__PURE__ */ new Set([
 ]);
 
 // server/db/database.ts
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import fs3 from "node:fs";
 import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -1479,7 +1479,7 @@ var __dirname2 = path3.dirname(__filename2);
 var DB_DIR = fs3.existsSync(path3.join(__dirname2, "schema.sql")) ? __dirname2 : path3.resolve(process.cwd(), "server/db");
 var DB_FILE_PATH = process.env.DESAFIO_DB_PATH ? path3.resolve(process.env.DESAFIO_DB_PATH) : path3.join(DB_DIR, "desafio_global.sqlite");
 var SCHEMA_FILE_PATH = path3.join(DB_DIR, "schema.sql");
-var db = new Database(DB_FILE_PATH);
+var db = new DatabaseSync(DB_FILE_PATH);
 var isDatabaseClosed = false;
 function closeDatabaseGracefully() {
   if (isDatabaseClosed) {
