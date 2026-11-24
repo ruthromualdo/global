@@ -144,8 +144,55 @@ export async function uploadEvidenceFileRequest(params: {
   }
 }
 
+export async function uploadEvidenceBatchRequest(params: {
+  missionId: string;
+  files: File[];
+  description?: string;
+}): Promise<{ ok: boolean; status: number; data: any; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const formData = new FormData();
+    formData.append('missionId', params.missionId);
+    if (params.description) {
+      formData.append('description', params.description);
+    }
+    for (const file of params.files) {
+      formData.append('files', file, file.name);
+    }
+
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/evidences/upload-batch`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        data: body,
+        error: body?.error || body?.message || `Erro HTTP ${response.status}`,
+      };
+    }
+    return { ok: true, status: response.status, data: body };
+  } catch {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: 'Falha de conexão ao enviar as imagens de evidência.',
+    };
+  }
+}
+
 export async function fetchAuthenticatedEvidenceBlob(
-  validationId: string
+  validationId: string,
+  fileId?: string
 ): Promise<{
   ok: boolean;
   blob?: Blob;
@@ -159,7 +206,10 @@ export async function fetchAuthenticatedEvidenceBlob(
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
-    const response = await fetch(`${API_BASE_URL}/evidences/${validationId}/file`, {
+    const endpoint = fileId
+      ? `${API_BASE_URL}/evidences/${validationId}/files/${fileId}`
+      : `${API_BASE_URL}/evidences/${validationId}/file`;
+    const response = await fetch(endpoint, {
       method: 'GET',
       headers,
     });

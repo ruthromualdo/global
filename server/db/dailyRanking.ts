@@ -185,17 +185,20 @@ export function computeLiveDailyRanking(
       mission_id: string | null;
     }[];
 
-  // Identifica transações estornadas (REVERSAL e REVERSAL_SIMULATION)
+  // Identifica transações estornadas (REVERSAL, REVERSAL_SIMULATION e REVERSAL_EVIDENCE)
   const legacyReversalKeys = new Set<string>();
-  const simulationReversedTxIds = new Set<string>();
+  const reversedTxIds = new Set<string>();
   for (const tx of txRows) {
     if (!tx.event_key) continue;
     if (tx.event_key.startsWith('REVERSAL:')) {
       legacyReversalKeys.add(tx.event_key);
-    } else if (tx.event_key.startsWith('REVERSAL_SIMULATION:')) {
+    } else if (
+      tx.event_key.startsWith('REVERSAL_SIMULATION:') ||
+      tx.event_key.startsWith('REVERSAL_EVIDENCE:')
+    ) {
       const parts = tx.event_key.split(':');
       if (parts.length >= 3) {
-        simulationReversedTxIds.add(parts.slice(2).join(':'));
+        reversedTxIds.add(parts.slice(2).join(':'));
       }
     }
   }
@@ -211,7 +214,7 @@ export function computeLiveDailyRanking(
     const delta = Number(tx.points_delta);
     if (delta <= 0) continue;
     if (tx.event_key?.startsWith('REVERSAL')) continue;
-    if (simulationReversedTxIds.has(tx.id)) continue;
+    if (reversedTxIds.has(tx.id)) continue;
     if (tx.event_key && tx.event_key.startsWith('UNLOCK:')) {
       const suffix = tx.event_key.slice('UNLOCK:'.length);
       if (legacyReversalKeys.has(`REVERSAL:${suffix}`)) continue;
@@ -245,7 +248,8 @@ export function computeLiveDailyRanking(
     }
   }
 
-  // Busca último horário real de conclusão de missão oficial no dia (janela semiaberta [start, close))
+  // Busca último horário real de conclusão de missão oficial no dia (janela semiaberta [start, close)),
+  // excluindo missões cuja evidência foi rejeitada e estornada administrativamente.
   const pmRows = targetDb
     .prepare(`
       SELECT pm.participant_id, pm.completed_at_ms
@@ -257,6 +261,14 @@ export function computeLiveDailyRanking(
         AND pm.completed_at_ms IS NOT NULL
         AND pm.completed_at_ms >= ?
         AND pm.completed_at_ms < ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM mission_completions mc
+          WHERE mc.participant_id = pm.participant_id
+            AND mc.mission_id = pm.mission_id
+            AND mc.status = 'Rejeitada'
+            AND mc.reversed_at IS NOT NULL
+        )
     `)
     .all(dayConfig.dayStartMs, dayConfig.scheduledCloseAtMs) as {
       participant_id: string;

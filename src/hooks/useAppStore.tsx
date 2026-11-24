@@ -9,15 +9,14 @@ import {
   Participant,
   PointsTransaction,
   PublicRankingEntry,
-  QRCode,
   Startup,
   UserRole,
+  WinnerHomologation,
 } from '../types';
 import { authService } from '../services/authService';
 import { participantService } from '../services/participantService';
 import { startupService } from '../services/startupService';
 import { missionService } from '../services/missionService';
-import { qrCodeService } from '../services/qrCodeService';
 import { rankingService } from '../services/rankingService';
 import { adminService } from '../services/adminService';
 import { governanceService } from '../services/governanceService';
@@ -25,25 +24,9 @@ import {
   apiRequest,
   apiRequestWithStatus,
   setAuthToken,
+  uploadEvidenceBatchRequest,
   uploadEvidenceFileRequest,
 } from '../services/apiClient';
-
-export type QRScanStatus =
-  | 'VALIDATED'
-  | 'INVALID_CODE'
-  | 'INACTIVE_CODE'
-  | 'INVALID_MISSION'
-  | 'ALREADY_USED'
-  | 'CONNECTION_ERROR';
-
-export interface QRScanResult {
-  success: boolean;
-  status: QRScanStatus;
-  alreadyUsed?: boolean;
-  message: string;
-  qrCode?: QRCode;
-  pointsAwarded?: number;
-}
 
 export interface ToastNotice {
   id: string;
@@ -65,10 +48,10 @@ interface BootstrapPayload {
   allParticipants: Participant[];
   startups: Startup[];
   missions: Mission[];
-  qrCodes: QRCode[];
   validationQueue: MissionCompletion[];
   publicRanking: PublicRankingEntry[];
   dailyRankings?: DailyRankingDaySummary[];
+  homologations?: WinnerHomologation[];
   pointsTransactions: PointsTransaction[];
   eventSettings: EventSettings;
   governancePlans: GovernancePlan[];
@@ -81,10 +64,10 @@ interface AppStoreContextValue {
   allParticipants: Participant[];
   startups: Startup[];
   missions: Mission[];
-  qrCodes: QRCode[];
   validationQueue: MissionCompletion[];
   publicRanking: PublicRankingEntry[];
   dailyRankings?: DailyRankingDaySummary[];
+  homologations?: WinnerHomologation[];
   pointsTransactions: PointsTransaction[];
   eventSettings: EventSettings;
   governancePlans: GovernancePlan[];
@@ -120,13 +103,20 @@ interface AppStoreContextValue {
     errorCode?: string;
     status?: number;
   }>;
-  submitMissionEvidence: (missionId: string, evidenceText: string) => void;
+  submitMissionEvidence: (
+    missionId: string,
+    evidenceText: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   uploadMissionEvidence: (
     missionId: string,
     file: File,
     description?: string
   ) => Promise<{ ok: boolean; error?: string }>;
-  scanQRCodeDemo: (code: string) => Promise<QRScanResult>;
+  uploadMissionEvidenceBatch: (
+    missionId: string,
+    files: File[],
+    description?: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   updateProfile: (updates: {
     name?: string;
     email?: string;
@@ -152,13 +142,22 @@ interface AppStoreContextValue {
   ) => Promise<{ ok: boolean; error?: string }>;
   toggleMissionActive: (id: string) => void;
   deleteMission: (id: string) => void;
-  createQRCode: (payload: Omit<QRCode, 'id' | 'scansCount' | 'createdAt'>) => void;
-  toggleQRCodeActive: (id: string) => void;
   reviewValidationItem: (
     id: string,
     decision: 'Aprovada' | 'Rejeitada',
     rejectionReason?: string
-  ) => void;
+  ) => Promise<{ ok: boolean; status: number; error?: string }>;
+  disqualifyParticipantAdmin: (
+    participantId: string,
+    reason: string,
+    confirmed: boolean
+  ) => Promise<{ ok: boolean; status: number; error?: string }>;
+  homologateWinnerAdmin: (payload: {
+    scope: 'GERAL' | 'DIARIO';
+    eventDate?: string | null;
+    participantId: string;
+    conferenceCompleted: boolean;
+  }) => Promise<{ ok: boolean; status: number; error?: string; homologation?: WinnerHomologation }>;
   updateParticipantStatus: (id: string, status: Participant['status']) => void;
   resetParticipantPasswordAdmin: (
     participantId: string,
@@ -205,10 +204,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [allParticipants, setAllParticipants] = useState<Participant[]>([]);
   const [startups, setStartups] = useState<Startup[]>(() => startupService.getStartups());
   const [missions, setMissions] = useState<Mission[]>(() => missionService.getMissions());
-  const [qrCodes, setQrCodes] = useState<QRCode[]>(() => qrCodeService.getQRCodes());
   const [validationQueue, setValidationQueue] = useState<MissionCompletion[]>([]);
   const [publicRanking, setPublicRanking] = useState<PublicRankingEntry[]>([]);
   const [dailyRankings, setDailyRankings] = useState<DailyRankingDaySummary[]>([]);
+  const [homologations, setHomologations] = useState<WinnerHomologation[]>([]);
   const [pointsTransactions, setPointsTransactions] = useState<PointsTransaction[]>([]);
   const [eventSettings, setEventSettings] = useState<EventSettings>(() =>
     adminService.getEventSettings()
@@ -270,10 +269,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setAllParticipants(data.allParticipants);
         setStartups(data.startups);
         setMissions(data.missions);
-        setQrCodes(data.qrCodes);
         setValidationQueue(data.validationQueue);
         setPublicRanking(data.publicRanking);
         setDailyRankings(Array.isArray(data.dailyRankings) ? data.dailyRankings : []);
+        setHomologations(Array.isArray(data.homologations) ? data.homologations : []);
         setPointsTransactions(data.pointsTransactions);
         setEventSettings(data.eventSettings);
         setGovernancePlans(data.governancePlans);
@@ -297,6 +296,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setAllParticipants([]);
       setPublicRanking([]);
       setDailyRankings([]);
+      setHomologations([]);
       setPointsTransactions([]);
       setValidationQueue([]);
       return null;
@@ -551,9 +551,14 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
   };
 
-  const submitMissionEvidence = (missionId: string, evidenceText: string) => {
+  const submitMissionEvidence = async (
+    missionId: string,
+    evidenceText: string
+  ): Promise<{ ok: boolean; error?: string }> => {
     const target = missions.find((m) => m.id === missionId);
-    if (!target) return;
+    if (!target) {
+      return { ok: false, error: 'Missão não encontrada.' };
+    }
 
     const payload = {
       participantId: participant.id,
@@ -567,17 +572,26 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       pointsAwarded: target.points,
     };
 
-    missionService.submitMissionForValidation(payload);
-    void apiRequest('/validations', {
+    const res = await apiRequestWithStatus<{ error?: string }>('/validations', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }).then(() => syncFromSqliteOrMemory());
+    });
 
-    notify(
-      'Enviado para Validação',
-      `Sua evidência para "${target.title}" entrou na fila da curadoria.`,
-      'info'
-    );
+    await syncFromSqliteOrMemory();
+
+    if (res.ok) {
+      notify(
+        'Evidência Registrada e Pontuada!',
+        `Sua evidência para "${target.title}" foi registrada, os pontos foram contabilizados e a próxima missão foi liberada (sujeita à conferência final).`,
+        'success'
+      );
+      return { ok: true };
+    }
+
+    const errorMsg =
+      res.data?.error || 'Não foi possível registrar a evidência. Verifique os dados e tente novamente.';
+    notify('Erro ao Enviar Evidência', errorMsg, 'error');
+    return { ok: false, error: errorMsg };
   };
 
   const uploadMissionEvidence = async (
@@ -591,8 +605,8 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     if (res.ok) {
       notify(
-        'Evidência Enviada',
-        `Seu arquivo para "${target?.title || 'missão'}" foi enviado e está aguardando validação administrativa.`,
+        'Evidência Registrada e Pontuada!',
+        `Evidência para "${target?.title || 'missão'}" registrada! Pontuação contabilizada e próxima missão liberada (sujeita à conferência final).`,
         'success'
       );
       return { ok: true };
@@ -603,109 +617,28 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return { ok: false, error: errorMsg };
   };
 
-  const scanQRCodeDemo = async (code: string): Promise<QRScanResult> => {
-    const normalized = (code || '').trim().toUpperCase();
-    if (!normalized) {
-      const emptyRes: QRScanResult = {
-        success: false,
-        status: 'INVALID_CODE',
-        message: 'Informe ou escaneie um código QR válido.',
-      };
-      notify('Código Inválido', emptyRes.message, 'error');
-      return emptyRes;
-    }
+  const uploadMissionEvidenceBatch = async (
+    missionId: string,
+    files: File[],
+    description?: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const target = missions.find((m) => m.id === missionId);
+    const res = await uploadEvidenceBatchRequest({ missionId, files, description });
+    await syncFromSqliteOrMemory();
 
-    // Validação definitiva no backend SQLite
-    const apiRes = await apiRequestWithStatus<{
-      success: boolean;
-      status?: QRScanStatus;
-      alreadyUsed?: boolean;
-      qrCode?: QRCode;
-      pointsAwarded?: number;
-      message?: string;
-      error?: string;
-    }>('/qrcodes/scan', {
-      method: 'POST',
-      body: JSON.stringify({ code: normalized }),
-    });
-
-    // Erro de rede / servidor indisponível
-    if (apiRes.status === 0) {
-      const connError: QRScanResult = {
-        success: false,
-        status: 'CONNECTION_ERROR',
-        message:
-          'Erro de conexão com o servidor de validação. Verifique sua conexão e tente ler o QR Code novamente.',
-      };
-      notify('Erro de Conexão', connError.message, 'error');
-      return connError;
-    }
-
-    const payload = apiRes.data;
-
-    if (apiRes.ok && payload?.success && payload.qrCode) {
-      // Sincroniza estado local e recarrega dados reais do SQLite
-      qrCodeService.validateSimulatedScan(normalized);
-      missionService.updateMissionStatus(payload.qrCode.missionId, 'Concluída');
-      const prevPoints = participant.points;
-      const updatedUser = participantService.addParticipantPoints(
-        payload.qrCode.points,
-        payload.qrCode.startupId
+    if (res.ok) {
+      notify(
+        'Evidências Registradas e Pontuadas!',
+        `As ${files.length} imagens de "${target?.title || 'missão'}" foram registradas em uma única conclusão! Pontuação contabilizada (sujeita à conferência final).`,
+        'success'
       );
-      rankingService.recordPointsTransaction({
-        participantId: updatedUser.id,
-        participantName: updatedUser.name,
-        sourceType: 'QR Code',
-        sourceTitle: `${payload.qrCode.code} — ${payload.qrCode.missionTitle}`,
-        pointsDelta: payload.qrCode.points,
-        previousBalance: prevPoints,
-        newBalance: updatedUser.points,
-      });
-
-      await syncFromSqliteOrMemory();
-
-      const successResult: QRScanResult = {
-        success: true,
-        status: 'VALIDATED',
-        qrCode: payload.qrCode,
-        pointsAwarded: payload.pointsAwarded ?? payload.qrCode.points,
-        message:
-          payload.message ||
-          `Leitura confirmada! +${payload.qrCode.points} pontos creditados pela missão "${payload.qrCode.missionTitle}".`,
-      };
-      notify('QR Code Validado!', successResult.message, 'success');
-      return successResult;
+      return { ok: true };
     }
 
-    // Código já utilizado pelo participante (HTTP 409)
-    if (apiRes.status === 409 || payload?.status === 'ALREADY_USED' || payload?.alreadyUsed) {
-      await syncFromSqliteOrMemory();
-      const usedResult: QRScanResult = {
-        success: false,
-        status: 'ALREADY_USED',
-        alreadyUsed: true,
-        qrCode: payload?.qrCode,
-        message:
-          payload?.message ||
-          `O código ${normalized} já foi utilizado por você anteriormente e os pontos já foram registrados.`,
-      };
-      notify('Código Já Utilizado', usedResult.message, 'info');
-      return usedResult;
-    }
-
-    // Código inválido, inativo ou missão inválida
-    const failStatus: QRScanStatus = payload?.status || 'INVALID_CODE';
-    const failResult: QRScanResult = {
-      success: false,
-      status: failStatus,
-      qrCode: payload?.qrCode,
-      message:
-        payload?.message ||
-        apiRes.error ||
-        `Código QR "${normalized}" inválido ou não localizado no sistema.`,
-    };
-    notify('Código Não Validado', failResult.message, 'error');
-    return failResult;
+    const errorMsg =
+      res.error || 'Não foi possível enviar as imagens de evidência. Verifique os arquivos e tente novamente.';
+    notify('Erro ao Enviar Evidências', errorMsg, 'error');
+    return { ok: false, error: errorMsg };
   };
 
   const updateProfile = async (updates: {
@@ -859,43 +792,102 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     notify('Missão Excluída', 'Missão removida do banco SQLite.', 'info');
   };
 
-  const createQRCode = (payload: Omit<QRCode, 'id' | 'scansCount' | 'createdAt'>) => {
-    const created = qrCodeService.createQRCode(payload);
-    void apiRequest('/qrcodes', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }).then(() => syncFromSqliteOrMemory());
-    notify('QR Code Gerado', `Código ${created.code} associado com sucesso.`, 'success');
-  };
-
-  const toggleQRCodeActive = (id: string) => {
-    qrCodeService.toggleQRCodeActive(id);
-    void apiRequest(`/qrcodes/${id}/toggle`, { method: 'PATCH' }).then(() =>
-      syncFromSqliteOrMemory()
-    );
-    notify('Status do QR Code', 'Estado de ativação do QR Code atualizado.', 'info');
-  };
-
-  const reviewValidationItem = (
+  const reviewValidationItem = async (
     id: string,
     decision: 'Aprovada' | 'Rejeitada',
     rejectionReason?: string
-  ) => {
+  ): Promise<{ ok: boolean; status: number; error?: string }> => {
     const target = validationQueue.find((v) => v.id === id);
-    missionService.reviewMissionValidation(id, decision);
-    void apiRequest(`/validations/${id}/review`, {
+    const res = await apiRequestWithStatus<{ error?: string }>(`/validations/${id}/review`, {
       method: 'PATCH',
       body: JSON.stringify({
         decision,
-        ...(rejectionReason ? { rejectionReason } : {}),
+        ...(rejectionReason !== undefined ? { rejectionReason } : {}),
       }),
-    }).then(() => syncFromSqliteOrMemory());
+    });
 
-    notify(
-      `Evidência ${decision}`,
-      `Submissão de ${target?.participantName || 'participante'} marcada como ${decision.toLowerCase()}.`,
-      decision === 'Aprovada' ? 'success' : 'info'
+    if (res.ok) {
+      await syncFromSqliteOrMemory();
+      notify(
+        decision === 'Aprovada' ? 'Evidência Conferida e Aprovada' : 'Evidência Rejeitada com Estorno',
+        decision === 'Aprovada'
+          ? `Evidência de ${target?.participantName || 'participante'} homologada na conferência final (sem duplicação de pontos).`
+          : `Evidência de ${target?.participantName || 'participante'} rejeitada e pontos da missão estornados automaticamente.`,
+        decision === 'Aprovada' ? 'success' : 'info'
+      );
+      return { ok: true, status: res.status };
+    }
+
+    const errorMsg =
+      res.data?.error || res.error || 'Não foi possível registrar a revisão da evidência.';
+    notify('Erro na Conferência de Evidência', errorMsg, 'error');
+    return { ok: false, status: res.status, error: errorMsg };
+  };
+
+  const disqualifyParticipantAdmin = async (
+    participantId: string,
+    reason: string,
+    confirmed: boolean
+  ): Promise<{ ok: boolean; status: number; error?: string }> => {
+    const target = allParticipants.find((p) => p.id === participantId);
+    const res = await apiRequestWithStatus<{ ok?: boolean; error?: string }>(
+      `/admin/participants/${participantId}/disqualify`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason, confirmed }),
+      }
     );
+
+    if (res.ok && res.data?.ok) {
+      await syncFromSqliteOrMemory();
+      notify(
+        'Participante Desclassificado',
+        `${target?.name || 'Participante'} foi desclassificado(a) e removido(a) da disputa competitiva. Histórico preservado.`,
+        'info'
+      );
+      return { ok: true, status: res.status };
+    }
+
+    const errorMsg =
+      res.data?.error || res.error || 'Não foi possível concluir a desclassificação.';
+    notify('Erro na Desclassificação', errorMsg, 'error');
+    return { ok: false, status: res.status, error: errorMsg };
+  };
+
+  const homologateWinnerAdmin = async (payload: {
+    scope: 'GERAL' | 'DIARIO';
+    eventDate?: string | null;
+    participantId: string;
+    conferenceCompleted: boolean;
+  }): Promise<{ ok: boolean; status: number; error?: string; homologation?: WinnerHomologation }> => {
+    const res = await apiRequestWithStatus<{
+      ok?: boolean;
+      error?: string;
+      homologation?: WinnerHomologation;
+    }>('/admin/homologations', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok && res.data?.ok) {
+      await syncFromSqliteOrMemory();
+      const hom = res.data.homologation;
+      notify(
+        'Vencedor Homologado!',
+        hom
+          ? `${hom.participantName} homologado(a) no ${
+              hom.scope === 'GERAL' ? 'Ranking Geral' : `Ranking Diário (${hom.eventDate})`
+            } com ${hom.points} pts.`
+          : 'Homologação registrada com sucesso.',
+        'success'
+      );
+      return { ok: true, status: res.status, homologation: hom };
+    }
+
+    const errorMsg =
+      res.data?.error || res.error || 'Não foi possível registrar a homologação do vencedor.';
+    notify('Erro na Homologação', errorMsg, 'error');
+    return { ok: false, status: res.status, error: errorMsg };
   };
 
   const updateParticipantStatus = (id: string, status: Participant['status']) => {
@@ -989,10 +981,10 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         allParticipants,
         startups,
         missions,
-        qrCodes,
         validationQueue,
         publicRanking,
         dailyRankings,
+        homologations,
         pointsTransactions,
         eventSettings,
         governancePlans,
@@ -1012,7 +1004,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         startMission,
         submitMissionEvidence,
         uploadMissionEvidence,
-        scanQRCodeDemo,
+        uploadMissionEvidenceBatch,
         updateProfile,
         updateImagePublicityConsent,
         createStartup,
@@ -1023,9 +1015,9 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         updateMission,
         toggleMissionActive,
         deleteMission,
-        createQRCode,
-        toggleQRCodeActive,
         reviewValidationItem,
+        disqualifyParticipantAdmin,
+        homologateWinnerAdmin,
         updateParticipantStatus,
         resetParticipantPasswordAdmin,
         adjustParticipantPointsAdmin,

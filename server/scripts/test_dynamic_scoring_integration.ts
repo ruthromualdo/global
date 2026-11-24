@@ -88,6 +88,8 @@ function createTestDatabase(): DatabaseSync {
       completion_criteria TEXT NOT NULL DEFAULT 'Ler QR Code',
       active INTEGER NOT NULL DEFAULT 1,
       sequence_order INTEGER,
+      track_id TEXT,
+      relative_weight INTEGER NOT NULL DEFAULT 10,
       timer_minutes INTEGER DEFAULT 5,
       unlock_points INTEGER,
       completion_points INTEGER,
@@ -594,7 +596,10 @@ runTest('4. Bônus de velocidade calcula proporção sobre max_speed_bonus dinâ
   // Conclui M3 com 25% do tempo gasto (75% restante, elapsedRatio = 0.25) -> round(66 * 0.75) = round(49.5) = 50 pts
   const res3 = completeMissionInTest(db, 'p1', 'm3', 0.25);
   assert(res3.awardedSpeedBonus === 50, `Bônus proporcional esperado 50, obteve ${res3.awardedSpeedBonus}`);
-  assert(res3.awardedSpeedBonus <= 66, 'Bônus nunca deve exceder max_speed_bonus');
+  assert(
+    typeof res3.awardedSpeedBonus === 'number' && res3.awardedSpeedBonus <= 66,
+    'Bônus nunca deve exceder max_speed_bonus'
+  );
 });
 
 // ============================================================================

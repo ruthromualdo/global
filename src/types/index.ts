@@ -28,7 +28,7 @@ export type MissionStatus =
   | 'Concluída'
   | 'Bloqueada';
 
-export type ParticipantStatus = 'Ativo' | 'Pendente' | 'Inativo';
+export type ParticipantStatus = 'Ativo' | 'Pendente' | 'Inativo' | 'Desclassificado';
 export type UserRole = 'PARTICIPANT' | 'ADMIN';
 
 export interface Participant {
@@ -45,6 +45,9 @@ export interface Participant {
   visitedStartupsIds: string[];
   registeredAt: string;
   status: ParticipantStatus;
+  disqualifiedAt?: string | null;
+  disqualifiedBy?: string | null;
+  disqualificationReason?: string | null;
   privacyPreferences: {
     showNicknameInPublicRanking: boolean;
     allowActivityNotifications: boolean;
@@ -114,9 +117,22 @@ export interface Mission {
   serverTimeMs?: number;
   requiresEvidence?: boolean;
   evidenceType?: EvidenceRequirementType;
+  requiredEvidenceCount?: number;
   maxVideoSeconds?: number | null;
   allowSharedEvidence?: boolean;
   externalLink?: string;
+}
+
+export interface EvidenceFileItem {
+  id: string;
+  completionId: string;
+  fileOrder: number;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  durationSeconds?: number | null;
+  createdAt?: string;
+  url: string;
 }
 
 export interface MissionCompletion {
@@ -135,12 +151,41 @@ export interface MissionCompletion {
   evidenceSizeBytes?: number;
   evidenceDurationSeconds?: number | null;
   rejectionReason?: string | null;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  reversedPoints?: number;
+  reversedAt?: string | null;
+  trackId?: string | null;
   sharedEvidenceCount?: number;
   participantImageConsent?: boolean;
   participantImageConsentVersion?: string | null;
   hasFile?: boolean;
+  evidenceFiles?: EvidenceFileItem[];
   pointsAwarded: number;
   status: 'Pendente' | 'Aprovada' | 'Rejeitada';
+}
+
+export interface WinnerHomologation {
+  id: string;
+  scope: 'GERAL' | 'DIARIO';
+  eventDate: string | null;
+  participantId: string;
+  participantName: string;
+  points: number;
+  rankingPosition: number;
+  evidenceSummary: {
+    total: number;
+    approved: number;
+    pending: number;
+    rejected: number;
+  };
+  dataFingerprint: string;
+  homologatedBy: string;
+  homologatedAt: string;
+  homologatedAtMs: number;
+  status: 'Homologado' | 'Invalidado';
+  invalidatedReason?: string | null;
+  invalidatedAt?: string | null;
 }
 
 export interface PointsTransaction {

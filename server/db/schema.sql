@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS participants (
   is_current_session INTEGER NOT NULL DEFAULT 0,
   image_publicity_consent INTEGER NOT NULL DEFAULT 0,
   image_publicity_consent_updated_at TEXT,
-  image_publicity_consent_version TEXT
+  image_publicity_consent_version TEXT,
+  disqualified_at TEXT,
+  disqualified_by TEXT,
+  disqualification_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_participants_points ON participants(points DESC);
@@ -85,6 +88,7 @@ CREATE TABLE IF NOT EXISTS missions (
   quiz_questions_json TEXT,
   requires_evidence INTEGER NOT NULL DEFAULT 0,
   evidence_type TEXT,
+  required_evidence_count INTEGER NOT NULL DEFAULT 1,
   max_video_seconds INTEGER,
   allow_shared_evidence INTEGER NOT NULL DEFAULT 0,
   is_surprise INTEGER NOT NULL DEFAULT 0,
@@ -131,9 +135,32 @@ CREATE TABLE IF NOT EXISTS mission_completions (
   evidence_sha256 TEXT,
   evidence_duration_seconds INTEGER,
   rejection_reason TEXT,
+  reviewed_by TEXT,
+  reviewed_at TEXT,
+  reversed_points INTEGER NOT NULL DEFAULT 0,
+  reversed_at TEXT,
   points_awarded INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Pendente'
 );
+
+CREATE TABLE IF NOT EXISTS mission_completion_files (
+  id TEXT PRIMARY KEY,
+  completion_id TEXT NOT NULL,
+  file_order INTEGER NOT NULL DEFAULT 1,
+  file_name TEXT NOT NULL,
+  stored_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  duration_seconds INTEGER,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (completion_id) REFERENCES mission_completions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_mission_completion_files_completion
+  ON mission_completion_files(completion_id, file_order);
+CREATE INDEX IF NOT EXISTS idx_mission_completion_files_sha256
+  ON mission_completion_files(sha256);
 
 CREATE TABLE IF NOT EXISTS qr_codes (
   id TEXT PRIMARY KEY,
@@ -170,8 +197,34 @@ CREATE TABLE IF NOT EXISTS points_transactions (
   created_at TEXT NOT NULL,
   created_at_ms INTEGER,
   event_key TEXT,
-  mission_id TEXT
+  mission_id TEXT,
+  source_completion_id TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_points_tx_unique_reversal_evidence
+  ON points_transactions(event_key)
+  WHERE event_key LIKE 'REVERSAL_EVIDENCE:%';
+
+CREATE TABLE IF NOT EXISTS winner_homologations (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL CHECK (scope IN ('GERAL', 'DIARIO')),
+  event_date TEXT,
+  participant_id TEXT NOT NULL,
+  participant_name TEXT NOT NULL,
+  points INTEGER NOT NULL,
+  ranking_position INTEGER NOT NULL,
+  evidence_summary_json TEXT NOT NULL,
+  data_fingerprint TEXT NOT NULL,
+  homologated_by TEXT NOT NULL,
+  homologated_at TEXT NOT NULL,
+  homologated_at_ms INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Homologado' CHECK (status IN ('Homologado', 'Invalidado')),
+  invalidated_reason TEXT,
+  invalidated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_winner_homologations_scope
+  ON winner_homologations(scope, event_date, status);
 
 CREATE TABLE IF NOT EXISTS daily_ranking_closures (
   event_date TEXT PRIMARY KEY,

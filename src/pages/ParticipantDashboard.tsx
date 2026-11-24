@@ -1,10 +1,10 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import {
+  AlertCircle,
   CheckCircle2,
   Clock,
   Compass,
-  QrCode,
   Sparkles,
   Trophy,
   Zap,
@@ -15,7 +15,13 @@ import { GlobalPointsIndicator } from '../components/GlobalPointsIndicator';
 import { formatPoints } from '../utils/formatters';
 
 export const ParticipantDashboard: React.FC = () => {
-  const { participant, missions, publicRanking } = useAppStore();
+  const {
+    participant,
+    missions,
+    publicRanking,
+    homologations = [],
+    validationQueue = [],
+  } = useAppStore();
 
   const activeMissions = missions.filter((m) => m.active);
   const completedMissionsCount = participant.completedMissionsCount;
@@ -25,13 +31,22 @@ export const ParticipantDashboard: React.FC = () => {
   const recommendedMission = availableMissions[0] || activeMissions[0];
 
   const isAdminUser = String(participant.role || '').toUpperCase() === 'ADMIN';
+  const isDisqualifiedUser = participant.status === 'Desclassificado';
+  const hasGeneralHomologation = homologations.some(
+    (h) => h.scope === 'GERAL' && h.status === 'Homologado'
+  );
+  const rejectedEvidencesCount = !isAdminUser
+    ? validationQueue.filter(
+        (v) => v.participantId === participant.id && v.status === 'Rejeitada'
+      ).length
+    : 0;
   const currentRankingEntry =
-    !isAdminUser && participant.id
+    !isAdminUser && !isDisqualifiedUser && participant.id
       ? publicRanking.find((r) => r.isCurrentUser || r.participantId === participant.id)
       : undefined;
   const displayRank = currentRankingEntry
     ? currentRankingEntry.position
-    : !isAdminUser && publicRanking.length > 0 && participant.rankingPosition > 0
+    : !isAdminUser && !isDisqualifiedUser && publicRanking.length > 0 && participant.rankingPosition > 0
     ? participant.rankingPosition
     : null;
 
@@ -62,6 +77,45 @@ export const ParticipantDashboard: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      {/* Aviso de conta desclassificada */}
+      {isDisqualifiedUser && (
+        <div className="tutu-card p-4 sm:px-5 border-2 border-red-400/60 bg-red-500/15 flex items-start gap-3 text-xs text-red-100">
+          <AlertCircle className="w-5 h-5 text-red-300 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <strong className="text-red-200 block text-sm">
+              Conta Desclassificada Administrativamente
+            </strong>
+            <p className="leading-relaxed">
+              Sua participação competitiva foi encerrada pela organização. Novas missões e envios de evidência estão bloqueados, mas seu histórico permanece disponível para consulta.
+              {participant.disqualificationReason
+                ? ` Motivo registrado: ${participant.disqualificationReason}`
+                : ''}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Aviso de evidência rejeitada / pontos estornados */}
+      {!isDisqualifiedUser && rejectedEvidencesCount > 0 && (
+        <div className="tutu-card p-4 sm:px-5 border border-amber-400/50 bg-amber-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-start gap-2.5 text-amber-100">
+            <AlertCircle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+            <p className="leading-relaxed">
+              <strong className="text-amber-200">
+                {rejectedEvidencesCount} evidência(s) rejeitada(s) na conferência administrativa:
+              </strong>{' '}
+              os pontos correspondentes foram estornados. Consulte o histórico na Central de Missões para ver os detalhes.
+            </p>
+          </div>
+          <Link
+            to="/app/missoes"
+            className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-amber-500/20 border border-amber-400/50 text-amber-100 font-bold inline-flex items-center justify-center shrink-0"
+          >
+            Ver detalhes
+          </Link>
+        </div>
+      )}
 
       {/* Aviso discreto de complementação cadastral para participantes sem telefone */}
       {!participant.phone && (
@@ -108,10 +162,26 @@ export const ParticipantDashboard: React.FC = () => {
                 Contas administrativas não entram no ranking
               </span>
             </>
+          ) : isDisqualifiedUser ? (
+            <>
+              <p className="font-display font-bold text-lg sm:text-xl text-red-300 pt-1">
+                Desclassificado
+              </p>
+              <span className="text-[11px] text-red-200/80 block">
+                Conta removida da disputa competitiva
+              </span>
+            </>
           ) : (
-            <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
-              {displayRank !== null ? `#${displayRank}` : '—'}
-            </p>
+            <>
+              <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
+                {displayRank !== null ? `#${displayRank}` : '—'}
+              </p>
+              <span className="text-[11px] text-tutu-light/65 block">
+                {hasGeneralHomologation
+                  ? 'Ranking homologado'
+                  : 'Provisório • sujeito à conferência'}
+              </span>
+            </>
           )}
           <Link to="/app/ranking" className="text-[11px] text-tutu-lime hover:underline block py-0.5">
             Ver ranking →
@@ -166,17 +236,6 @@ export const ParticipantDashboard: React.FC = () => {
             <span className="text-xs text-tutu-light/70">
               Critério: {recommendedMission.completionCriteria}
             </span>
-            {recommendedMission.qrCodeRequired && (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
-                <Link
-                  to={`/app/escanear?code=${recommendedMission.qrCodeRequired}`}
-                  className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-1.5"
-                >
-                  <QrCode className="w-4 h-4 shrink-0" />
-                  <span>Validar QR ({recommendedMission.qrCodeRequired})</span>
-                </Link>
-              </div>
-            )}
           </div>
         </div>
       )}

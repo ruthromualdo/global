@@ -19,7 +19,6 @@ import {
   Loader2,
   Paperclip,
   Play,
-  QrCode,
   Send,
   Sparkles,
   Trophy,
@@ -28,7 +27,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
-import { EvidenceRequirementType, Mission, MissionCompletion } from '../types';
+import { EvidenceFileItem, EvidenceRequirementType, Mission, MissionCompletion } from '../types';
 import { CategoryPill, MissionStatusBadge } from '../components/UI';
 import { MissionTimer } from '../components/MissionTimer';
 import { formatPoints } from '../utils/formatters';
@@ -83,12 +82,14 @@ function getEvidenceAcceptAttr(type?: EvidenceRequirementType): string {
 export const MissionsCenterPage: React.FC = () => {
   const {
     participant,
+    startups,
     missions,
     validationQueue,
     startMission,
     completeMissionInstant,
     submitMissionEvidence,
     uploadMissionEvidence,
+    uploadMissionEvidenceBatch,
     notify,
   } = useAppStore();
   const navigate = useNavigate();
@@ -114,6 +115,9 @@ export const MissionsCenterPage: React.FC = () => {
   const [evidenceText, setEvidenceText] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [selectedBatchFiles, setSelectedBatchFiles] = useState<
+    Array<{ file: File; previewUrl: string }>
+  >([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
   const [startingMissionId, setStartingMissionId] = useState<string | null>(null);
@@ -137,16 +141,22 @@ export const MissionsCenterPage: React.FC = () => {
     if (filePreviewUrl) {
       URL.revokeObjectURL(filePreviewUrl);
     }
+    selectedBatchFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setFilePreviewUrl(null);
     setSelectedFile(null);
+    setSelectedBatchFiles([]);
     setUploadError(null);
     setEvidenceText('');
     setEvidenceMission(null);
   };
 
-  const handleOpenOwnEvidence = async (submission: MissionCompletion) => {
-    setLoadingEvidenceId(submission.id);
-    const res = await fetchAuthenticatedEvidenceBlob(submission.id);
+  const handleOpenOwnEvidence = async (
+    submission: MissionCompletion,
+    fileItem?: EvidenceFileItem
+  ) => {
+    const loadKey = fileItem ? `${submission.id}:${fileItem.id}` : submission.id;
+    setLoadingEvidenceId(loadKey);
+    const res = await fetchAuthenticatedEvidenceBlob(submission.id, fileItem?.id);
     setLoadingEvidenceId(null);
 
     if (!res.ok || !res.blob) {
@@ -158,8 +168,8 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    const mime = res.mimeType || submission.evidenceMimeType || '';
-    const fileName = res.fileName || submission.evidenceFileName || 'evidencia';
+    const mime = res.mimeType || fileItem?.mimeType || submission.evidenceMimeType || '';
+    const fileName = res.fileName || fileItem?.fileName || submission.evidenceFileName || 'evidencia';
     const blobUrl = URL.createObjectURL(res.blob);
 
     if (mime.startsWith('image/')) {
@@ -174,6 +184,78 @@ export const MissionsCenterPage: React.FC = () => {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  };
+
+  const validateImageForBatch = (file: File): string | null => {
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    if (!['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
+      return `Arquivo "${file.name}" inválido: envie somente imagens nos formatos JPG, JPEG, PNG ou WEBP.`;
+    }
+    if (file.size > MAX_EVIDENCE_BYTES) {
+      return `Arquivo "${file.name}" ultrapassa o limite máximo de 5 MB por imagem.`;
+    }
+    return null;
+  };
+
+  const handleSelectBatchEvidenceFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (incoming.length === 0) return;
+
+    const requiredCount = Math.max(1, Number(evidenceMission?.requiredEvidenceCount || 1));
+    setUploadError(null);
+
+    if (selectedBatchFiles.length + incoming.length > requiredCount) {
+      setUploadError(
+        `Selecione exatamente ${requiredCount} imagens no total (você já selecionou ${selectedBatchFiles.length} e tentou adicionar ${incoming.length}).`
+      );
+      return;
+    }
+
+    for (const file of incoming) {
+      const err = validateImageForBatch(file);
+      if (err) {
+        setUploadError(err);
+        return;
+      }
+    }
+
+    const added = incoming.map((file) => ({
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+    setSelectedBatchFiles((prev) => [...prev, ...added]);
+  };
+
+  const handleRemoveBatchFile = (index: number) => {
+    setUploadError(null);
+    setSelectedBatchFiles((prev) => {
+      const target = prev[index];
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((_, idx) => idx !== index);
+    });
+  };
+
+  const handleReplaceBatchFile = (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    e.target.value = '';
+    if (!file) return;
+
+    const err = validateImageForBatch(file);
+    if (err) {
+      setUploadError(err);
+      return;
+    }
+
+    setUploadError(null);
+    const nextPreview = URL.createObjectURL(file);
+    setSelectedBatchFiles((prev) =>
+      prev.map((item, idx) => {
+        if (idx !== index) return item;
+        URL.revokeObjectURL(item.previewUrl);
+        return { file, previewUrl: nextPreview };
+      })
+    );
   };
 
   const handleSelectEvidenceFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -257,16 +339,43 @@ export const MissionsCenterPage: React.FC = () => {
   const isAllCompleted =
     sequentialMissions.length > 0 &&
     sequentialMissions.every((m) => m.status === 'Concluída');
+  const isEntireEventCompleted =
+    allOfficialMissions.length > 0 &&
+    allOfficialMissions.every((m) => m.status === 'Concluída');
   const completedMissions = sequentialMissions.filter((m) => m.status === 'Concluída');
+
+  // Nome oficial dinâmico da startup associada às missões concluídas da trilha atual
+  const activeTrackStartupName = (() => {
+    const refMission = sequentialMissions[0];
+    if (!refMission) return '';
+    if (refMission.trackId === 'bonus') {
+      return refMission.startupName;
+    }
+    const matchedStartup = startups.find((s) => s.id === refMission.startupId);
+    return matchedStartup?.name || refMission.startupName;
+  })();
   const getOwnSubmissionForMission = (missionId: string): MissionCompletion | undefined =>
     validationQueue.find(
       (v) => v.missionId === missionId && v.participantId === participant.id
     );
+  const isDisqualifiedUser = participant.status === 'Desclassificado';
+  const rejectedSubmissions = validationQueue.filter(
+    (v) => v.participantId === participant.id && v.status === 'Rejeitada'
+  );
   const currentMissionSubmission = currentMission
     ? getOwnSubmissionForMission(currentMission.id)
     : undefined;
 
   const handleActionClick = async (mission: Mission) => {
+    if (isDisqualifiedUser) {
+      notify(
+        'Conta Desclassificada',
+        'Sua conta foi desclassificada administrativamente e não pode realizar novas ações competitivas.',
+        'error'
+      );
+      return;
+    }
+
     if (mission.status === 'Bloqueada') {
       notify(
         'Missão Bloqueada',
@@ -334,7 +443,9 @@ export const MissionsCenterPage: React.FC = () => {
         URL.revokeObjectURL(filePreviewUrl);
         setFilePreviewUrl(null);
       }
+      selectedBatchFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl));
       setSelectedFile(null);
+      setSelectedBatchFiles([]);
       setUploadError(null);
       setEvidenceText('');
       setEvidenceMission(mission);
@@ -350,11 +461,6 @@ export const MissionsCenterPage: React.FC = () => {
     if (mission.category === 'Compartilhamento') {
       setEvidenceText('');
       setEvidenceMission(mission);
-      return;
-    }
-
-    if (mission.qrCodeRequired) {
-      navigate(`/app/escanear?code=${mission.qrCodeRequired}`);
       return;
     }
 
@@ -388,6 +494,32 @@ export const MissionsCenterPage: React.FC = () => {
     if (!evidenceMission) return;
 
     if (evidenceMission.requiresEvidence && evidenceMission.evidenceType !== 'text') {
+      const requiredCount = Math.max(1, Number(evidenceMission.requiredEvidenceCount || 1));
+
+      if (requiredCount > 1) {
+        if (selectedBatchFiles.length !== requiredCount) {
+          setUploadError(
+            `Selecione exatamente ${requiredCount} imagens antes de enviar (${selectedBatchFiles.length} de ${requiredCount} selecionadas).`
+          );
+          return;
+        }
+        setIsUploadingEvidence(true);
+        setUploadError(null);
+        const res = await uploadMissionEvidenceBatch(
+          evidenceMission.id,
+          selectedBatchFiles.map((item) => item.file),
+          evidenceText.trim() || undefined
+        );
+        setIsUploadingEvidence(false);
+
+        if (res.ok) {
+          resetEvidenceModal();
+        } else {
+          setUploadError(res.error || 'Falha ao enviar as imagens de evidência.');
+        }
+        return;
+      }
+
       if (!selectedFile) {
         setUploadError('Selecione um arquivo válido antes de enviar sua evidência.');
         return;
@@ -414,8 +546,16 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    submitMissionEvidence(evidenceMission.id, evidenceText.trim());
-    resetEvidenceModal();
+    setIsUploadingEvidence(true);
+    setUploadError(null);
+    const res = await submitMissionEvidence(evidenceMission.id, evidenceText.trim());
+    setIsUploadingEvidence(false);
+
+    if (res.ok) {
+      resetEvidenceModal();
+    } else {
+      setUploadError(res.error || 'Falha ao enviar evidência.');
+    }
   };
 
   return (
@@ -443,12 +583,75 @@ export const MissionsCenterPage: React.FC = () => {
         <div className="px-3.5 py-2 rounded-xl bg-tutu-secondary/25 border border-tutu-secondary/50 text-xs text-tutu-light/85 flex items-center gap-2 self-start sm:self-auto shrink-0">
           <Sparkles className="w-4 h-4 text-tutu-lime shrink-0" />
           <span>
-            {isAllCompleted
+            {isEntireEventCompleted
               ? 'Circuito 100% Concluído'
+              : isAllCompleted
+              ? `${activeTrackStartupName || 'Etapa'} Concluída`
               : `Missão ${currentMission?.sequenceOrder || (completedMissions.length + 1)} de ${sequentialMissions.length}`}
           </span>
         </div>
       </div>
+
+      {/* Alerta de conta desclassificada */}
+      {isDisqualifiedUser && (
+        <div className="tutu-card p-5 border-2 border-red-400/60 bg-red-500/15 flex items-start gap-3 text-xs text-red-100">
+          <AlertCircle className="w-5 h-5 text-red-300 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <strong className="text-red-200 block text-sm">
+              Conta Desclassificada Administrativamente
+            </strong>
+            <p className="leading-relaxed">
+              Sua conta está impedida de iniciar novas missões, enviar evidências ou acumular pontos competitivos. Seu histórico permanece preservado para consulta.
+            </p>
+            {participant.disqualificationReason && (
+              <p className="text-red-200 font-medium">
+                Motivo registrado: {participant.disqualificationReason}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Alerta consolidado de evidências rejeitadas e estornadas */}
+      {!isDisqualifiedUser && rejectedSubmissions.length > 0 && (
+        <div className="tutu-card p-4 sm:p-5 border border-red-400/45 bg-red-500/10 space-y-2.5 text-xs">
+          <div className="flex items-start gap-2.5 text-red-100">
+            <AlertCircle className="w-4 h-4 text-red-300 shrink-0 mt-0.5" />
+            <div className="space-y-1 min-w-0">
+              <strong className="text-red-200 block">
+                {rejectedSubmissions.length} evidência(s) rejeitada(s) na conferência administrativa
+              </strong>
+              <p className="text-red-100/85 leading-relaxed">
+                Os pontos correspondentes foram estornados automaticamente, preservando suas demais missões válidas.
+              </p>
+            </div>
+          </div>
+          <div className="space-y-1.5 pl-6">
+            {rejectedSubmissions.map((sub) => (
+              <div
+                key={sub.id}
+                className="p-2.5 rounded-lg bg-tutu-dark/70 border border-red-400/30 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5"
+              >
+                <div className="min-w-0">
+                  <span className="font-semibold text-tutu-light block truncate">
+                    {sub.missionTitle}
+                  </span>
+                  {sub.rejectionReason && (
+                    <span className="text-[11px] text-red-200/90 block">
+                      Motivo: {sub.rejectionReason}
+                    </span>
+                  )}
+                </div>
+                {typeof sub.reversedPoints === 'number' && sub.reversedPoints > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-200 border border-red-400/40 text-[10px] font-bold shrink-0 self-start sm:self-auto">
+                    Estornado: -{formatPoints(sub.reversedPoints)}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Seletor das 4 Trilhas Independentes (Catálogo Oficial 2026) */}
       {hasMultiTracks && (
@@ -553,25 +756,53 @@ export const MissionsCenterPage: React.FC = () => {
         </div>
       </div>
 
-      {/* CASO 1: CIRCUITO 100% CONCLUÍDO */}
+      {/* CASO 1: TRILHA/STARTUP CONCLUÍDA (OU CIRCUITO COMPLETO SE TODAS AS 14 MISSÕES ESTIVEREM CONCLUÍDAS) */}
       {isAllCompleted ? (
         <div className="tutu-card p-6 sm:p-10 text-center space-y-5 sm:space-y-6 border-2 border-tutu-lime bg-tutu-secondary/30 shadow-2xl">
           <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-3xl bg-tutu-lime/20 border-2 border-tutu-lime flex items-center justify-center text-tutu-lime mx-auto shadow-lg">
             <Trophy className="w-8 h-8 sm:w-10 sm:h-10" />
           </div>
 
-          <div className="space-y-2 max-w-2xl mx-auto">
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
-              <Crown className="w-3.5 h-3.5 shrink-0" />
-              <span>Circuito Oficial Completo</span>
+          {isEntireEventCompleted ? (
+            <div className="space-y-2 max-w-2xl mx-auto">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
+                <Crown className="w-3.5 h-3.5 shrink-0" />
+                <span>Circuito Oficial Completo</span>
+              </div>
+              <h2 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
+                Parabéns! Você concluiu todas as missões oficiais!
+              </h2>
+              <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
+                Você completou com sucesso toda a jornada do Desafio Global Summit 2026. Todos os pontos conquistados foram contabilizados no seu saldo oficial.
+              </p>
             </div>
-            <h2 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
-              Parabéns! Você concluiu todas as missões oficiais!
-            </h2>
-            <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
-              Você completou com sucesso a jornada pelas startups expositoras do circuito oficial. Todos os pontos de conclusão e bônus de velocidade foram contabilizados no seu saldo oficial.
-            </p>
-          </div>
+          ) : (
+            <div className="space-y-3 max-w-2xl mx-auto">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
+                <Crown className="w-3.5 h-3.5 shrink-0" />
+                <span>Sua jornada no Desafio Global continua!</span>
+              </div>
+              <h2 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
+                {selectedTrackId === 'bonus'
+                  ? 'Parabéns! Você concluiu as Missões Bônus!'
+                  : `Parabéns! Você concluiu as missões da ${activeTrackStartupName}!`}
+              </h2>
+              <div className="space-y-2 text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
+                <p>
+                  Você completou todos os desafios desta startup e conquistou os pontos correspondentes.
+                </p>
+                <p className="font-semibold text-tutu-lime">
+                  Mas a jornada ainda não acabou!
+                </p>
+                <p>
+                  Existem outras startups expositoras com missões esperando por você. Continue explorando, participando dos desafios e acumulando pontos!
+                </p>
+              </div>
+              <p className="text-xs sm:text-sm font-display font-bold text-tutu-lime pt-1">
+                Sua jornada no Desafio Global continua!
+              </p>
+            </div>
+          )}
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
             <Link
@@ -630,19 +861,7 @@ export const MissionsCenterPage: React.FC = () => {
             </div>
 
             {/* Recompensas e Informações */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 sm:p-4 rounded-2xl bg-tutu-dark/80 border border-tutu-secondary/50 text-xs">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-tutu-lime/15 text-tutu-lime flex items-center justify-center shrink-0 border border-tutu-lime/30">
-                  <Zap className="w-4 h-4 fill-tutu-lime" />
-                </div>
-                <div>
-                  <span className="text-[11px] text-tutu-light/65 block">Pontuação de Conclusão</span>
-                  <span className="font-display font-bold text-sm text-tutu-lime">
-                    +{formatPoints(currentMission.completionPoints ?? currentMission.points)}
-                  </span>
-                </div>
-              </div>
-
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 sm:p-4 rounded-2xl bg-tutu-dark/80 border border-tutu-secondary/50 text-xs">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-tutu-blue/20 text-tutu-light flex items-center justify-center shrink-0 border border-tutu-blue/40">
                   <Sparkles className="w-4 h-4 text-tutu-lime" />
@@ -709,7 +928,7 @@ export const MissionsCenterPage: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-xs text-tutu-light/80 leading-relaxed">
-                  Envie o comprovante exigido para análise administrativa. Os pontos desta missão serão liberados após a aprovação da sua evidência.
+                  Ao enviar a evidência exigida, seus pontos são contabilizados imediatamente e a próxima missão da trilha é liberada. A evidência permanece registrada para conferência final pela organização.
                 </p>
 
                 {currentMissionSubmission && (
@@ -788,15 +1007,24 @@ export const MissionsCenterPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void handleActionClick(currentMission)}
-                disabled={startingMissionId === currentMission.id}
+                disabled={isDisqualifiedUser || startingMissionId === currentMission.id}
                 className={`min-h-[48px] w-full sm:w-auto px-6 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shrink-0 transition-all shadow-md disabled:opacity-60 ${
-                  currentMission.status === 'Em andamento'
+                  isDisqualifiedUser
+                    ? 'bg-red-500/20 text-red-200 border border-red-400/40 cursor-not-allowed'
+                    : currentMission.status === 'Em andamento'
                     ? 'btn-tutu-lime'
                     : currentMission.status === 'Aguardando validação'
                     ? 'bg-tutu-secondary/40 text-tutu-light border border-tutu-secondary/60'
                     : 'btn-tutu-lime'
                 }`}
               >
+                {isDisqualifiedUser ? (
+                  <>
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>Conta Desclassificada</span>
+                  </>
+                ) : (
+                  <>
                 {currentMission.status === 'Disponível' && (
                   <>
                     {startingMissionId === currentMission.id ? (
@@ -832,11 +1060,6 @@ export const MissionsCenterPage: React.FC = () => {
                         <Send className="w-4 h-4 shrink-0" />
                         <span>Enviar Registro de Evidência</span>
                       </>
-                    ) : currentMission.qrCodeRequired ? (
-                      <>
-                        <QrCode className="w-4 h-4 shrink-0" />
-                        <span>Escanear QR Code ({currentMission.qrCodeRequired})</span>
-                      </>
                     ) : (
                       <>
                         <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -848,7 +1071,9 @@ export const MissionsCenterPage: React.FC = () => {
                 {currentMission.status === 'Aguardando validação' && (
                   <>
                     <Send className="w-4 h-4 shrink-0" />
-                    <span>Evidência Enviada • Aguardando Validação</span>
+                    <span>Evidência Registrada • Aguardando Revisão</span>
+                  </>
+                )}
                   </>
                 )}
               </button>
@@ -1042,11 +1267,36 @@ export const MissionsCenterPage: React.FC = () => {
                       <p className="text-[11px] text-tutu-light/60 truncate">
                         {m.startupName} • {m.completionCriteria}
                       </p>
+                      {ownSub?.status === 'Rejeitada' && ownSub.rejectionReason && (
+                        <p className="text-[11px] text-red-200 mt-1">
+                          Motivo da rejeição: {ownSub.rejectionReason}
+                        </p>
+                      )}
                     </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2.5 shrink-0 self-end sm:self-auto text-xs">
-                    {ownSub?.hasFile && (
+                    {ownSub?.evidenceFiles && ownSub.evidenceFiles.length > 1 ? (
+                      ownSub.evidenceFiles.map((ef) => {
+                        const fileKey = `${ownSub.id}:${ef.id}`;
+                        return (
+                          <button
+                            key={ef.id}
+                            type="button"
+                            onClick={() => handleOpenOwnEvidence(ownSub, ef)}
+                            disabled={loadingEvidenceId === fileKey}
+                            className="px-2.5 py-1 rounded-lg bg-tutu-dark/80 border border-tutu-lime/35 text-tutu-lime hover:bg-tutu-lime/10 text-[10px] font-semibold inline-flex items-center gap-1 disabled:opacity-50"
+                          >
+                            {loadingEvidenceId === fileKey ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Eye className="w-3 h-3" />
+                            )}
+                            <span>Foto {ef.fileOrder}</span>
+                          </button>
+                        );
+                      })
+                    ) : ownSub?.hasFile ? (
                       <button
                         type="button"
                         onClick={() => handleOpenOwnEvidence(ownSub)}
@@ -1062,18 +1312,38 @@ export const MissionsCenterPage: React.FC = () => {
                         )}
                         <span>Evidência</span>
                       </button>
-                    )}
-                    <span className="text-tutu-lime font-bold">
-                      +{formatPoints(m.points)}
-                    </span>
-                    {m.speedBonusAwarded ? (
-                      <span className="px-2 py-0.5 rounded bg-tutu-lime/10 text-tutu-lime text-[10px] font-bold border border-tutu-lime/30">
-                        +{m.speedBonusAwarded} bônus
-                      </span>
                     ) : null}
-                    <span className="px-2 py-0.5 rounded-full bg-tutu-secondary/30 text-tutu-light/75 text-[10px]">
-                      Concluída
-                    </span>
+                    {ownSub?.status === 'Rejeitada' ? (
+                      <span className="px-2.5 py-0.5 rounded-full bg-red-500/20 text-red-200 border border-red-400/40 text-[10px] font-bold">
+                        {typeof ownSub.reversedPoints === 'number' && ownSub.reversedPoints > 0
+                          ? `Rejeitada • Estornado (-${formatPoints(ownSub.reversedPoints)})`
+                          : 'Evidência Rejeitada'}
+                      </span>
+                    ) : (
+                      <>
+                        <span className="text-tutu-lime font-bold">
+                          +{formatPoints(m.points)}
+                        </span>
+                        {m.speedBonusAwarded ? (
+                          <span className="px-2 py-0.5 rounded bg-tutu-lime/10 text-tutu-lime text-[10px] font-bold border border-tutu-lime/30">
+                            +{m.speedBonusAwarded} bônus
+                          </span>
+                        ) : null}
+                        {ownSub?.status === 'Aprovada' ? (
+                          <span className="px-2 py-0.5 rounded-full bg-tutu-lime text-tutu-dark text-[10px] font-bold">
+                            Conferida e Aprovada
+                          </span>
+                        ) : ownSub?.status === 'Pendente' ? (
+                          <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-200 border border-amber-400/40 text-[10px] font-semibold">
+                            Pontuada • Aguardando revisão final
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full bg-tutu-secondary/30 text-tutu-light/75 text-[10px]">
+                            Concluída
+                          </span>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
                 );
@@ -1179,8 +1449,8 @@ export const MissionsCenterPage: React.FC = () => {
                 </h3>
                 <p className="text-xs text-tutu-light/75 mt-1 leading-relaxed">
                   {evidenceMission.requiresEvidence && evidenceMission.evidenceType !== 'text'
-                    ? `Anexe sua comprovação (${getEvidenceRequirementsLabel(evidenceMission.evidenceType, evidenceMission.maxVideoSeconds)}) para análise administrativa.`
-                    : 'Escreva sua resposta completa abaixo para enviar à fila de validação administrativa.'}
+                    ? `Anexe sua comprovação (${getEvidenceRequirementsLabel(evidenceMission.evidenceType, evidenceMission.maxVideoSeconds)}). A pontuação é contabilizada imediatamente e a evidência fica sujeita à conferência final.`
+                    : 'Escreva sua resposta completa abaixo. A pontuação é contabilizada imediatamente e o registro fica sujeito à conferência final.'}
                 </p>
               </div>
               <button
@@ -1209,7 +1479,139 @@ export const MissionsCenterPage: React.FC = () => {
             )}
 
             <form onSubmit={handleEvidenceSubmit} className="space-y-4">
-              {evidenceMission.requiresEvidence && evidenceMission.evidenceType !== 'text' ? (
+              {evidenceMission.requiresEvidence && evidenceMission.evidenceType !== 'text' ? (() => {
+                const requiredCount = Math.max(1, Number(evidenceMission.requiredEvidenceCount || 1));
+                const isMultiPhoto = requiredCount > 1;
+                const startupLabels = ['@exdevedor', '@signedu', '@editoraescreva'];
+
+                if (isMultiPhoto) {
+                  return (
+                    <>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="block text-xs font-semibold text-tutu-light">
+                            Envie {requiredCount} Prints de Comprovação *
+                          </label>
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                              selectedBatchFiles.length === requiredCount
+                                ? 'bg-tutu-lime/20 text-tutu-lime border-tutu-lime/50'
+                                : 'bg-tutu-secondary/30 text-tutu-light/85 border-tutu-secondary/50'
+                            }`}
+                          >
+                            {selectedBatchFiles.length} de {requiredCount} selecionadas
+                          </span>
+                        </div>
+
+                        <div className="p-3 rounded-xl bg-tutu-blue/15 border border-tutu-blue/35 text-[11px] text-tutu-light/85 space-y-1">
+                          <p className="font-semibold text-tutu-lime">
+                            Envie 1 captura de tela para cada perfil oficial no Instagram:
+                          </p>
+                          <p className="text-tutu-light/80">
+                            1. <strong>@exdevedor</strong> • 2. <strong>@signedu</strong> • 3.{' '}
+                            <strong>@editoraescreva</strong>
+                          </p>
+                          <p className="text-tutu-light/65">
+                            Formatos aceitos: JPG, JPEG, PNG ou WEBP (até 5 MB por imagem). Você pode selecionar as 3 de uma vez ou adicionar uma por uma.
+                          </p>
+                        </div>
+
+                        {selectedBatchFiles.length < requiredCount && (
+                          <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-tutu-lime/40 bg-tutu-dark/70 hover:border-tutu-lime cursor-pointer transition-colors text-center">
+                            <Upload className="w-5 h-5 text-tutu-lime" />
+                            <span className="text-xs font-semibold text-tutu-light">
+                              {selectedBatchFiles.length === 0
+                                ? `Selecionar até ${requiredCount} imagens`
+                                : `Adicionar mais ${requiredCount - selectedBatchFiles.length} imagem(ns)`}
+                            </span>
+                            <span className="text-[11px] text-tutu-light/65">
+                              JPG, JPEG, PNG ou WEBP • máx. 5 MB por imagem
+                            </span>
+                            <input
+                              type="file"
+                              multiple
+                              accept="image/jpeg,image/png,image/webp"
+                              onChange={handleSelectBatchEvidenceFiles}
+                              className="hidden"
+                            />
+                          </label>
+                        )}
+
+                        {selectedBatchFiles.length > 0 && (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                            {selectedBatchFiles.map((item, idx) => (
+                              <div
+                                key={`${item.file.name}-${idx}`}
+                                className="p-2.5 rounded-xl bg-tutu-secondary/20 border border-tutu-secondary/40 space-y-2 flex flex-col justify-between"
+                              >
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between gap-1 text-[10px]">
+                                    <span className="px-1.5 py-0.5 rounded bg-tutu-lime/15 text-tutu-lime font-bold">
+                                      Foto {idx + 1} {startupLabels[idx] ? `• ${startupLabels[idx]}` : ''}
+                                    </span>
+                                    <span className="text-tutu-light/65 font-mono">
+                                      {formatFileSize(item.file.size)}
+                                    </span>
+                                  </div>
+                                  <div className="rounded-lg overflow-hidden border border-tutu-secondary/40 bg-tutu-dark h-28 flex items-center justify-center">
+                                    <img
+                                      src={item.previewUrl}
+                                      alt={`Pré-visualização Foto ${idx + 1}`}
+                                      className="h-full w-full object-cover"
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-tutu-light/80 truncate" title={item.file.name}>
+                                    {item.file.name}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <label className="flex-1 text-center px-2 py-1 rounded-lg bg-tutu-dark/80 border border-tutu-secondary/50 text-tutu-light hover:border-tutu-lime text-[10px] font-semibold cursor-pointer">
+                                    Trocar
+                                    <input
+                                      type="file"
+                                      accept="image/jpeg,image/png,image/webp"
+                                      onChange={(e) => handleReplaceBatchFile(idx, e)}
+                                      className="hidden"
+                                    />
+                                  </label>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveBatchFile(idx)}
+                                    className="px-2 py-1 rounded-lg bg-red-500/15 border border-red-400/40 text-red-200 hover:bg-red-500/25 text-[10px] font-semibold"
+                                  >
+                                    Remover
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {uploadError && (
+                          <div className="p-3 rounded-xl bg-red-500/15 border border-red-400/40 text-xs text-red-200 flex items-start gap-2">
+                            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-300" />
+                            <span>{uploadError}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-tutu-light/80 mb-1">
+                          Observação (opcional)
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={evidenceText}
+                          onChange={(e) => setEvidenceText(e.target.value)}
+                          placeholder="Ex.: Prints seguindo @exdevedor, @signedu e @editoraescreva."
+                          className="input-tutu text-xs"
+                        />
+                      </div>
+                    </>
+                  );
+                }
+
+                return (
                 <>
                   <div className="space-y-2">
                     <label className="block text-xs font-semibold text-tutu-light">
@@ -1284,7 +1686,8 @@ export const MissionsCenterPage: React.FC = () => {
                     />
                   </div>
                 </>
-              ) : (
+                );
+              })() : (
                 <textarea
                   rows={3}
                   required
@@ -1310,13 +1713,20 @@ export const MissionsCenterPage: React.FC = () => {
                     isUploadingEvidence ||
                     (Boolean(evidenceMission.requiresEvidence) &&
                       evidenceMission.evidenceType !== 'text' &&
-                      !selectedFile)
+                      ((evidenceMission.requiredEvidenceCount || 1) > 1
+                        ? selectedBatchFiles.length !==
+                          Math.max(1, Number(evidenceMission.requiredEvidenceCount || 1))
+                        : !selectedFile))
                   }
                   className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   {isUploadingEvidence && <Loader2 className="w-4 h-4 animate-spin" />}
                   <span>
-                    {isUploadingEvidence ? 'Enviando evidência...' : 'Enviar para Validação'}
+                    {isUploadingEvidence
+                      ? 'Enviando evidências...'
+                      : (evidenceMission.requiredEvidenceCount || 1) > 1
+                      ? `Enviar ${evidenceMission.requiredEvidenceCount} Fotos e Concluir`
+                      : 'Enviar Evidência e Concluir'}
                   </span>
                 </button>
               </div>

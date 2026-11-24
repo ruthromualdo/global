@@ -79,6 +79,8 @@ function createFullTestDatabase(): DatabaseSync {
       completion_criteria TEXT NOT NULL DEFAULT 'Ler QR Code',
       active INTEGER NOT NULL DEFAULT 1,
       sequence_order INTEGER,
+      track_id TEXT,
+      relative_weight INTEGER NOT NULL DEFAULT 10,
       timer_minutes INTEGER,
       unlock_points INTEGER NOT NULL DEFAULT 20,
       completion_points INTEGER NOT NULL DEFAULT 180,

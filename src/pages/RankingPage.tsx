@@ -32,6 +32,7 @@ export const RankingPage: React.FC = () => {
   const {
     publicRanking,
     dailyRankings = [],
+    homologations = [],
     participant,
     missions,
     eventSettings,
@@ -41,6 +42,17 @@ export const RankingPage: React.FC = () => {
 
   const [selectedDayIdx, setSelectedDayIdx] = useState(0);
   const selectedDaily = dailyRankings[selectedDayIdx] || dailyRankings[0] || null;
+
+  const activeGeneralHomologation =
+    homologations.find((h) => h.scope === 'GERAL' && h.status === 'Homologado') || null;
+  const getActiveDailyHomologation = (eventDate: string) =>
+    homologations.find(
+      (h) => h.scope === 'DIARIO' && h.eventDate === eventDate && h.status === 'Homologado'
+    ) || null;
+  const selectedDailyHomologation = selectedDaily
+    ? getActiveDailyHomologation(selectedDaily.eventDate)
+    : null;
+  const isDisqualifiedUser = participant.status === 'Desclassificado';
 
   const officialMissions = (missions || []).filter(
     (m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined && m.active !== false
@@ -61,20 +73,29 @@ export const RankingPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div className="space-y-1.5 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
               Classificação em Tempo Real • Etapa 4
             </span>
-            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-tutu-secondary/30 text-tutu-light/80 text-[11px] font-semibold border border-tutu-secondary/40">
-              <span className="w-1.5 h-1.5 rounded-full bg-tutu-lime animate-pulse" />
-              <span>Ao Vivo</span>
-            </span>
+            {activeGeneralHomologation ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-tutu-lime text-tutu-dark text-[11px] font-bold uppercase tracking-wider">
+                <Crown className="w-3 h-3 shrink-0" />
+                <span>Vencedor Homologado</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-200 text-[11px] font-bold border border-amber-400/40 uppercase tracking-wider">
+                <AlertCircle className="w-3 h-3 shrink-0" />
+                <span>Ranking Provisório — Sujeito à Conferência Final</span>
+              </span>
+            )}
           </div>
           <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
             Ranking Geral de Participantes
           </h1>
           <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed max-w-3xl">
-            Acompanhe a pontuação oficial acumulada com base nas missões oficiais e nos bônus de velocidade. Dados pessoais sensíveis são protegidos por privacidade e jamais expostos.
+            {activeGeneralHomologation
+              ? `Resultado oficial homologado após conferência administrativa das evidências.`
+              : `Acompanhe a pontuação acumulada em tempo real. Esta classificação é provisória e está sujeita à conferência final das evidências pela organização antes da homologação do vencedor.`}
           </p>
         </div>
 
@@ -100,6 +121,39 @@ export const RankingPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Banner de Homologação do Vencedor Geral (exibido SOMENTE quando homologado) */}
+      {activeGeneralHomologation && (
+        <div className="tutu-card p-5 border-2 border-tutu-lime bg-tutu-lime/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-12 h-12 rounded-2xl bg-tutu-lime text-tutu-dark flex items-center justify-center shrink-0 shadow-md">
+              <Crown className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-tutu-lime block">
+                Vencedor Homologado — Ranking Geral
+              </span>
+              <p className="font-display font-bold text-xl sm:text-2xl text-tutu-light truncate">
+                {activeGeneralHomologation.participantName} •{' '}
+                <span className="text-tutu-lime">
+                  {formatPoints(activeGeneralHomologation.points)}
+                </span>
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] text-tutu-light/75 font-mono shrink-0">
+            Conferido e homologado em{' '}
+            {new Intl.DateTimeFormat('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              day: '2-digit',
+              month: '2-digit',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            }).format(new Date(activeGeneralHomologation.homologatedAtMs))}
+          </span>
+        </div>
+      )}
 
       {/* Indicador Global de Pontuação & Destaque do Participante Logado (somente para PARTICIPANT) */}
       {isParticipantUser && (
@@ -129,9 +183,15 @@ export const RankingPage: React.FC = () => {
                     {participant.name}
                   </h2>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="font-display font-bold text-xl sm:text-2xl text-tutu-lime">
-                      {currentRank !== null ? `#${currentRank}º Lugar` : 'Sem posição ainda'}
-                    </span>
+                    {isDisqualifiedUser ? (
+                      <span className="font-display font-bold text-lg sm:text-xl text-red-300">
+                        Conta Desclassificada
+                      </span>
+                    ) : (
+                      <span className="font-display font-bold text-xl sm:text-2xl text-tutu-lime">
+                        {currentRank !== null ? `#${currentRank}º Lugar` : 'Sem posição ainda'}
+                      </span>
+                    )}
                     <span className="text-xs text-tutu-light/50">•</span>
                     <span className="text-xs font-semibold text-tutu-light/80">
                       {formatPoints(participant.points)}
@@ -141,10 +201,20 @@ export const RankingPage: React.FC = () => {
               </div>
 
               <p className="text-xs text-tutu-light/80 leading-relaxed pt-1">
-                {isUserInTopThree ? (
+                {isDisqualifiedUser ? (
+                  <span className="text-red-200 font-medium flex items-start gap-1.5">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-300" />
+                    <span>
+                      Sua conta foi desclassificada pela organização e não participa mais da classificação competitiva.
+                      {participant.disqualificationReason
+                        ? ` Motivo: ${participant.disqualificationReason}`
+                        : ''}
+                    </span>
+                  </span>
+                ) : isUserInTopThree ? (
                   <span className="text-tutu-lime font-medium flex items-center gap-1.5">
                     <Crown className="w-4 h-4 shrink-0" />
-                    Sensacional! Você está atualmente no Pódio Top 3 do Desafio Global 2026.
+                    Você está atualmente no Top 3 provisório do Desafio Global 2026 (sujeito à conferência final).
                   </span>
                 ) : (
                   <span>
@@ -213,15 +283,26 @@ export const RankingPage: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 text-xs">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedDailyHomologation ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-tutu-lime text-tutu-dark font-bold uppercase">
+                  <Crown className="w-3.5 h-3.5" />
+                  <span>Vencedor Homologado</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-200 border border-amber-400/40 font-bold uppercase">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>Ranking Provisório — Sujeito à Conferência Final</span>
+                </span>
+              )}
               {selectedDaily.status === 'Encerrado' ? (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-tutu-secondary text-tutu-lime font-bold">
                   <Lock className="w-3.5 h-3.5" />
-                  <span>Ranking Encerrado • Resultado Congelado</span>
+                  <span>Horário Encerrado (16h30)</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-tutu-lime text-tutu-dark font-bold">
-                  <Clock className="w-3.5 h-3.5" />
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-tutu-secondary/40 text-tutu-light font-semibold">
+                  <Clock className="w-3.5 h-3.5 text-tutu-lime" />
                   <span>Aberto • Fecha às 16h30</span>
                 </span>
               )}
@@ -232,15 +313,37 @@ export const RankingPage: React.FC = () => {
             </span>
           </div>
 
-          {selectedDaily.status === 'Encerrado' && (
-            <div className="p-4 rounded-xl bg-tutu-lime/10 border border-tutu-lime/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          {selectedDailyHomologation ? (
+            <div className="p-4 rounded-xl bg-tutu-lime/15 border-2 border-tutu-lime flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="w-11 h-11 rounded-2xl bg-tutu-lime text-tutu-dark font-display font-bold flex items-center justify-center shrink-0">
                   <Crown className="w-5 h-5" />
                 </div>
                 <div>
                   <span className="text-[11px] uppercase tracking-wider font-bold text-tutu-lime block">
-                    Vencedor Oficial do Dia
+                    Vencedor Homologado do Dia
+                  </span>
+                  <p className="font-display font-bold text-lg text-tutu-light">
+                    {selectedDailyHomologation.participantName} •{' '}
+                    <span className="text-tutu-lime">
+                      {formatPoints(selectedDailyHomologation.points)} no dia
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs text-tutu-light/75 font-mono">
+                Homologado após conferência final
+              </span>
+            </div>
+          ) : selectedDaily.status === 'Encerrado' ? (
+            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-400/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-500/20 text-amber-200 border border-amber-400/40 font-display font-bold flex items-center justify-center shrink-0">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="text-[11px] uppercase tracking-wider font-bold text-amber-200 block">
+                    1º Colocado Provisório do Dia • Aguardando Conferência Final
                   </span>
                   {selectedDaily.winner ? (
                     <p className="font-display font-bold text-lg text-tutu-light">
@@ -262,7 +365,7 @@ export const RankingPage: React.FC = () => {
                 </span>
               )}
             </div>
-          )}
+          ) : null}
 
           {selectedDaily.ranking.length === 0 ? (
             <p className="text-xs text-tutu-light/65 italic py-2">
@@ -311,7 +414,9 @@ export const RankingPage: React.FC = () => {
               Histórico de Premiações dos 3 Dias
             </span>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
-              {dailyRankings.map((day) => (
+              {dailyRankings.map((day) => {
+                const dayHom = getActiveDailyHomologation(day.eventDate);
+                return (
                 <div
                   key={day.eventDate}
                   className="p-3 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-1"
@@ -320,27 +425,34 @@ export const RankingPage: React.FC = () => {
                     <span className="font-bold text-tutu-light">{day.dayLabel}</span>
                     <span
                       className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        day.status === 'Encerrado'
-                          ? 'bg-tutu-secondary text-tutu-lime'
+                        dayHom
+                          ? 'bg-tutu-lime text-tutu-dark'
+                          : day.status === 'Encerrado'
+                          ? 'bg-amber-500/20 text-amber-200 border border-amber-400/40'
                           : 'bg-tutu-lime/20 text-tutu-lime'
                       }`}
                     >
-                      {day.status}
+                      {dayHom ? 'Homologado' : day.status === 'Encerrado' ? 'Em conferência' : day.status}
                     </span>
                   </div>
-                  {day.status === 'Encerrado' ? (
+                  {dayHom ? (
+                    <p className="text-tutu-lime font-semibold truncate">
+                      🏆 Vencedor Homologado: {dayHom.participantName} ({formatPoints(dayHom.points)})
+                    </p>
+                  ) : day.status === 'Encerrado' ? (
                     day.winner ? (
-                      <p className="text-tutu-lime font-semibold truncate">
-                        🏆 {day.winner.displayName} ({formatPoints(day.winner.dailyPoints)})
+                      <p className="text-amber-200 font-semibold truncate">
+                        1º Provisório: {day.winner.displayName} ({formatPoints(day.winner.dailyPoints)})
                       </p>
                     ) : (
-                      <p className="text-tutu-light/60 italic">Sem vencedor registrado</p>
+                      <p className="text-tutu-light/60 italic">Sem pontuação registrada</p>
                     )
                   ) : (
-                    <p className="text-tutu-light/65">Em andamento até 16h30</p>
+                    <p className="text-tutu-light/65">Provisório • em andamento até 16h30</p>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

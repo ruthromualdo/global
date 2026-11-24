@@ -1,11 +1,15 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { VALID_BRAZILIAN_DDDS } from '../src/utils/formatters';
 import {
   calculateParticipantReservedPoints,
   closeDatabaseGracefully,
   compactCircuitSequencesInDb,
+  DAILY_AWARD_DAYS,
+  computeLiveDailyRanking,
   db,
   DB_FILE_PATH,
   DEFAULT_MISSION_TIMER_MINUTES,
@@ -17,12 +21,14 @@ import {
   findActiveTransactionByEventKeys,
   getAdminMetricsFromDb,
   getDailyRankingsFromDb,
+  getEvidenceFilesForCompletions,
   getMissionConfiguredDurationSeconds,
   getPublicRankingFromDb,
   hasOfficialCircuitStartedInDb,
   initializeDatabase,
   mapEventSettingsRow,
   mapGovernancePlanRow,
+  mapHomologationRow,
   mapMissionRow,
   mapParticipantRow,
   mapQRCodeRow,
@@ -183,6 +189,28 @@ function hasActiveParticipantSessionInDb(): boolean {
 }
 
 // Helper para creditar pontos respeitando o limite global de 1.000 pontos e idempotência por event_key
+function assertParticipantEligibleForCompetition(
+  targetDb: DatabaseSync,
+  participantId: string
+):
+  | { ok: true }
+  | { ok: false; httpStatus: number; code: 'PARTICIPANT_DISQUALIFIED'; error: string } {
+  const row = targetDb
+    .prepare('SELECT status, disqualification_reason FROM participants WHERE id = ? LIMIT 1')
+    .get(participantId) as { status?: string; disqualification_reason?: string | null } | undefined;
+
+  if (row && String(row.status) === 'Desclassificado') {
+    return {
+      ok: false,
+      httpStatus: 403,
+      code: 'PARTICIPANT_DISQUALIFIED',
+      error:
+        'Sua conta foi desclassificada administrativamente e não pode mais registrar progresso ou acumular pontos competitivos.',
+    };
+  }
+  return { ok: true };
+}
+
 function creditPointsInSql(params: {
   participantId: string;
   pointsDelta: number;
@@ -192,17 +220,33 @@ function creditPointsInSql(params: {
   incrementMissionCount?: boolean;
   eventKey?: string;
   missionId?: string;
+  sourceCompletionId?: string;
+  targetDb?: DatabaseSync;
 }) {
-  const row = db
+  const activeDb = params.targetDb || db;
+  const row = activeDb
     .prepare('SELECT * FROM participants WHERE id = ?')
     .get(params.participantId) as Record<string, unknown> | undefined;
   if (!row) return null;
 
   const participant = mapParticipantRow(row);
 
+  // Defesa em profundidade: participante desclassificado nunca acumula pontos competitivos
+  if (
+    participant.status === 'Desclassificado' &&
+    params.sourceType !== 'Ajuste Administrativo'
+  ) {
+    return {
+      participant,
+      effectiveDelta: 0,
+      alreadyProcessed: false,
+      disqualified: true,
+    };
+  }
+
   // Proteção idempotente: se eventKey já foi processada, não credita novamente
   if (params.eventKey) {
-    const existingTx = db
+    const existingTx = activeDb
       .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
       .get(params.eventKey) as { id: string } | undefined;
     if (existingTx) {
@@ -242,44 +286,46 @@ function creditPointsInSql(params: {
     minute: '2-digit',
   });
 
-  db.prepare(`
+  activeDb
+    .prepare(`
     UPDATE participants
     SET points = ?,
         completed_missions_count = ?,
         visited_startups_json = ?
     WHERE id = ?
-  `).run(
-    newBalance,
-    newMissionCount,
-    JSON.stringify(visitedStartups),
-    participant.id
-  );
+  `)
+    .run(newBalance, newMissionCount, JSON.stringify(visitedStartups), participant.id);
 
   const nowMs = Date.now();
   const txId = `tx-${nowMs}-${Math.random().toString(36).slice(2, 7)}`;
-  db.prepare(`
+  activeDb
+    .prepare(`
     INSERT INTO points_transactions (
       id, participant_id, participant_name, source_type, source_title,
-      points_delta, previous_balance, new_balance, created_at, created_at_ms, event_key, mission_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    txId,
-    participant.id,
-    participant.name,
-    params.sourceType,
-    params.sourceTitle,
-    effectiveDelta,
-    previousBalance,
-    newBalance,
-    nowStr,
-    nowMs,
-    params.eventKey || null,
-    params.missionId || null
-  );
+      points_delta, previous_balance, new_balance, created_at, created_at_ms, event_key, mission_id, source_completion_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+    .run(
+      txId,
+      participant.id,
+      participant.name,
+      params.sourceType,
+      params.sourceTitle,
+      effectiveDelta,
+      previousBalance,
+      newBalance,
+      nowStr,
+      nowMs,
+      params.eventKey || null,
+      params.missionId || null,
+      params.sourceCompletionId || null
+    );
 
-  recalculateRankingsInDb();
+  if (activeDb === db) {
+    recalculateRankingsInDb();
+  }
 
-  const updatedRow = db
+  const updatedRow = activeDb
     .prepare('SELECT * FROM participants WHERE id = ?')
     .get(participant.id) as Record<string, unknown>;
   return {
@@ -460,17 +506,46 @@ function completeSequentialMissionInSql(params: {
   missionId: string;
   sourceType: 'Missão' | 'QR Code';
   qrCodeRow?: ReturnType<typeof mapQRCodeRow>;
+  useExistingTransaction?: boolean;
+  targetDb?: DatabaseSync;
+  sourceCompletionId?: string;
 }) {
-  db.exec('BEGIN IMMEDIATE TRANSACTION;');
-  try {
-    ensureParticipantFirstMissionUnlockedInDb(params.participantId);
+  const activeDb = params.targetDb || db;
+  const manageTx = !params.useExistingTransaction;
+  const rollbackIfManaged = () => {
+    if (!manageTx) return;
+    try {
+      activeDb.exec('ROLLBACK;');
+    } catch {
+      // transação já encerrada
+    }
+  };
 
-    const missionRow = db
+  if (manageTx) {
+    activeDb.exec('BEGIN IMMEDIATE TRANSACTION;');
+  }
+  try {
+    const eligibility = assertParticipantEligibleForCompetition(activeDb, params.participantId);
+    if (!eligibility.ok) {
+      rollbackIfManaged();
+      return {
+        ok: false,
+        httpStatus: eligibility.httpStatus,
+        status: 'PARTICIPANT_DISQUALIFIED' as const,
+        message: eligibility.error,
+      };
+    }
+
+    if (activeDb === db) {
+      ensureParticipantFirstMissionUnlockedInDb(params.participantId);
+    }
+
+    const missionRow = activeDb
       .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
       .get(params.missionId) as Record<string, unknown> | undefined;
 
     if (!missionRow) {
-      db.exec('ROLLBACK;');
+      rollbackIfManaged();
       return {
         ok: false,
         httpStatus: 404,
@@ -486,7 +561,7 @@ function completeSequentialMissionInSql(params: {
         : null;
 
     if (!mission.active || seqOrder === null) {
-      db.exec('ROLLBACK;');
+      rollbackIfManaged();
       return {
         ok: false,
         httpStatus: 400,
@@ -505,14 +580,14 @@ function completeSequentialMissionInSql(params: {
       `${baseCompleteEventKey}:POST_SIM_REV`,
     ]);
 
-    const pmRow = db
+    const pmRow = activeDb
       .prepare(
         'SELECT * FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
       )
       .get(params.participantId, mission.id) as Record<string, unknown> | undefined;
 
     if (existingCompleteTx || (pmRow && String(pmRow.status) === 'Concluída')) {
-      db.exec('ROLLBACK;');
+      rollbackIfManaged();
       return {
         ok: false,
         httpStatus: 409,
@@ -526,7 +601,7 @@ function completeSequentialMissionInSql(params: {
     // Verifica bloqueio sequencial estrito dentro da mesma trilha: Missão N exige Missão N-1 concluída pelo participante
     const missionTrackKey = missionRow.track_id ? String(missionRow.track_id) : 'default';
     if (seqOrder > 1) {
-      const prevMissionRow = db
+      const prevMissionRow = activeDb
         .prepare(
           "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
         )
@@ -537,7 +612,7 @@ function completeSequentialMissionInSql(params: {
           `COMPLETE:${params.participantId}:${prevMissionRow.id}`,
           `COMPLETE:${params.participantId}:${prevMissionRow.id}:POST_SIM_REV`,
         ]);
-        const prevPm = db
+        const prevPm = activeDb
           .prepare(
             'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
           )
@@ -547,7 +622,7 @@ function completeSequentialMissionInSql(params: {
           Boolean(prevCompleteTx) || (prevPm && String(prevPm.status) === 'Concluída');
 
         if (!isPrevCompleted) {
-          db.exec('ROLLBACK;');
+          rollbackIfManaged();
           return {
             ok: false,
             httpStatus: 403,
@@ -560,14 +635,14 @@ function completeSequentialMissionInSql(params: {
 
     // Se veio de leitura de QR Code, registra em qr_scans e incrementa contador
     if (params.qrCodeRow) {
-      const existingScan = db
+      const existingScan = activeDb
         .prepare(
           'SELECT id FROM qr_scans WHERE qr_code_id = ? AND participant_id = ? LIMIT 1'
         )
         .get(params.qrCodeRow.id, params.participantId) as { id: string } | undefined;
 
       if (existingScan) {
-        db.exec('ROLLBACK;');
+        rollbackIfManaged();
         return {
           ok: false,
           httpStatus: 409,
@@ -578,10 +653,10 @@ function completeSequentialMissionInSql(params: {
         };
       }
 
-      db.prepare('UPDATE qr_codes SET scans_count = scans_count + 1 WHERE id = ?').run(
+      activeDb.prepare('UPDATE qr_codes SET scans_count = scans_count + 1 WHERE id = ?').run(
         params.qrCodeRow.id
       );
-      db.prepare(
+      activeDb.prepare(
         'INSERT INTO qr_scans (id, qr_code_id, participant_id, scanned_at) VALUES (?, ?, ?, ?)'
       ).run(
         `scan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -608,7 +683,7 @@ function completeSequentialMissionInSql(params: {
       !Number.isInteger(Number(rawCompletion)) || Number(rawCompletion) <= 0 ||
       !Number.isInteger(Number(rawBonus)) || Number(rawBonus) < 0
     ) {
-      db.exec('ROLLBACK;');
+      rollbackIfManaged();
       return {
         ok: false,
         httpStatus: 500,
@@ -642,32 +717,45 @@ function completeSequentialMissionInSql(params: {
       }
     }
 
-    // Etapa 6 & Etapa 3: Se for a Missão 1 (seqOrder === 1), credita os pontos dinâmicos de desbloqueio
-    // SOMENTE AGORA, no momento da conclusão/validação efetiva da missão!
+    // Regra definitiva: os pontos de desbloqueio (unlock_points) de CADA missão são creditados
+    // exclusivamente na conclusão da própria missão, vinculados a source_completion_id.
+    // Se já houver um crédito histórico ativo de desbloqueio (retrocompatibilidade), não duplica.
     let awardedUnlockPoints = 0;
-    if (seqOrder === 1) {
-      const legacyUnlockTx = findActiveTransactionByEventKeys(params.participantId, [
-        `UNLOCK:${params.participantId}:${mission.id}`,
-        `UNLOCK:${params.participantId}:${mission.id}:POST_SIM_REV`,
-      ]);
-      const reversalTx = db
+    let newlyCreditedUnlockPoints = 0;
+    {
+      const legacyUnlockTx = findActiveTransactionByEventKeys(
+        params.participantId,
+        [
+          `UNLOCK:${params.participantId}:${mission.id}`,
+          `UNLOCK:${params.participantId}:${mission.id}:POST_SIM_REV`,
+        ],
+        activeDb
+      );
+      const reversalTx = activeDb
         .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
         .get(`REVERSAL:${params.participantId}:${mission.id}`) as { id: string } | undefined;
-      const validatedUnlockTx = findActiveTransactionByEventKeys(params.participantId, [
-        `UNLOCK_VALIDATED:${params.participantId}:${mission.id}`,
-        `UNLOCK_VALIDATED:${params.participantId}:${mission.id}:POST_SIM_REV`,
-      ]);
+      const validatedUnlockTx = findActiveTransactionByEventKeys(
+        params.participantId,
+        [
+          `UNLOCK_VALIDATED:${params.participantId}:${mission.id}`,
+          `UNLOCK_VALIDATED:${params.participantId}:${mission.id}:POST_SIM_REV`,
+        ],
+        activeDb
+      );
 
       const hasEffectiveUnlock =
         (Boolean(legacyUnlockTx) && !Boolean(reversalTx)) || Boolean(validatedUnlockTx);
 
       if (!hasEffectiveUnlock) {
-        // Se já houve estorno da transação legada antiga (Etapa 6), parte de UNLOCK_VALIDATED;
-        // se essa chave também foi estornada por REVERSAL_SIMULATION, usa :POST_SIM_REV
         const baseUnlockKey = Boolean(reversalTx)
           ? `UNLOCK_VALIDATED:${params.participantId}:${mission.id}`
           : `UNLOCK:${params.participantId}:${mission.id}`;
-        const unlockEventKey = resolveNextIdempotentEventKey(params.participantId, baseUnlockKey);
+        const unlockEventKey = resolveNextIdempotentEventKey(
+          params.participantId,
+          baseUnlockKey,
+          `${baseUnlockKey}:POST_SIM_REV`,
+          activeDb
+        );
 
         const unlockCredit = creditPointsInSql({
           participantId: params.participantId,
@@ -677,21 +765,16 @@ function completeSequentialMissionInSql(params: {
           incrementMissionCount: false,
           eventKey: unlockEventKey,
           missionId: mission.id,
+          sourceCompletionId: params.sourceCompletionId,
+          targetDb: activeDb,
         });
-        awardedUnlockPoints = unlockCredit?.effectiveDelta ?? 0;
+        newlyCreditedUnlockPoints = unlockCredit?.effectiveDelta ?? 0;
+        awardedUnlockPoints = newlyCreditedUnlockPoints;
       } else {
         awardedUnlockPoints = validatedUnlockTx
           ? Number(validatedUnlockTx.points_delta)
           : Number(legacyUnlockTx?.points_delta || missionUnlockPoints);
       }
-    } else {
-      const existingUnlockTx = findActiveTransactionByEventKeys(params.participantId, [
-        `UNLOCK:${params.participantId}:${mission.id}`,
-        `UNLOCK:${params.participantId}:${mission.id}:POST_SIM_REV`,
-      ]);
-      awardedUnlockPoints = existingUnlockTx
-        ? Number(existingUnlockTx.points_delta)
-        : Number(pmRow?.unlock_points_awarded || missionUnlockPoints);
     }
 
     // 1. Concede pontos dinâmicos pela conclusão válida da missão
@@ -704,6 +787,8 @@ function completeSequentialMissionInSql(params: {
       incrementMissionCount: true,
       eventKey: completeEventKey,
       missionId: mission.id,
+      sourceCompletionId: params.sourceCompletionId,
+      targetDb: activeDb,
     });
 
     const awardedCompletionPoints = completionCredit?.effectiveDelta ?? 0;
@@ -723,11 +808,14 @@ function completeSequentialMissionInSql(params: {
         incrementMissionCount: false,
         eventKey: speedBonusEventKey,
         missionId: mission.id,
+        sourceCompletionId: params.sourceCompletionId,
+        targetDb: activeDb,
       });
       awardedSpeedBonus = bonusCredit?.effectiveDelta ?? 0;
     }
 
-    db.prepare(`
+    activeDb
+      .prepare(`
       UPDATE participant_missions
       SET status = 'Concluída',
           completed_at_ms = ?,
@@ -737,24 +825,26 @@ function completeSequentialMissionInSql(params: {
           speed_bonus_awarded = ?,
           total_points_awarded = ? + ? + ?
       WHERE participant_id = ? AND mission_id = ?
-    `).run(
-      nowMs,
-      elapsedSeconds,
-      awardedUnlockPoints,
-      awardedCompletionPoints,
-      awardedSpeedBonus,
-      awardedUnlockPoints,
-      awardedCompletionPoints,
-      awardedSpeedBonus,
-      params.participantId,
-      mission.id
-    );
+    `)
+      .run(
+        nowMs,
+        elapsedSeconds,
+        awardedUnlockPoints,
+        awardedCompletionPoints,
+        awardedSpeedBonus,
+        awardedUnlockPoints,
+        awardedCompletionPoints,
+        awardedSpeedBonus,
+        params.participantId,
+        mission.id
+      );
 
-    // 2. Desbloqueia automaticamente a próxima missão na sequência (se houver) e concede seus unlock_points dinâmicos
+    // 2. Desbloqueia funcionalmente a próxima missão na sequência (se houver) SEM crédito antecipado.
+    // Os unlock_points da próxima missão serão creditados exclusivamente quando ela própria for concluída.
     let nextMissionUnlockedTitle: string | null = null;
-    let awardedNextUnlockPoints = 0;
+    const awardedNextUnlockPoints = 0;
 
-    const nextMissionRow = db
+    const nextMissionRow = activeDb
       .prepare(
         "SELECT * FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
       )
@@ -769,7 +859,7 @@ function completeSequentialMissionInSql(params: {
         rawNextUnlock === null || rawNextUnlock === undefined ||
         !Number.isInteger(Number(rawNextUnlock)) || Number(rawNextUnlock) < 0
       ) {
-        db.exec('ROLLBACK;');
+        rollbackIfManaged();
         return {
           ok: false,
           httpStatus: 500,
@@ -778,61 +868,45 @@ function completeSequentialMissionInSql(params: {
         };
       }
 
-      const nextUnlockPoints = Number(rawNextUnlock);
-
-      const nextUnlockEventKey = resolveNextIdempotentEventKey(
-        params.participantId,
-        `UNLOCK:${params.participantId}:${nextMissionId}`
-      );
-
-      const unlockCredit = creditPointsInSql({
-        participantId: params.participantId,
-        pointsDelta: nextUnlockPoints,
-        sourceType: 'Missão',
-        sourceTitle: `Desbloqueio: ${nextMissionTitle}`,
-        incrementMissionCount: false,
-        eventKey: nextUnlockEventKey,
-        missionId: nextMissionId,
-      });
-
-      awardedNextUnlockPoints = unlockCredit?.effectiveDelta ?? 0;
       nextMissionUnlockedTitle = nextMissionTitle;
 
-      db.prepare(`
+      activeDb
+        .prepare(`
         INSERT INTO participant_missions (
           id, participant_id, mission_id, sequence_order, status,
           unlocked_at_ms, unlock_points_awarded, completion_points_awarded,
           speed_bonus_awarded, total_points_awarded
-        ) VALUES (?, ?, ?, ?, 'Disponível', ?, ?, 0, 0, ?)
+        ) VALUES (?, ?, ?, ?, 'Disponível', ?, 0, 0, 0, 0)
         ON CONFLICT(participant_id, mission_id) DO UPDATE SET
           status = CASE WHEN participant_missions.status = 'Concluída' THEN 'Concluída' ELSE 'Disponível' END,
-          unlocked_at_ms = COALESCE(participant_missions.unlocked_at_ms, excluded.unlocked_at_ms),
-          unlock_points_awarded = CASE WHEN participant_missions.unlock_points_awarded > 0 THEN participant_missions.unlock_points_awarded ELSE excluded.unlock_points_awarded END,
-          total_points_awarded = (CASE WHEN participant_missions.unlock_points_awarded > 0 THEN participant_missions.unlock_points_awarded ELSE excluded.unlock_points_awarded END) + participant_missions.completion_points_awarded + participant_missions.speed_bonus_awarded
-      `).run(
-        `pm-${params.participantId}-${nextMissionId}`,
-        params.participantId,
-        nextMissionId,
-        seqOrder + 1,
-        nowMs,
-        awardedNextUnlockPoints,
-        awardedNextUnlockPoints
-      );
+          unlocked_at_ms = COALESCE(participant_missions.unlocked_at_ms, excluded.unlocked_at_ms)
+      `)
+        .run(
+          `pm-${params.participantId}-${nextMissionId}`,
+          params.participantId,
+          nextMissionId,
+          seqOrder + 1,
+          nowMs
+        );
     }
 
-    db.exec('COMMIT;');
+    if (manageTx) {
+      activeDb.exec('COMMIT;');
+    }
 
-    const updatedParticipant = db
+    const updatedParticipant = activeDb
       .prepare('SELECT * FROM participants WHERE id = ?')
       .get(params.participantId) as Record<string, unknown>;
 
+    const totalMissionPoints =
+      newlyCreditedUnlockPoints + awardedCompletionPoints + awardedSpeedBonus;
     const bonusMsg =
       awardedSpeedBonus > 0
-        ? ` com Bônus de Velocidade (+${awardedSpeedBonus} pts)! Total na missão: ${awardedCompletionPoints + awardedSpeedBonus} pts.`
+        ? ` com Bônus de Velocidade (+${awardedSpeedBonus} pts)! Total na missão: ${totalMissionPoints} pts.`
         : ' (sem bônus de velocidade adicional).';
     const unlockMsg = nextMissionUnlockedTitle
-      ? ` Próxima missão "${nextMissionUnlockedTitle}" desbloqueada automaticamente (+${awardedNextUnlockPoints} pts)!`
-      : ' Você concluiu todas as missões principais do circuito!';
+      ? ` Próxima missão "${nextMissionUnlockedTitle}" desbloqueada automaticamente!`
+      : ' Você concluiu todas as missões desta etapa!';
 
     return {
       ok: true,
@@ -843,24 +917,17 @@ function completeSequentialMissionInSql(params: {
       completionPointsAwarded: awardedCompletionPoints,
       speedBonusAwarded: awardedSpeedBonus,
       unlockPointsAwarded: awardedNextUnlockPoints,
-      initialUnlockPointsAwarded: seqOrder === 1 ? awardedUnlockPoints : 0,
-      pointsAwarded:
-        (seqOrder === 1 ? awardedUnlockPoints : 0) +
-        awardedCompletionPoints +
-        awardedSpeedBonus +
-        awardedNextUnlockPoints,
+      initialUnlockPointsAwarded: newlyCreditedUnlockPoints,
+      missionPointsAwarded: totalMissionPoints,
+      pointsAwarded: totalMissionPoints,
       nextMissionUnlocked: nextMissionUnlockedTitle,
       participant: mapParticipantRow(updatedParticipant),
       message: `Missão "${mission.title}" concluída (+${awardedCompletionPoints} pts)${
-        seqOrder === 1 && awardedUnlockPoints > 0 ? ` +${awardedUnlockPoints} pts de desbloqueio` : ''
+        newlyCreditedUnlockPoints > 0 ? ` +${newlyCreditedUnlockPoints} pts de desbloqueio` : ''
       }${bonusMsg}${unlockMsg}`,
     };
   } catch (err) {
-    try {
-      db.exec('ROLLBACK;');
-    } catch {
-      // ignore rollback if already closed
-    }
+    rollbackIfManaged();
     const errMsg = String((err as Error)?.message || '');
     if (errMsg.includes('UNIQUE constraint failed')) {
       return {
@@ -874,6 +941,384 @@ function completeSequentialMissionInSql(params: {
     }
     throw err;
   }
+}
+
+// ============================================================================
+// HOMOLOGAÇÃO DE VENCEDORES (GERAL E DIÁRIO) E CONCLUSÃO DE MISSÃO EXTRA ATÔMICA
+// ============================================================================
+
+function completeExtraMissionInExistingTx(params: {
+  targetDb: DatabaseSync;
+  participantId: string;
+  missionRow: Record<string, unknown>;
+  sourceCompletionId: string;
+  nowMs: number;
+}): { ok: true; pointsAwarded: number } | { ok: false; httpStatus: number; error: string } {
+  const { targetDb, participantId, missionRow, sourceCompletionId, nowMs } = params;
+  const missionId = String(missionRow.id);
+  const missionTitle = String(missionRow.title || 'Missão Extra');
+  const nowIso = new Date(nowMs).toISOString();
+
+  const participantRow = targetDb
+    .prepare(
+      'SELECT id, name, status, points, completed_missions_count, visited_startups_json FROM participants WHERE id = ? LIMIT 1'
+    )
+    .get(participantId) as
+    | {
+        id: string;
+        name: string;
+        status: string;
+        points: number;
+        completed_missions_count: number;
+        visited_startups_json: string;
+      }
+    | undefined;
+
+  if (!participantRow) {
+    return { ok: false, httpStatus: 404, error: 'Participante não encontrado para conclusão.' };
+  }
+  if (String(participantRow.status) === 'Desclassificado') {
+    return {
+      ok: false,
+      httpStatus: 403,
+      error: 'Participante desclassificado não pode acumular pontos competitivos.',
+    };
+  }
+
+  const baseEventKey = `COMPLETE:${participantId}:${missionId}`;
+  const existingTx = findActiveTransactionByEventKeys(participantId, [
+    baseEventKey,
+    `${baseEventKey}:POST_SIM_REV`,
+  ]);
+
+  const prevPoints = Number(participantRow.points || 0);
+  const requestedPts = Math.max(0, Math.trunc(Number(missionRow.points || 0)));
+  const reservation = calculateParticipantReservedPoints(participantId);
+  const maxAllowedByReserve = Math.max(0, reservation.freeMargin);
+  const pointsDelta = existingTx
+    ? 0
+    : Math.max(0, Math.min(requestedPts, maxAllowedByReserve, MAX_PARTICIPANT_POINTS - prevPoints));
+  const newPoints = prevPoints + pointsDelta;
+
+  const existingPm = targetDb
+    .prepare(
+      'SELECT id FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+    )
+    .get(participantId, missionId) as { id: string } | undefined;
+
+  if (existingPm) {
+    targetDb
+      .prepare(
+        `UPDATE participant_missions
+         SET status = 'Concluída', completed_at_ms = ?, completion_points_awarded = ?, total_points_awarded = ?
+         WHERE id = ?`
+      )
+      .run(nowMs, pointsDelta, pointsDelta, existingPm.id);
+  } else {
+    targetDb
+      .prepare(
+        `INSERT INTO participant_missions (
+           id, participant_id, mission_id, sequence_order, status, unlocked_at_ms, completed_at_ms,
+           completion_points_awarded, total_points_awarded
+         ) VALUES (?, ?, ?, 0, 'Concluída', ?, ?, ?, ?)`
+      )
+      .run(
+        `pm-${participantId}-${missionId}`,
+        participantId,
+        missionId,
+        nowMs,
+        nowMs,
+        pointsDelta,
+        pointsDelta
+      );
+  }
+
+  if (pointsDelta > 0) {
+    const eventKey = resolveNextIdempotentEventKey(participantId, baseEventKey);
+    const visitedList = (() => {
+      try {
+        const parsed = JSON.parse(participantRow.visited_startups_json || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    })();
+    const startupId = String(missionRow.startup_id || '');
+    if (startupId && !visitedList.includes(startupId)) {
+      visitedList.push(startupId);
+    }
+
+    targetDb
+      .prepare(
+        `UPDATE participants
+         SET points = ?, completed_missions_count = completed_missions_count + 1, visited_startups_json = ?
+         WHERE id = ?`
+      )
+      .run(newPoints, JSON.stringify(visitedList), participantId);
+
+    targetDb
+      .prepare(
+        `INSERT INTO points_transactions (
+           id, participant_id, participant_name, source_type, source_title,
+           points_delta, previous_balance, new_balance, created_at, created_at_ms, event_key, mission_id, source_completion_id
+         ) VALUES (?, ?, ?, 'Missão', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        `tx-${nowMs}-${Math.floor(Math.random() * 10000)}`,
+        participantId,
+        participantRow.name,
+        `Missão Extra: ${missionTitle}`,
+        pointsDelta,
+        prevPoints,
+        newPoints,
+        nowIso,
+        nowMs,
+        eventKey,
+        missionId,
+        sourceCompletionId
+      );
+  }
+
+  return { ok: true, pointsAwarded: pointsDelta };
+}
+
+function computeHomologationSnapshot(
+  targetDb: DatabaseSync,
+  scope: 'GERAL' | 'DIARIO',
+  eventDate: string | null
+) {
+  if (scope === 'GERAL') {
+    const ranking = (
+      targetDb
+        .prepare(
+          `SELECT id, name, nickname, points, ranking_position, completed_missions_count
+           FROM participants
+           WHERE UPPER(role) = 'PARTICIPANT' AND status = 'Ativo'
+           ORDER BY points DESC, completed_missions_count DESC, id ASC`
+        )
+        .all() as Array<{
+        id: string;
+        name: string;
+        nickname: string;
+        points: number;
+        ranking_position: number;
+        completed_missions_count: number;
+      }>
+    ).map((row, idx) => ({
+      participantId: row.id,
+      participantName: row.name,
+      points: Number(row.points || 0),
+      position: idx + 1,
+    }));
+
+    const leader = ranking[0] || null;
+    const leaderEvidences = leader
+      ? (
+          targetDb
+            .prepare(
+              `SELECT id, mission_id, status, points_awarded, reversed_points
+               FROM mission_completions
+               WHERE participant_id = ?
+               ORDER BY id ASC`
+            )
+            .all(leader.participantId) as Array<{
+            id: string;
+            mission_id: string;
+            status: string;
+            points_awarded: number;
+            reversed_points: number;
+          }>
+        )
+      : [];
+
+    const evidenceSummary = {
+      total: leaderEvidences.length,
+      approved: leaderEvidences.filter((e) => e.status === 'Aprovada').length,
+      pending: leaderEvidences.filter((e) => e.status === 'Pendente').length,
+      rejected: leaderEvidences.filter((e) => e.status === 'Rejeitada').length,
+    };
+
+    const canonicalPayload = {
+      scope: 'GERAL',
+      eventDate: null,
+      leader,
+      topThree: ranking.slice(0, 3),
+      leaderEvidences: leaderEvidences.map((e) => ({
+        id: e.id,
+        missionId: e.mission_id,
+        status: e.status,
+        pointsAwarded: Number(e.points_awarded || 0),
+        reversedPoints: Number(e.reversed_points || 0),
+      })),
+    };
+
+    const dataFingerprint = crypto
+      .createHash('sha256')
+      .update(JSON.stringify(canonicalPayload))
+      .digest('hex');
+
+    return {
+      scope,
+      eventDate: null,
+      leader,
+      evidenceSummary,
+      dataFingerprint,
+    };
+  }
+
+  // Escopo DIARIO (independente por dia oficial)
+  const dayConfig = DAILY_AWARD_DAYS.find((d) => d.eventDate === eventDate);
+  if (!dayConfig) {
+    return {
+      scope,
+      eventDate,
+      leader: null,
+      evidenceSummary: { total: 0, approved: 0, pending: 0, rejected: 0 },
+      dataFingerprint: crypto
+        .createHash('sha256')
+        .update(JSON.stringify({ scope: 'DIARIO', eventDate, leader: null }))
+        .digest('hex'),
+    };
+  }
+
+  const liveDayRanking = computeLiveDailyRanking(targetDb, dayConfig);
+  const topEntry = liveDayRanking[0] || null;
+  let leader: {
+    participantId: string;
+    participantName: string;
+    points: number;
+    position: number;
+    lastMissionCompletedAtMs: number | null;
+  } | null = null;
+
+  if (topEntry) {
+    const pRow = targetDb
+      .prepare('SELECT name FROM participants WHERE id = ? LIMIT 1')
+      .get(topEntry.participantId) as { name?: string } | undefined;
+    leader = {
+      participantId: topEntry.participantId,
+      participantName: pRow?.name || topEntry.displayName,
+      points: topEntry.dailyPoints,
+      position: topEntry.position,
+      lastMissionCompletedAtMs: topEntry.lastMissionCompletedAtMs,
+    };
+  }
+
+  // Evidências do líder referentes às missões que pontuaram naquele dia
+  const dayMissionIds = leader
+    ? (
+        targetDb
+          .prepare(
+            `SELECT DISTINCT mission_id
+             FROM points_transactions
+             WHERE participant_id = ?
+               AND mission_id IS NOT NULL
+               AND created_at_ms IS NOT NULL
+               AND created_at_ms >= ?
+               AND created_at_ms < ?`
+          )
+          .all(leader.participantId, dayConfig.dayStartMs, dayConfig.scheduledCloseAtMs) as Array<{
+          mission_id: string;
+        }>
+      ).map((r) => r.mission_id)
+    : [];
+
+  const leaderDayEvidences =
+    leader && dayMissionIds.length > 0
+      ? (
+          targetDb
+            .prepare(
+              `SELECT id, mission_id, status, points_awarded, reversed_points
+               FROM mission_completions
+               WHERE participant_id = ?
+                 AND mission_id IN (${dayMissionIds.map(() => '?').join(',')})
+               ORDER BY id ASC`
+            )
+            .all(leader.participantId, ...dayMissionIds) as Array<{
+            id: string;
+            mission_id: string;
+            status: string;
+            points_awarded: number;
+            reversed_points: number;
+          }>
+        )
+      : [];
+
+  const evidenceSummary = {
+    total: leaderDayEvidences.length,
+    approved: leaderDayEvidences.filter((e) => e.status === 'Aprovada').length,
+    pending: leaderDayEvidences.filter((e) => e.status === 'Pendente').length,
+    rejected: leaderDayEvidences.filter((e) => e.status === 'Rejeitada').length,
+  };
+
+  const canonicalPayload = {
+    scope: 'DIARIO',
+    eventDate: dayConfig.eventDate,
+    leader,
+    topThree: liveDayRanking.slice(0, 3).map((e) => ({
+      participantId: e.participantId,
+      dailyPoints: e.dailyPoints,
+      position: e.position,
+      lastMissionCompletedAtMs: e.lastMissionCompletedAtMs,
+    })),
+    leaderEvidences: leaderDayEvidences.map((e) => ({
+      id: e.id,
+      missionId: e.mission_id,
+      status: e.status,
+      pointsAwarded: Number(e.points_awarded || 0),
+      reversedPoints: Number(e.reversed_points || 0),
+    })),
+  };
+
+  const dataFingerprint = crypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonicalPayload))
+    .digest('hex');
+
+  return {
+    scope,
+    eventDate: dayConfig.eventDate,
+    leader,
+    evidenceSummary,
+    dataFingerprint,
+  };
+}
+
+/**
+ * Revalida de forma independente todas as homologações ativas ('Homologado').
+ * Invalida SOMENTE aquelas cujo data_fingerprint efetivamente mudou, preservando o histórico.
+ */
+function revalidateActiveHomologationsInDb(targetDb: DatabaseSync, triggerReason: string): number {
+  const activeRows = targetDb
+    .prepare("SELECT * FROM winner_homologations WHERE status = 'Homologado'")
+    .all() as Record<string, unknown>[];
+
+  if (activeRows.length === 0) return 0;
+
+  let invalidatedCount = 0;
+  const nowIso = new Date().toISOString();
+
+  for (const row of activeRows) {
+    const scope = String(row.scope) as 'GERAL' | 'DIARIO';
+    const eventDate = row.event_date ? String(row.event_date) : null;
+    const savedFingerprint = String(row.data_fingerprint || '');
+    const currentSnapshot = computeHomologationSnapshot(targetDb, scope, eventDate);
+
+    if (currentSnapshot.dataFingerprint !== savedFingerprint) {
+      targetDb
+        .prepare(
+          `UPDATE winner_homologations
+           SET status = 'Invalidado',
+               invalidated_reason = ?,
+               invalidated_at = ?
+           WHERE id = ? AND status = 'Homologado'`
+        )
+        .run(triggerReason, nowIso, String(row.id));
+      invalidatedCount++;
+    }
+  }
+
+  return invalidatedCount;
 }
 
 // ============================================================================
@@ -994,11 +1439,15 @@ app.get('/api/bootstrap', (req, res) => {
   const validationQueue = isAdmin
     ? getEnrichedAdminValidations()
     : authenticatedParticipant && isParticipantSession
-    ? (
-        db
+    ? (() => {
+        const participantRows = db
           .prepare('SELECT * FROM mission_completions WHERE participant_id = ? ORDER BY rowid DESC')
-          .all(authenticatedParticipant.id) as Record<string, unknown>[]
-      ).map(mapValidationRow)
+          .all(authenticatedParticipant.id) as Record<string, unknown>[];
+        const filesMap = getEvidenceFilesForCompletions(
+          participantRows.map((r) => String(r.id))
+        );
+        return participantRows.map((r) => mapValidationRow(r, filesMap.get(String(r.id))));
+      })()
     : [];
 
   const pointsTransactions = isAdmin
@@ -1040,6 +1489,12 @@ app.get('/api/bootstrap', (req, res) => {
         missionPerformance: [],
       };
 
+  const homologations = (
+    db
+      .prepare('SELECT * FROM winner_homologations ORDER BY homologated_at_ms DESC')
+      .all() as Record<string, unknown>[]
+  ).map(mapHomologationRow);
+
   res.json({
     participant,
     allParticipants,
@@ -1049,6 +1504,7 @@ app.get('/api/bootstrap', (req, res) => {
     validationQueue,
     publicRanking,
     dailyRankings,
+    homologations,
     pointsTransactions,
     eventSettings,
     governancePlans,
@@ -2610,6 +3066,17 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
 function startMissionForParticipant(participantId: string, missionId: string) {
   db.exec('BEGIN IMMEDIATE TRANSACTION;');
   try {
+    const eligibility = assertParticipantEligibleForCompetition(db, participantId);
+    if (!eligibility.ok) {
+      db.exec('ROLLBACK;');
+      return {
+        ok: false as const,
+        httpStatus: eligibility.httpStatus,
+        errorCode: eligibility.code,
+        error: eligibility.error,
+      };
+    }
+
     ensureParticipantFirstMissionUnlockedInDb(participantId);
 
     const missionRow = db
@@ -2930,6 +3397,17 @@ app.patch('/api/missions/:id/status', requireParticipant, (req: RequestWithAuth,
     return;
   }
 
+  const eligibility = assertParticipantEligibleForCompetition(db, currentParticipant.id);
+  if (!eligibility.ok) {
+    res.status(eligibility.httpStatus).json({
+      success: false,
+      errorCode: eligibility.code,
+      code: eligibility.code,
+      error: eligibility.error,
+    });
+    return;
+  }
+
   ensureParticipantFirstMissionUnlockedInDb(currentParticipant.id);
 
   // Impede tentativas de desbloquear ou concluir missões diretamente pelo navegador via endpoint de status
@@ -2961,6 +3439,17 @@ app.patch('/api/missions/:id/status', requireParticipant, (req: RequestWithAuth,
 app.post('/api/missions/:id/complete', requireParticipant, (req: RequestWithAuth, res) => {
   const { id } = req.params;
   const participantId = req.authSession!.userId;
+
+  const eligibility = assertParticipantEligibleForCompetition(db, participantId);
+  if (!eligibility.ok) {
+    res.status(eligibility.httpStatus).json({
+      success: false,
+      status: eligibility.code,
+      code: eligibility.code,
+      error: eligibility.error,
+    });
+    return;
+  }
 
   const missionCheck = db
     .prepare('SELECT id, title, requires_evidence FROM missions WHERE id = ? LIMIT 1')
@@ -3162,6 +3651,16 @@ export function submitEvidenceUploadInDb(
     };
   }
 
+  const requiredEvidenceCount = Math.max(1, Number(missionRow.required_evidence_count || 1));
+  if (requiredEvidenceCount > 1) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'MULTIPLE_EVIDENCE_REQUIRED',
+      error: `Esta missão exige o envio de exatamente ${requiredEvidenceCount} imagens na mesma submissão.`,
+    };
+  }
+
   const rawEvType = String(missionRow.evidence_type || 'photo').toLowerCase();
   const validEvTypes: EvidenceRequirementType[] = [
     'photo',
@@ -3327,26 +3826,12 @@ export function submitEvidenceUploadInDb(
       };
     }
 
-    // Bloqueia envio após expiração do cronômetro iniciado pelo servidor
-    if (
-      isOfficial &&
-      existingPm?.started_at_ms &&
-      existingPm?.target_end_at_ms &&
-      nowMs > Number(existingPm.target_end_at_ms)
-    ) {
-      targetDb.exec('ROLLBACK;');
-      deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
-      return {
-        ok: false,
-        httpStatus: 409,
-        code: 'MISSION_TIMER_EXPIRED',
-        error: 'O tempo limite desta missão expirou. Não é permitido enviar evidência após a expiração.',
-      };
-    }
+    // Cronômetro é critério exclusivo de bônus de velocidade (calculado em completeSequentialMissionInSql);
+    // a expiração zera o bônus, mas não impede envio, conclusão ou desbloqueio.
 
     // Proteção contra duplicidade de arquivo via SHA-256
     // 1. Mesmo participante jamais pode reutilizar o mesmo arquivo em qualquer missão ativa
-    const sameParticipantReuse = targetDb
+    const sameParticipantReuse = (targetDb
       .prepare(
         `SELECT id, mission_id, mission_title
          FROM mission_completions
@@ -3355,7 +3840,18 @@ export function submitEvidenceUploadInDb(
            AND status IN ('Pendente', 'Aprovada')
          LIMIT 1`
       )
-      .get(fileCheck.sha256, params.participantId) as
+      .get(fileCheck.sha256, params.participantId) ||
+      targetDb
+        .prepare(
+          `SELECT mc.id, mc.mission_id, mc.mission_title
+           FROM mission_completion_files mcf
+           INNER JOIN mission_completions mc ON mc.id = mcf.completion_id
+           WHERE mcf.sha256 = ?
+             AND mc.participant_id = ?
+             AND mc.status IN ('Pendente', 'Aprovada')
+           LIMIT 1`
+        )
+        .get(fileCheck.sha256, params.participantId)) as
       | { id: string; mission_id: string; mission_title: string }
       | undefined;
 
@@ -3372,7 +3868,7 @@ export function submitEvidenceUploadInDb(
 
     // 2. Outro participante usando o mesmo arquivo: bloqueado em todas as missões,
     // EXCETO quando allow_shared_evidence = 1 na MESMA missão (ex.: Trio de inovação)
-    const otherParticipantReuse = targetDb
+    const otherParticipantReuse = (targetDb
       .prepare(
         `SELECT id, mission_id, mission_title, participant_id
          FROM mission_completions
@@ -3381,7 +3877,18 @@ export function submitEvidenceUploadInDb(
            AND status IN ('Pendente', 'Aprovada')
          LIMIT 1`
       )
-      .get(fileCheck.sha256, params.participantId) as
+      .get(fileCheck.sha256, params.participantId) ||
+      targetDb
+        .prepare(
+          `SELECT mc.id, mc.mission_id, mc.mission_title, mc.participant_id
+           FROM mission_completion_files mcf
+           INNER JOIN mission_completions mc ON mc.id = mcf.completion_id
+           WHERE mcf.sha256 = ?
+             AND mc.participant_id != ?
+             AND mc.status IN ('Pendente', 'Aprovada')
+           LIMIT 1`
+        )
+        .get(fileCheck.sha256, params.participantId)) as
       | { id: string; mission_id: string; mission_title: string; participant_id: string }
       | undefined;
 
@@ -3438,12 +3945,57 @@ export function submitEvidenceUploadInDb(
       targetDb
         .prepare(
           `UPDATE participant_missions
-           SET status = 'Aguardando validação',
+           SET status = 'Em andamento',
                submitted_at_ms = ?,
                elapsed_seconds = ?
            WHERE participant_id = ? AND mission_id = ?`
         )
         .run(nowMs, frozenElapsed, params.participantId, String(missionRow.id));
+
+      const seqResult = completeSequentialMissionInSql({
+        participantId: params.participantId,
+        missionId: String(missionRow.id),
+        sourceType: 'Missão',
+        useExistingTransaction: true,
+        targetDb,
+        sourceCompletionId: newId,
+      });
+
+      if (!seqResult.ok) {
+        targetDb.exec('ROLLBACK;');
+        deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+        return {
+          ok: false,
+          httpStatus: seqResult.httpStatus,
+          code: seqResult.status,
+          error: seqResult.message,
+        };
+      }
+
+      targetDb
+        .prepare('UPDATE mission_completions SET points_awarded = ? WHERE id = ?')
+        .run(seqResult.missionPointsAwarded, newId);
+    } else {
+      const extraRes = completeExtraMissionInExistingTx({
+        targetDb,
+        participantId: params.participantId,
+        missionRow,
+        sourceCompletionId: newId,
+        nowMs,
+      });
+      if (!extraRes.ok) {
+        targetDb.exec('ROLLBACK;');
+        deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+        return {
+          ok: false,
+          httpStatus: extraRes.httpStatus,
+          code: 'EXTRA_MISSION_ERROR',
+          error: extraRes.error,
+        };
+      }
+      targetDb
+        .prepare('UPDATE mission_completions SET points_awarded = ? WHERE id = ?')
+        .run(extraRes.pointsAwarded, newId);
     }
 
     targetDb.exec('COMMIT;');
@@ -3464,6 +4016,11 @@ export function submitEvidenceUploadInDb(
     }
     throw err;
   }
+
+  if (targetDb === db) {
+    recalculateRankingsInDb();
+  }
+  revalidateActiveHomologationsInDb(targetDb, 'Novo envio de evidência com pontuação contabilizada');
 
   const created = targetDb
     .prepare('SELECT * FROM mission_completions WHERE id = ?')
@@ -3535,6 +4092,15 @@ app.post(
 
     const currentParticipant = mapParticipantRow(participantRow);
 
+    const eligibility = assertParticipantEligibleForCompetition(db, currentParticipant.id);
+    if (!eligibility.ok) {
+      res.status(eligibility.httpStatus).json({
+        error: eligibility.error,
+        code: eligibility.code,
+      });
+      return;
+    }
+
     const headerParticipantId = String(req.headers['x-participant-id'] || '').trim();
     if (headerParticipantId && headerParticipantId !== currentParticipant.id) {
       res.status(403).json({
@@ -3584,7 +4150,690 @@ app.post(
     res.status(201).json({
       ok: true,
       validation: result.validation,
-      message: 'Evidência enviada com sucesso e aguardando validação administrativa.',
+      message:
+        'Evidência registrada com sucesso. Pontuação contabilizada e próxima missão liberada (evidência sujeita à conferência final).',
+    });
+  }
+);
+
+export function submitEvidenceBatchInDb(
+  targetDb: typeof db,
+  params: {
+    participantId: string;
+    participantName: string;
+    missionId: string;
+    files: Array<{
+      buffer: Buffer;
+      originalName: string;
+      declaredMimeType: string;
+    }>;
+    description?: string;
+    storageDir?: string;
+  }
+):
+  | { ok: true; httpStatus: 201; validation: ReturnType<typeof mapValidationRow> }
+  | { ok: false; httpStatus: number; code: string; error: string } {
+  const storageDir = params.storageDir || EVIDENCE_STORAGE_DIR;
+
+  const missionRow = targetDb
+    .prepare('SELECT * FROM missions WHERE id = ? AND active = 1 LIMIT 1')
+    .get(params.missionId) as Record<string, unknown> | undefined;
+
+  if (!missionRow) {
+    return {
+      ok: false,
+      httpStatus: 404,
+      code: 'MISSION_NOT_FOUND',
+      error: 'Missão não encontrada ou inativa.',
+    };
+  }
+
+  if (!Boolean(missionRow.requires_evidence)) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'EVIDENCE_NOT_REQUIRED',
+      error: 'Esta missão não exige o envio de evidência por arquivo.',
+    };
+  }
+
+  const requiredEvidenceCount = Math.max(1, Number(missionRow.required_evidence_count || 1));
+  if (requiredEvidenceCount <= 1) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'SINGLE_EVIDENCE_ONLY',
+      error: 'Esta missão aceita apenas 1 arquivo de evidência pela rota padrão de envio.',
+    };
+  }
+
+  if (!Array.isArray(params.files) || params.files.length !== requiredEvidenceCount) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'INVALID_EVIDENCE_COUNT',
+      error: `Esta missão exige exatamente ${requiredEvidenceCount} imagens na mesma submissão (recebido: ${Array.isArray(params.files) ? params.files.length : 0}).`,
+    };
+  }
+
+  const rawEvType = String(missionRow.evidence_type || 'print').toLowerCase();
+  const validEvTypes: EvidenceRequirementType[] = [
+    'photo',
+    'print',
+    'video',
+    'photo_or_video',
+    'text',
+    'file',
+    'both',
+  ];
+  const requiredType: EvidenceRequirementType = validEvTypes.includes(
+    rawEvType as EvidenceRequirementType
+  )
+    ? (rawEvType as EvidenceRequirementType)
+    : 'print';
+
+  if (requiredType === 'text') {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'TEXT_EVIDENCE_ONLY',
+      error: 'Esta missão exige resposta em texto pela rota de submissão de texto.',
+    };
+  }
+
+  const maxVideoSeconds =
+    missionRow.max_video_seconds !== null && missionRow.max_video_seconds !== undefined
+      ? Number(missionRow.max_video_seconds)
+      : null;
+
+  const isOfficial =
+    missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+
+  let completionPoints = 0;
+  if (isOfficial) {
+    const rawComp = missionRow.completion_points;
+    if (
+      rawComp === null ||
+      rawComp === undefined ||
+      !Number.isInteger(Number(rawComp)) ||
+      Number(rawComp) <= 0
+    ) {
+      return {
+        ok: false,
+        httpStatus: 500,
+        code: 'INVALID_CIRCUIT_SCORING',
+        error: `A missão oficial "${missionRow.title}" não possui completion_points dinâmico válido no banco.`,
+      };
+    }
+    completionPoints = Number(rawComp);
+  } else {
+    completionPoints = Number(missionRow.points || 0);
+  }
+
+  // Valida todas as imagens antes de gravar qualquer arquivo no disco
+  const validatedFiles: Array<{
+    buffer: Buffer;
+    safeDisplayName: string;
+    storedName: string;
+    mimeType: string;
+    sizeBytes: number;
+    sha256: string;
+    durationSeconds: number | null;
+  }> = [];
+  const seenBatchHashes = new Set<string>();
+
+  for (let i = 0; i < params.files.length; i += 1) {
+    const item = params.files[i];
+    const check = validateAndDetectEvidenceFile({
+      buffer: item.buffer,
+      originalName: item.originalName,
+      declaredMimeType: item.declaredMimeType,
+      requiredType,
+      maxVideoSeconds,
+    });
+    if (!check.ok) {
+      return {
+        ok: false,
+        httpStatus: check.httpStatus,
+        code: check.code,
+        error: `Imagem ${i + 1}: ${check.error}`,
+      };
+    }
+
+    if (seenBatchHashes.has(check.sha256)) {
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'DUPLICATE_EVIDENCE_FILE_IN_BATCH',
+        error:
+          'As 3 imagens enviadas devem ser diferentes entre si (envie um print distinto para cada perfil: @exdevedor, @signedu e @editoraescreva).',
+      };
+    }
+    seenBatchHashes.add(check.sha256);
+
+    validatedFiles.push({
+      buffer: item.buffer,
+      safeDisplayName: check.safeDisplayName,
+      storedName: check.storedName,
+      mimeType: check.mimeType,
+      sizeBytes: check.sizeBytes,
+      sha256: check.sha256,
+      durationSeconds: check.durationSeconds,
+    });
+  }
+
+  // Grava os arquivos no disco com limpeza compensatória em caso de erro de escrita
+  const writtenStoredNames: string[] = [];
+  const cleanupWrittenFiles = () => {
+    for (const storedName of writtenStoredNames) {
+      deleteEvidenceFileIfExists(storedName, storageDir);
+    }
+  };
+
+  try {
+    for (const vf of validatedFiles) {
+      saveEvidenceFileToDisk(vf.buffer, vf.storedName, storageDir);
+      writtenStoredNames.push(vf.storedName);
+    }
+  } catch (writeErr: any) {
+    cleanupWrittenFiles();
+    return {
+      ok: false,
+      httpStatus: 500,
+      code: 'STORAGE_WRITE_ERROR',
+      error: `Falha ao armazenar os arquivos de evidência: ${writeErr?.message || 'erro de escrita'}.`,
+    };
+  }
+
+  const newId = `val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const evidenceCode = `EV-${Date.now().toString().slice(-6)}`;
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const nowStr = new Date(nowMs).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const firstFile = validatedFiles[0];
+  const description =
+    (params.description || '').trim() ||
+    `Conjunto com ${validatedFiles.length} imagens enviadas: ${validatedFiles
+      .map((f) => f.safeDisplayName)
+      .join(', ')}`;
+
+  const missionTrackKey = missionRow.track_id ? String(missionRow.track_id) : 'default';
+  const allowSharedEvidence = Boolean(missionRow.allow_shared_evidence);
+
+  targetDb.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    // 1. Bloqueio sequencial dentro da trilha
+    if (isOfficial && Number(missionRow.sequence_order) > 1) {
+      const seqOrder = Number(missionRow.sequence_order);
+      const prevMission = targetDb
+        .prepare(
+          "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
+        )
+        .get(missionTrackKey, seqOrder - 1) as { id: string; title: string } | undefined;
+
+      if (prevMission) {
+        const prevCompleteTx = findActiveTransactionByEventKeys(
+          params.participantId,
+          [
+            `COMPLETE:${params.participantId}:${prevMission.id}`,
+            `COMPLETE:${params.participantId}:${prevMission.id}:POST_SIM_REV`,
+          ],
+          targetDb
+        );
+        const prevPm = targetDb
+          .prepare(
+            'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+          )
+          .get(params.participantId, prevMission.id) as { status: string } | undefined;
+
+        if (!prevCompleteTx && (!prevPm || prevPm.status !== 'Concluída')) {
+          targetDb.exec('ROLLBACK;');
+          cleanupWrittenFiles();
+          return {
+            ok: false,
+            httpStatus: 403,
+            code: 'MISSION_LOCKED',
+            error: `Bloqueio sequencial: conclua a etapa 0${seqOrder - 1} antes de enviar evidências desta missão.`,
+          };
+        }
+      }
+    }
+
+    // 2. Impede envio duplicado da mesma missão
+    const existingCompleteTx = findActiveTransactionByEventKeys(
+      params.participantId,
+      [
+        `COMPLETE:${params.participantId}:${params.missionId}`,
+        `COMPLETE:${params.participantId}:${params.missionId}:POST_SIM_REV`,
+      ],
+      targetDb
+    );
+    const existingPm = targetDb
+      .prepare(
+        'SELECT status, started_at_ms, target_end_at_ms FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+      )
+      .get(params.participantId, params.missionId) as
+      | { status: string; started_at_ms: number | null; target_end_at_ms: number | null }
+      | undefined;
+    const existingSubmission = targetDb
+      .prepare(
+        "SELECT id, status FROM mission_completions WHERE participant_id = ? AND mission_id = ? AND status IN ('Pendente', 'Aprovada') LIMIT 1"
+      )
+      .get(params.participantId, params.missionId) as { id: string; status: string } | undefined;
+
+    if (
+      existingCompleteTx ||
+      (existingPm && existingPm.status === 'Concluída') ||
+      existingSubmission
+    ) {
+      targetDb.exec('ROLLBACK;');
+      cleanupWrittenFiles();
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'EVIDENCE_ALREADY_SUBMITTED',
+        error:
+          existingSubmission?.status === 'Pendente'
+            ? 'Você já enviou evidências para esta missão e elas estão aguardando conferência.'
+            : 'Esta missão já foi concluída anteriormente.',
+      };
+    }
+
+    // 3. Cronômetro é critério exclusivo de bônus de velocidade (calculado em completeSequentialMissionInSql);
+    // a expiração zera o bônus, mas não impede envio, conclusão ou desbloqueio.
+
+    // 4. Proteção anti-duplicidade SHA-256 para cada uma das 3 imagens (tabela pai e tabela filha)
+    for (let i = 0; i < validatedFiles.length; i += 1) {
+      const vf = validatedFiles[i];
+
+      const sameParticipantReuse = (targetDb
+        .prepare(
+          `SELECT id, mission_id, mission_title
+           FROM mission_completions
+           WHERE evidence_sha256 = ?
+             AND participant_id = ?
+             AND status IN ('Pendente', 'Aprovada')
+           LIMIT 1`
+        )
+        .get(vf.sha256, params.participantId) ||
+        targetDb
+          .prepare(
+            `SELECT mc.id, mc.mission_id, mc.mission_title
+             FROM mission_completion_files mcf
+             INNER JOIN mission_completions mc ON mc.id = mcf.completion_id
+             WHERE mcf.sha256 = ?
+               AND mc.participant_id = ?
+               AND mc.status IN ('Pendente', 'Aprovada')
+             LIMIT 1`
+          )
+          .get(vf.sha256, params.participantId)) as
+        | { id: string; mission_id: string; mission_title: string }
+        | undefined;
+
+      if (sameParticipantReuse) {
+        targetDb.exec('ROLLBACK;');
+        cleanupWrittenFiles();
+        return {
+          ok: false,
+          httpStatus: 409,
+          code: 'DUPLICATE_EVIDENCE_FILE',
+          error: `A imagem ${i + 1} já foi utilizada por você na missão "${sameParticipantReuse.mission_title}". Envie evidências inéditas.`,
+        };
+      }
+
+      const otherParticipantReuse = (targetDb
+        .prepare(
+          `SELECT id, mission_id, mission_title, participant_id
+           FROM mission_completions
+           WHERE evidence_sha256 = ?
+             AND participant_id != ?
+             AND status IN ('Pendente', 'Aprovada')
+           LIMIT 1`
+        )
+        .get(vf.sha256, params.participantId) ||
+        targetDb
+          .prepare(
+            `SELECT mc.id, mc.mission_id, mc.mission_title, mc.participant_id
+             FROM mission_completion_files mcf
+             INNER JOIN mission_completions mc ON mc.id = mcf.completion_id
+             WHERE mcf.sha256 = ?
+               AND mc.participant_id != ?
+               AND mc.status IN ('Pendente', 'Aprovada')
+             LIMIT 1`
+          )
+          .get(vf.sha256, params.participantId)) as
+        | { id: string; mission_id: string; mission_title: string; participant_id: string }
+        | undefined;
+
+      if (otherParticipantReuse) {
+        const isAllowedCollectivePhoto =
+          allowSharedEvidence && otherParticipantReuse.mission_id === String(missionRow.id);
+        if (!isAllowedCollectivePhoto) {
+          targetDb.exec('ROLLBACK;');
+          cleanupWrittenFiles();
+          return {
+            ok: false,
+            httpStatus: 409,
+            code: 'DUPLICATE_EVIDENCE_FILE',
+            error: `A imagem ${i + 1} já foi enviada anteriormente em outra submissão. Utilize registros inéditos.`,
+          };
+        }
+      }
+    }
+
+    // 5. Insere UMA única conclusão em mission_completions espelhando a 1ª imagem nas colunas legadas
+    targetDb
+      .prepare(`
+        INSERT INTO mission_completions (
+          id, participant_id, participant_name, mission_id, mission_title,
+          startup_id, startup_name, submitted_at, evidence_description,
+          evidence_code, evidence_file_name, evidence_stored_name,
+          evidence_mime_type, evidence_size_bytes, evidence_sha256,
+          evidence_duration_seconds, points_awarded, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendente')
+      `)
+      .run(
+        newId,
+        params.participantId,
+        params.participantName,
+        String(missionRow.id),
+        String(missionRow.title),
+        String(missionRow.startup_id),
+        String(missionRow.startup_name),
+        nowStr,
+        description,
+        evidenceCode,
+        firstFile.safeDisplayName,
+        firstFile.storedName,
+        firstFile.mimeType,
+        firstFile.sizeBytes,
+        firstFile.sha256,
+        firstFile.durationSeconds,
+        completionPoints
+      );
+
+    // 6. Insere os 3 registros na tabela filha mission_completion_files
+    const insertChildStmt = targetDb.prepare(`
+      INSERT INTO mission_completion_files (
+        id, completion_id, file_order, file_name, stored_name,
+        mime_type, size_bytes, sha256, duration_seconds, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (let i = 0; i < validatedFiles.length; i += 1) {
+      const vf = validatedFiles[i];
+      const childId = `evf-${nowMs}-${i + 1}-${Math.random().toString(36).slice(2, 6)}`;
+      insertChildStmt.run(
+        childId,
+        newId,
+        i + 1,
+        vf.safeDisplayName,
+        vf.storedName,
+        vf.mimeType,
+        vf.sizeBytes,
+        vf.sha256,
+        vf.durationSeconds,
+        nowIso
+      );
+    }
+
+    // 7. Registra conclusão única e credita pontos imediatos uma única vez
+    if (isOfficial) {
+      const frozenElapsed = existingPm?.started_at_ms
+        ? Math.max(0, Math.round((nowMs - Number(existingPm.started_at_ms)) / 1000))
+        : 0;
+      targetDb
+        .prepare(
+          `UPDATE participant_missions
+           SET status = 'Em andamento',
+               submitted_at_ms = ?,
+               elapsed_seconds = ?
+           WHERE participant_id = ? AND mission_id = ?`
+        )
+        .run(nowMs, frozenElapsed, params.participantId, String(missionRow.id));
+
+      const seqResult = completeSequentialMissionInSql({
+        participantId: params.participantId,
+        missionId: String(missionRow.id),
+        sourceType: 'Missão',
+        useExistingTransaction: true,
+        targetDb,
+        sourceCompletionId: newId,
+      });
+
+      if (!seqResult.ok) {
+        targetDb.exec('ROLLBACK;');
+        cleanupWrittenFiles();
+        return {
+          ok: false,
+          httpStatus: seqResult.httpStatus,
+          code: seqResult.status,
+          error: seqResult.message,
+        };
+      }
+
+      targetDb
+        .prepare('UPDATE mission_completions SET points_awarded = ? WHERE id = ?')
+        .run(seqResult.missionPointsAwarded, newId);
+    } else {
+      const extraRes = completeExtraMissionInExistingTx({
+        targetDb,
+        participantId: params.participantId,
+        missionRow,
+        sourceCompletionId: newId,
+        nowMs,
+      });
+      if (!extraRes.ok) {
+        targetDb.exec('ROLLBACK;');
+        cleanupWrittenFiles();
+        return {
+          ok: false,
+          httpStatus: extraRes.httpStatus,
+          code: 'EXTRA_MISSION_ERROR',
+          error: extraRes.error,
+        };
+      }
+      targetDb
+        .prepare('UPDATE mission_completions SET points_awarded = ? WHERE id = ?')
+        .run(extraRes.pointsAwarded, newId);
+    }
+
+    targetDb.exec('COMMIT;');
+  } catch (err: any) {
+    try {
+      targetDb.exec('ROLLBACK;');
+    } catch {
+      // transação já revertida
+    }
+    cleanupWrittenFiles();
+    if (String(err?.message || '').includes('UNIQUE constraint failed')) {
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'EVIDENCE_ALREADY_SUBMITTED',
+        error: 'Você já possui uma evidência ativa ou aprovada para esta missão.',
+      };
+    }
+    throw err;
+  }
+
+  if (targetDb === db) {
+    recalculateRankingsInDb();
+  }
+  revalidateActiveHomologationsInDb(
+    targetDb,
+    'Novo envio em lote de evidências com pontuação contabilizada'
+  );
+
+  const created = targetDb
+    .prepare('SELECT * FROM mission_completions WHERE id = ?')
+    .get(newId) as Record<string, unknown>;
+  const filesMap = getEvidenceFilesForCompletions([newId], targetDb);
+
+  return {
+    ok: true,
+    httpStatus: 201,
+    validation: mapValidationRow(created, filesMap.get(newId)),
+  };
+}
+
+const evidenceBatchMultipartMiddleware = express.raw({
+  type: 'multipart/form-data',
+  limit: '20mb',
+});
+
+app.post(
+  '/api/evidences/upload-batch',
+  evidenceUploadRateLimiter,
+  (req, res, next) => {
+    evidenceBatchMultipartMiddleware(req, res, (err?: any) => {
+      if (err) {
+        if (err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413) {
+          res.status(413).json({
+            error: 'O conjunto de arquivos excede o limite máximo permitido (5 MB por imagem).',
+            code: 'FILE_TOO_LARGE',
+          });
+          return;
+        }
+        res.status(400).json({
+          error: 'Falha ao processar os arquivos enviados.',
+          code: 'INVALID_UPLOAD_PAYLOAD',
+        });
+        return;
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    const session = resolveSessionFromRequest(req);
+    if (!session) {
+      res.status(401).json({
+        error: 'Não autenticado. Faça login para enviar evidências.',
+        code: 'AUTH_REQUIRED',
+      });
+      return;
+    }
+
+    if (session.role !== 'PARTICIPANT') {
+      res.status(403).json({
+        error: 'Apenas participantes autenticados podem enviar evidências de missões.',
+        code: 'PARTICIPANT_ROLE_REQUIRED',
+      });
+      return;
+    }
+
+    const participantRow = db
+      .prepare("SELECT * FROM participants WHERE id = ? AND UPPER(role) = 'PARTICIPANT' LIMIT 1")
+      .get(session.userId) as Record<string, unknown> | undefined;
+
+    if (!participantRow) {
+      res.status(401).json({
+        error: 'Sessão de participante inválida ou expirada.',
+        code: 'AUTH_REQUIRED',
+      });
+      return;
+    }
+
+    const currentParticipant = mapParticipantRow(participantRow);
+
+    const eligibility = assertParticipantEligibleForCompetition(db, currentParticipant.id);
+    if (!eligibility.ok) {
+      res.status(eligibility.httpStatus).json({
+        error: eligibility.error,
+        code: eligibility.code,
+      });
+      return;
+    }
+
+    const headerParticipantId = String(req.headers['x-participant-id'] || '').trim();
+    if (headerParticipantId && headerParticipantId !== currentParticipant.id) {
+      res.status(403).json({
+        error: 'Operação negada: não é permitido enviar evidências em nome de outro participante.',
+        code: 'FORBIDDEN_PARTICIPANT_MISMATCH',
+      });
+      return;
+    }
+
+    const contentType = String(req.headers['content-type'] || '');
+    if (!contentType.toLowerCase().includes('multipart/form-data') || !Buffer.isBuffer(req.body)) {
+      res.status(400).json({
+        error: 'Envio inválido: utilize multipart/form-data com as 3 imagens.',
+        code: 'INVALID_MULTIPART_PAYLOAD',
+      });
+      return;
+    }
+
+    let formData: FormData;
+    try {
+      const parseReq = new Request('http://localhost/api/evidences/upload-batch', {
+        method: 'POST',
+        headers: { 'content-type': contentType },
+        body: new Uint8Array(req.body),
+      });
+      formData = await parseReq.formData();
+    } catch {
+      res.status(400).json({
+        error: 'Não foi possível ler os arquivos do formulário multipart.',
+        code: 'INVALID_MULTIPART_PAYLOAD',
+      });
+      return;
+    }
+
+    const missionId = String(
+      formData.get('missionId') || req.headers['x-mission-id'] || ''
+    ).trim();
+    const description = String(formData.get('description') || '').trim();
+
+    const rawEntries = [
+      ...formData.getAll('files'),
+      ...formData.getAll('files[]'),
+      ...formData.getAll('file'),
+    ];
+    const parsedFiles: Array<{
+      buffer: Buffer;
+      originalName: string;
+      declaredMimeType: string;
+    }> = [];
+
+    for (const entry of rawEntries) {
+      if (entry && typeof entry !== 'string' && typeof (entry as Blob).arrayBuffer === 'function') {
+        const fileObj = entry as File;
+        const arrBuf = await fileObj.arrayBuffer();
+        parsedFiles.push({
+          buffer: Buffer.from(arrBuf),
+          originalName: fileObj.name || `imagem-${parsedFiles.length + 1}.jpg`,
+          declaredMimeType: fileObj.type || 'application/octet-stream',
+        });
+      }
+    }
+
+    const result = submitEvidenceBatchInDb(db, {
+      participantId: currentParticipant.id,
+      participantName: currentParticipant.name,
+      missionId,
+      files: parsedFiles,
+      description,
+    });
+
+    if (!result.ok) {
+      res.status(result.httpStatus).json({
+        error: result.error,
+        code: result.code,
+      });
+      return;
+    }
+
+    res.status(201).json({
+      ok: true,
+      validation: result.validation,
+      message:
+        'As 3 evidências foram registradas com sucesso em uma única conclusão. Pontuação contabilizada e missão concluída (sujeita à conferência final).',
     });
   }
 );
@@ -3602,7 +4851,8 @@ app.get('/api/evidences/me', (req, res) => {
   const rows = db
     .prepare('SELECT * FROM mission_completions WHERE participant_id = ? ORDER BY rowid DESC')
     .all(session.userId) as Record<string, unknown>[];
-  res.json(rows.map(mapValidationRow));
+  const filesMap = getEvidenceFilesForCompletions(rows.map((r) => String(r.id)));
+  res.json(rows.map((r) => mapValidationRow(r, filesMap.get(String(r.id)))));
 });
 
 app.get('/api/evidences/:id/file', (req, res) => {
@@ -3681,10 +4931,95 @@ app.get('/api/evidences/:id/file', (req, res) => {
   }
 });
 
+app.get('/api/evidences/:id/files/:fileId', (req, res) => {
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({
+      error: 'Não autenticado. Faça login para acessar evidências.',
+      code: 'AUTH_REQUIRED',
+    });
+    return;
+  }
+
+  const { id, fileId } = req.params;
+  const row = db
+    .prepare(
+      `SELECT mcf.id, mcf.completion_id, mcf.file_name, mcf.stored_name, mcf.mime_type,
+              mc.participant_id
+       FROM mission_completion_files mcf
+       INNER JOIN mission_completions mc ON mc.id = mcf.completion_id
+       WHERE mcf.completion_id = ? AND mcf.id = ?
+       LIMIT 1`
+    )
+    .get(id, fileId) as Record<string, unknown> | undefined;
+
+  if (!row || !row.stored_name) {
+    res.status(404).json({
+      error: 'Arquivo de evidência não encontrado.',
+      code: 'EVIDENCE_FILE_NOT_FOUND',
+    });
+    return;
+  }
+
+  const isOwner = String(row.participant_id) === session.userId;
+  const isAdminUser = session.role === 'ADMIN';
+  if (!isOwner && !isAdminUser) {
+    res.status(403).json({
+      error: 'Acesso negado: você só pode consultar suas próprias evidências.',
+      code: 'FORBIDDEN_EVIDENCE_ACCESS',
+    });
+    return;
+  }
+
+  try {
+    const filePath = resolveSafeEvidenceFilePath(String(row.stored_name));
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({
+        error: 'Arquivo físico de evidência não encontrado no servidor.',
+        code: 'EVIDENCE_FILE_MISSING',
+      });
+      return;
+    }
+
+    const mimeType = String(row.mime_type || 'application/octet-stream');
+    const rawDisplayName =
+      String(row.file_name || 'evidencia')
+        .replace(/[\r\n\x00-\x1f\x7f]+/g, '_')
+        .trim() || 'evidencia';
+    const asciiFallback =
+      rawDisplayName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\x20-\x7e]/g, '_')
+        .replace(/["\\;]/g, '_')
+        .trim() || 'evidencia';
+    const encodedUtf8 = encodeURIComponent(rawDisplayName).replace(
+      /['()*]/g,
+      (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+    );
+    const isPdf = mimeType === 'application/pdf';
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader(
+      'Content-Disposition',
+      `${isPdf ? 'attachment' : 'inline'}; filename="${asciiFallback}"; filename*=UTF-8''${encodedUtf8}`
+    );
+    res.sendFile(filePath);
+  } catch {
+    res.status(400).json({
+      error: 'Referência de arquivo inválida.',
+      code: 'INVALID_EVIDENCE_REFERENCE',
+    });
+  }
+});
+
 function getEnrichedAdminValidations() {
   const rows = db
     .prepare(`
       SELECT mc.*,
+             m.track_id AS track_id,
              p.image_publicity_consent AS participant_image_consent,
              p.image_publicity_consent_version AS participant_image_consent_version,
              CASE
@@ -3699,12 +5034,15 @@ function getEnrichedAdminValidations() {
              END AS shared_evidence_count
       FROM mission_completions mc
       LEFT JOIN participants p ON p.id = mc.participant_id
+      LEFT JOIN missions m ON m.id = mc.mission_id
       ORDER BY mc.rowid DESC
     `)
     .all() as Record<string, unknown>[];
 
+  const filesMap = getEvidenceFilesForCompletions(rows.map((r) => String(r.id)));
+
   return rows.map((r) => ({
-    ...mapValidationRow(r),
+    ...mapValidationRow(r, filesMap.get(String(r.id))),
     sharedEvidenceCount: Number(r.shared_evidence_count || 0),
     participantImageConsent: Boolean(r.participant_image_consent),
     participantImageConsentVersion: r.participant_image_consent_version
@@ -3748,6 +5086,16 @@ app.post('/api/validations', (req, res) => {
   }
 
   const currentParticipant = mapParticipantRow(participantRow);
+
+  const eligibility = assertParticipantEligibleForCompetition(db, currentParticipant.id);
+  if (!eligibility.ok) {
+    res.status(eligibility.httpStatus).json({
+      error: eligibility.error,
+      code: eligibility.code,
+    });
+    return;
+  }
+
   const p = (req.body || {}) as Record<string, unknown>;
 
   if (
@@ -3896,19 +5244,8 @@ app.post('/api/validations', (req, res) => {
       return;
     }
 
-    if (
-      isOfficial &&
-      existingPm?.started_at_ms &&
-      existingPm?.target_end_at_ms &&
-      nowMs > Number(existingPm.target_end_at_ms)
-    ) {
-      db.exec('ROLLBACK;');
-      res.status(409).json({
-        error: 'O tempo limite desta missão expirou. Não é permitido enviar evidência após a expiração.',
-        code: 'MISSION_TIMER_EXPIRED',
-      });
-      return;
-    }
+    // Cronômetro é critério exclusivo de bônus de velocidade (calculado em completeSequentialMissionInSql);
+    // a expiração zera o bônus, mas não impede envio, conclusão ou desbloqueio.
 
     db.prepare(`
       INSERT INTO mission_completions (
@@ -3936,11 +5273,51 @@ app.post('/api/validations', (req, res) => {
         : 0;
       db.prepare(
         `UPDATE participant_missions
-         SET status = 'Aguardando validação',
+         SET status = 'Em andamento',
              submitted_at_ms = ?,
              elapsed_seconds = ?
          WHERE participant_id = ? AND mission_id = ?`
       ).run(nowMs, frozenElapsed, targetParticipantId, String(missionRow.id));
+
+      const seqResult = completeSequentialMissionInSql({
+        participantId: targetParticipantId,
+        missionId: String(missionRow.id),
+        sourceType: 'Missão',
+        useExistingTransaction: true,
+        targetDb: db,
+        sourceCompletionId: newId,
+      });
+
+      if (!seqResult.ok) {
+        db.exec('ROLLBACK;');
+        res.status(seqResult.httpStatus).json({
+          error: seqResult.message,
+          code: seqResult.status,
+        });
+        return;
+      }
+
+      db.prepare('UPDATE mission_completions SET points_awarded = ? WHERE id = ?').run(
+        seqResult.missionPointsAwarded,
+        newId
+      );
+    } else {
+      const extraRes = completeExtraMissionInExistingTx({
+        targetDb: db,
+        participantId: targetParticipantId,
+        missionRow,
+        sourceCompletionId: newId,
+        nowMs,
+      });
+      if (!extraRes.ok) {
+        db.exec('ROLLBACK;');
+        res.status(extraRes.httpStatus).json({ error: extraRes.error });
+        return;
+      }
+      db.prepare('UPDATE mission_completions SET points_awarded = ? WHERE id = ?').run(
+        extraRes.pointsAwarded,
+        newId
+      );
     }
     db.exec('COMMIT;');
   } catch (err: any) {
@@ -3959,13 +5336,16 @@ app.post('/api/validations', (req, res) => {
     throw err;
   }
 
+  recalculateRankingsInDb();
+  revalidateActiveHomologationsInDb(db, 'Novo envio de evidência em texto com pontuação contabilizada');
+
   const created = db
     .prepare('SELECT * FROM mission_completions WHERE id = ?')
     .get(newId) as Record<string, unknown>;
   res.status(201).json(mapValidationRow(created));
 });
 
-app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
+app.patch('/api/validations/:id/review', requireAdmin, (req: RequestWithAuth, res) => {
   const { id } = req.params;
   const { decision, rejectionReason } = (req.body || {}) as {
     decision?: 'Aprovada' | 'Rejeitada';
@@ -3984,6 +5364,25 @@ app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
     return;
   }
 
+  if (decision === 'Rejeitada' && !normalizedRejectionReason) {
+    res.status(400).json({
+      error: 'Justificativa administrativa obrigatória para rejeitar e estornar uma evidência.',
+      code: 'REJECTION_REASON_REQUIRED',
+    });
+    return;
+  }
+
+  const adminReviewer = req.authSession?.email || req.authSession?.userId || 'admin';
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const nowBrStr = new Date(nowMs).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
   const row = db
     .prepare('SELECT * FROM mission_completions WHERE id = ?')
     .get(id) as Record<string, unknown> | undefined;
@@ -3994,404 +5393,239 @@ app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
   }
 
   const item = mapValidationRow(row);
-  if (item.status === 'Aprovada') {
-    res.status(409).json({
-      error: 'Este item de validação já foi aprovado anteriormente e não pode ser alterado.',
-      code: 'VALIDATION_ALREADY_APPROVED',
-    });
-    return;
-  }
-  if (item.status === 'Rejeitada') {
-    res.status(409).json({
-      error: 'Este item de validação já foi rejeitado e não pode ser revisado novamente.',
-      code: 'VALIDATION_ALREADY_REJECTED',
-    });
-    return;
-  }
 
   if (decision === 'Aprovada') {
-    const missionRow = db
-      .prepare('SELECT * FROM missions WHERE id = ? LIMIT 1')
-      .get(item.missionId) as Record<string, unknown> | undefined;
-
-    if (!missionRow) {
-      res.status(404).json({ error: 'Missão associada à evidência não encontrada.' });
+    if (item.status === 'Aprovada') {
+      res.status(409).json({
+        error: 'Esta evidência já foi conferida e aprovada anteriormente.',
+        code: 'VALIDATION_ALREADY_APPROVED',
+      });
+      return;
+    }
+    if (item.status === 'Rejeitada') {
+      res.status(409).json({
+        error: 'Esta evidência já foi rejeitada e estornada e não pode ser aprovada.',
+        code: 'VALIDATION_ALREADY_REJECTED',
+      });
       return;
     }
 
-    const isOfficialSequential =
-      missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+    // Conferência final (homologação da evidência): NÃO executa motor de pontuação novamente
+    // e NÃO gera transações adicionais — preserva a pontuação já contabilizada no envio.
+    const claimResult = db
+      .prepare(
+        `UPDATE mission_completions
+         SET status = 'Aprovada',
+             reviewed_by = ?,
+             reviewed_at = ?
+         WHERE id = ? AND status = 'Pendente'`
+      )
+      .run(adminReviewer, nowIso, id);
 
-    if (isOfficialSequential) {
-      // Transição atômica condicional: somente 1 requisição concorrente consegue reivindicar o status 'Pendente'
-      const claimResult = db
-        .prepare("UPDATE mission_completions SET status = 'Aprovada' WHERE id = ? AND status = 'Pendente'")
-        .run(id);
-
-      if (Number(claimResult.changes) === 0) {
-        const latest = db
-          .prepare('SELECT status FROM mission_completions WHERE id = ? LIMIT 1')
-          .get(id) as { status: string } | undefined;
-        res.status(409).json({
-          error:
-            latest?.status === 'Rejeitada'
-              ? 'Este item de validação já foi rejeitado.'
-              : 'Este item de validação já foi revisado anteriormente.',
-          code:
-            latest?.status === 'Rejeitada'
-              ? 'VALIDATION_ALREADY_REJECTED'
-              : 'VALIDATION_ALREADY_APPROVED',
-        });
-        return;
-      }
-
-      const seqResult = completeSequentialMissionInSql({
-        participantId: item.participantId,
-        missionId: item.missionId,
-        sourceType: 'Missão',
+    if (Number(claimResult.changes) === 0) {
+      res.status(409).json({
+        error: 'Este item de conferência já foi revisado anteriormente.',
+        code: 'VALIDATION_ALREADY_REVIEWED',
       });
-      if (!seqResult.ok && seqResult.httpStatus !== 409) {
-        db.prepare("UPDATE mission_completions SET status = 'Pendente' WHERE id = ?").run(id);
-        res.status(seqResult.httpStatus).json({ error: seqResult.message });
-        return;
-      }
-    } else {
-      // Missão Extra (fora do circuito sequencial): aprova evidência respeitando teto de 1.000 pts E reserva oficial
-      db.exec('BEGIN IMMEDIATE TRANSACTION;');
-      try {
-        const lockedValidation = db
-          .prepare('SELECT status FROM mission_completions WHERE id = ? LIMIT 1')
-          .get(id) as { status: string } | undefined;
-
-        if (!lockedValidation || lockedValidation.status !== 'Pendente') {
-          db.exec('ROLLBACK;');
-          res.status(409).json({
-            error:
-              lockedValidation?.status === 'Rejeitada'
-                ? 'Este item de validação já foi rejeitado.'
-                : 'Este item de validação já foi revisado anteriormente.',
-            code:
-              lockedValidation?.status === 'Rejeitada'
-                ? 'VALIDATION_ALREADY_REJECTED'
-                : 'VALIDATION_ALREADY_APPROVED',
-          });
-          return;
-        }
-
-        const nowMs = Date.now();
-        const nowIso = new Date(nowMs).toISOString();
-        const participantRow = db
-          .prepare(
-            'SELECT id, name, points, completed_missions_count, visited_startups_json FROM participants WHERE id = ? LIMIT 1'
-          )
-          .get(item.participantId) as
-          | {
-              id: string;
-              name: string;
-              points: number;
-              completed_missions_count: number;
-              visited_startups_json: string;
-            }
-          | undefined;
-
-        if (!participantRow) {
-          db.exec('ROLLBACK;');
-          res.status(404).json({ error: 'Participante não encontrado para aprovação.' });
-          return;
-        }
-
-        const baseEventKey = `COMPLETE:${item.participantId}:${item.missionId}`;
-        const existingTx = findActiveTransactionByEventKeys(item.participantId, [
-          baseEventKey,
-          `${baseEventKey}:POST_SIM_REV`,
-        ]);
-
-        const prevPoints = Number(participantRow.points || 0);
-        const requestedPts = Math.max(0, Math.trunc(Number(missionRow.points || 0)));
-        const reservation = calculateParticipantReservedPoints(item.participantId);
-        const maxAllowedByReserve = Math.max(0, reservation.freeMargin);
-        const pointsDelta = existingTx
-          ? 0
-          : Math.max(0, Math.min(requestedPts, maxAllowedByReserve, MAX_PARTICIPANT_POINTS - prevPoints));
-        const newPoints = prevPoints + pointsDelta;
-
-        const existingPm = db
-          .prepare(
-            'SELECT id FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
-          )
-          .get(item.participantId, item.missionId) as { id: number } | undefined;
-
-        if (existingPm) {
-          db.prepare(
-            `UPDATE participant_missions
-             SET status = 'Concluída', completed_at_ms = ?, completion_points_awarded = ?, total_points_awarded = ?
-             WHERE id = ?`
-          ).run(nowMs, pointsDelta, pointsDelta, existingPm.id);
-        } else {
-          db.prepare(
-            `INSERT INTO participant_missions (
-               participant_id, mission_id, sequence_order, status, unlocked_at_ms, completed_at_ms,
-               completion_points_awarded, total_points_awarded
-             ) VALUES (?, ?, 0, 'Concluída', ?, ?, ?, ?)`
-          ).run(item.participantId, item.missionId, nowMs, nowMs, pointsDelta, pointsDelta);
-        }
-
-        if (pointsDelta > 0) {
-          const eventKey = resolveNextIdempotentEventKey(item.participantId, baseEventKey);
-          const visitedList = (() => {
-            try {
-              const parsed = JSON.parse(participantRow.visited_startups_json || '[]');
-              return Array.isArray(parsed) ? parsed : [];
-            } catch {
-              return [];
-            }
-          })();
-          const startupId = String(missionRow.startup_id || '');
-          if (startupId && !visitedList.includes(startupId)) {
-            visitedList.push(startupId);
-          }
-
-          db.prepare(
-            `UPDATE participants
-             SET points = ?, completed_missions_count = completed_missions_count + 1, visited_startups_json = ?
-             WHERE id = ?`
-          ).run(newPoints, JSON.stringify(visitedList), item.participantId);
-
-          db.prepare(
-            `INSERT INTO points_transactions (
-               id, participant_id, participant_name, source_type, source_title,
-               points_delta, previous_balance, new_balance, created_at, created_at_ms, event_key
-             ) VALUES (?, ?, ?, 'Missão', ?, ?, ?, ?, ?, ?, ?)`
-          ).run(
-            `tx-${nowMs}-${Math.floor(Math.random() * 10000)}`,
-            item.participantId,
-            participantRow.name,
-            `Missão Extra: ${String(missionRow.title || item.missionTitle)}`,
-            pointsDelta,
-            prevPoints,
-            newPoints,
-            nowIso,
-            nowMs,
-            eventKey
-          );
-        }
-
-        db.prepare("UPDATE mission_completions SET status = 'Aprovada', points_awarded = ? WHERE id = ?").run(
-          pointsDelta,
-          id
-        );
-        db.exec('COMMIT;');
-        recalculateRankingsInDb();
-      } catch (err) {
-        try {
-          db.exec('ROLLBACK;');
-        } catch {
-          // transação já revertida
-        }
-        throw err;
-      }
+      return;
     }
-  } else {
-    db.exec('BEGIN IMMEDIATE TRANSACTION;');
-    try {
-      const lockedValidation = db
-        .prepare('SELECT status FROM mission_completions WHERE id = ? LIMIT 1')
-        .get(id) as { status: string } | undefined;
 
-      if (!lockedValidation || lockedValidation.status !== 'Pendente') {
-        db.exec('ROLLBACK;');
-        res.status(409).json({
-          error:
-            lockedValidation?.status === 'Aprovada'
-              ? 'Este item de validação já foi aprovado e não pode ser convertido em rejeitado.'
-              : 'Este item de validação já foi rejeitado anteriormente.',
-          code:
-            lockedValidation?.status === 'Aprovada'
-              ? 'VALIDATION_ALREADY_APPROVED'
-              : 'VALIDATION_ALREADY_REJECTED',
-        });
-        return;
-      }
-
-      db.prepare(
-        "UPDATE mission_completions SET status = 'Rejeitada', rejection_reason = ? WHERE id = ? AND status = 'Pendente'"
-      ).run(normalizedRejectionReason, id);
-      db.prepare(
-        "UPDATE participant_missions SET status = 'Disponível', submitted_at_ms = NULL WHERE participant_id = ? AND mission_id = ? AND status != 'Concluída'"
-      ).run(item.participantId, item.missionId);
-      db.exec('COMMIT;');
-    } catch (err) {
-      try {
-        db.exec('ROLLBACK;');
-      } catch {
-        // transação já revertida
-      }
-      throw err;
-    }
+    revalidateActiveHomologationsInDb(db, `Conferência administrativa aprovada (${item.missionTitle})`);
+    res.json(getEnrichedAdminValidations());
+    return;
   }
+
+  // decision === 'Rejeitada' -> Estorno cirúrgico, atômico, idempotente e contabilmente consistente
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    const lockedRow = db
+      .prepare('SELECT * FROM mission_completions WHERE id = ? LIMIT 1')
+      .get(id) as Record<string, unknown> | undefined;
+
+    if (!lockedRow) {
+      db.exec('ROLLBACK;');
+      res.status(404).json({ error: 'Item de validação não encontrado.' });
+      return;
+    }
+
+    if (String(lockedRow.status) === 'Rejeitada' || lockedRow.reversed_at) {
+      db.exec('ROLLBACK;');
+      res.status(409).json({
+        error: 'Esta evidência já foi rejeitada e estornada anteriormente.',
+        code: 'VALIDATION_ALREADY_REJECTED',
+      });
+      return;
+    }
+
+    const participantRow = db
+      .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+      .get(item.participantId) as Record<string, unknown> | undefined;
+
+    if (!participantRow) {
+      db.exec('ROLLBACK;');
+      res.status(404).json({ error: 'Participante associado não encontrado.' });
+      return;
+    }
+
+    const missionRow = db
+      .prepare('SELECT id, title, sequence_order FROM missions WHERE id = ? LIMIT 1')
+      .get(item.missionId) as { id: string; title: string; sequence_order: number | null } | undefined;
+
+    // 1. Identifica exclusivamente as transações positivas originadas desta evidência
+    let targetTxs = db
+      .prepare(
+        `SELECT id, source_type, source_title, points_delta, event_key, mission_id
+         FROM points_transactions
+         WHERE participant_id = ?
+           AND source_completion_id = ?
+           AND points_delta > 0
+           AND source_type IN ('Missão', 'QR Code')
+         ORDER BY rowid ASC`
+      )
+      .all(item.participantId, id) as Array<{
+      id: string;
+      source_type: string;
+      source_title: string;
+      points_delta: number;
+      event_key: string | null;
+      mission_id: string | null;
+    }>;
+
+    // Fallback estrito apenas para registros legados anteriores à coluna source_completion_id
+    if (targetTxs.length === 0) {
+      const isSeqOne = missionRow?.sequence_order === 1;
+      const legacyCandidates = db
+        .prepare(
+          `SELECT id, source_type, source_title, points_delta, event_key, mission_id
+           FROM points_transactions
+           WHERE participant_id = ?
+             AND mission_id = ?
+             AND points_delta > 0
+             AND source_type IN ('Missão', 'QR Code')
+           ORDER BY rowid ASC`
+        )
+        .all(item.participantId, item.missionId) as Array<{
+        id: string;
+        source_type: string;
+        source_title: string;
+        points_delta: number;
+        event_key: string | null;
+        mission_id: string | null;
+      }>;
+
+      targetTxs = legacyCandidates.filter((tx) => {
+        const key = String(tx.event_key || '');
+        if (key.startsWith('COMPLETE:') || key.startsWith('SPEED_BONUS:')) return true;
+        if (isSeqOne && (key.startsWith('UNLOCK:') || key.startsWith('UNLOCK_VALIDATED:'))) {
+          return true;
+        }
+        return false;
+      });
+    }
+
+    let runningBalance = Math.max(0, Number(participantRow.points || 0));
+    let totalEffectiveReversed = 0;
+    let reversedCompletionCount = 0;
+
+    for (const origTx of targetTxs) {
+      const reversalEventKey = `REVERSAL_EVIDENCE:${id}:${origTx.id}`;
+      const alreadyReversed = db
+        .prepare('SELECT id FROM points_transactions WHERE event_key = ? LIMIT 1')
+        .get(reversalEventKey) as { id: string } | undefined;
+
+      if (alreadyReversed) continue;
+
+      const origPoints = Math.max(0, Math.trunc(Number(origTx.points_delta || 0)));
+      if (origPoints <= 0) continue;
+
+      // Encadeamento contábil exato: participants.points === new_balance === SUM(points_delta)
+      const effectiveDelta = Math.max(-origPoints, -runningBalance);
+      const previousBalance = runningBalance;
+      const newBalance = previousBalance + effectiveDelta;
+      runningBalance = newBalance;
+
+      if (effectiveDelta < 0) {
+        totalEffectiveReversed += Math.abs(effectiveDelta);
+      }
+
+      if (String(origTx.event_key || '').startsWith('COMPLETE:')) {
+        reversedCompletionCount = 1;
+      }
+
+      const revTxId = `tx-rev-${nowMs}-${Math.random().toString(36).slice(2, 7)}`;
+      db.prepare(
+        `INSERT INTO points_transactions (
+           id, participant_id, participant_name, source_type, source_title,
+           points_delta, previous_balance, new_balance, created_at, created_at_ms,
+           event_key, mission_id, source_completion_id
+         ) VALUES (?, ?, ?, 'Ajuste Administrativo', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        revTxId,
+        item.participantId,
+        String(participantRow.name),
+        `Estorno de evidência irregular (${item.missionTitle}): ${normalizedRejectionReason}`,
+        effectiveDelta,
+        previousBalance,
+        newBalance,
+        nowBrStr,
+        nowMs,
+        reversalEventKey,
+        origTx.mission_id || item.missionId,
+        id
+      );
+    }
+
+    const updatedCompletedCount = Math.max(
+      0,
+      Number(participantRow.completed_missions_count || 0) - reversedCompletionCount
+    );
+
+    db.prepare(
+      `UPDATE participants
+       SET points = ?,
+           completed_missions_count = ?
+       WHERE id = ?`
+    ).run(runningBalance, updatedCompletedCount, item.participantId);
+
+    db.prepare(
+      `UPDATE mission_completions
+       SET status = 'Rejeitada',
+           rejection_reason = ?,
+           reviewed_by = ?,
+           reviewed_at = ?,
+           reversed_points = ?,
+           reversed_at = ?
+       WHERE id = ?`
+    ).run(
+      normalizedRejectionReason,
+      adminReviewer,
+      nowIso,
+      totalEffectiveReversed,
+      nowIso,
+      id
+    );
+
+    db.exec('COMMIT;');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // transação já revertida
+    }
+    throw err;
+  }
+
+  recalculateRankingsInDb();
+  revalidateActiveHomologationsInDb(
+    db,
+    `Estorno administrativo de evidência irregular (${item.missionTitle})`
+  );
 
   res.json(getEnrichedAdminValidations());
 });
 
 // ============================================================================
-// 6. QR CODES E LEITURA (CRIAÇÃO/ATIVAÇÃO PROTEGIDAS POR ADMIN)
-// ============================================================================
-
-app.get('/api/qrcodes', (_req, res) => {
-  const rows = db.prepare('SELECT * FROM qr_codes').all() as Record<string, unknown>[];
-  res.json(rows.map(mapQRCodeRow));
-});
-
-app.post('/api/qrcodes', requireAdmin, (req, res) => {
-  const p = req.body;
-  const newId = `qr-${Date.now()}`;
-  const nowStr = new Date().toLocaleDateString('pt-BR');
-
-  db.prepare(`
-    INSERT INTO qr_codes (
-      id, code, label, startup_id, startup_name, mission_id,
-      mission_title, points, scans_count, active, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-  `).run(
-    newId,
-    String(p.code).toUpperCase(),
-    p.label,
-    p.startupId,
-    p.startupName,
-    p.missionId,
-    p.missionTitle,
-    Number(p.points || 200),
-    p.active === false ? 0 : 1,
-    nowStr
-  );
-
-  const created = db
-    .prepare('SELECT * FROM qr_codes WHERE id = ?')
-    .get(newId) as Record<string, unknown>;
-  res.status(201).json(mapQRCodeRow(created));
-});
-
-app.patch('/api/qrcodes/:id/toggle', requireAdmin, (req, res) => {
-  const { id } = req.params;
-  db.prepare('UPDATE qr_codes SET active = CASE WHEN active = 1 THEN 0 ELSE 1 END WHERE id = ?').run(
-    id
-  );
-  const rows = db.prepare('SELECT * FROM qr_codes').all() as Record<string, unknown>[];
-  res.json(rows.map(mapQRCodeRow));
-});
-
-app.post('/api/qrcodes/scan', requireParticipant, (req: RequestWithAuth, res) => {
-  const { code } = req.body as { code?: string };
-  const normalized = (code || '').trim().toUpperCase();
-
-  if (!normalized) {
-    res.status(400).json({
-      success: false,
-      status: 'INVALID_CODE',
-      message: 'Informe ou escaneie um código QR válido.',
-    });
-    return;
-  }
-
-  const row = db
-    .prepare('SELECT * FROM qr_codes WHERE UPPER(code) = ?')
-    .get(normalized) as Record<string, unknown> | undefined;
-
-  if (!row) {
-    res.status(404).json({
-      success: false,
-      status: 'INVALID_CODE',
-      message: `Código QR "${normalized}" inválido ou não localizado no banco SQLite. Verifique o totem do estande (ex.: TUTU-2026, TUTU-SIMULADOR ou FUTURIZE-2030).`,
-    });
-    return;
-  }
-
-  const qr = mapQRCodeRow(row);
-  if (!qr.active) {
-    res.status(400).json({
-      success: false,
-      status: 'INACTIVE_CODE',
-      qrCode: qr,
-      message: `O código ${qr.code} está temporariamente desativado pela organização.`,
-    });
-    return;
-  }
-
-  // Valida se o código pertence a uma missão existente e ativa
-  const missionRow = db
-    .prepare('SELECT * FROM missions WHERE id = ?')
-    .get(qr.missionId) as Record<string, unknown> | undefined;
-
-  if (!missionRow) {
-    res.status(400).json({
-      success: false,
-      status: 'INVALID_MISSION',
-      qrCode: qr,
-      message: `O código ${qr.code} não pertence a uma missão válida cadastrada no sistema.`,
-    });
-    return;
-  }
-
-  const linkedMission = mapMissionRow(missionRow);
-  if (!linkedMission.active) {
-    res.status(400).json({
-      success: false,
-      status: 'INVALID_MISSION',
-      qrCode: qr,
-      message: `A missão "${linkedMission.title}" vinculada ao código ${qr.code} está inativa no momento.`,
-    });
-    return;
-  }
-
-  if (linkedMission.requiresEvidence) {
-    res.status(400).json({
-      success: false,
-      status: 'EVIDENCE_REQUIRED',
-      qrCode: qr,
-      message: `A missão "${linkedMission.title}" exige o envio e a aprovação administrativa de evidência pela Central de Missões antes de liberar os pontos.`,
-    });
-    return;
-  }
-
-  const participantId = req.authSession!.userId;
-
-  const result = completeSequentialMissionInSql({
-    participantId,
-    missionId: qr.missionId,
-    sourceType: 'QR Code',
-    qrCodeRow: qr,
-  });
-
-  if (!result.ok) {
-    res.status(result.httpStatus).json({
-      success: false,
-      status: result.status,
-      alreadyUsed: result.alreadyUsed || false,
-      qrCode: qr,
-      message: result.message,
-    });
-    return;
-  }
-
-  const updatedRow = db
-    .prepare('SELECT * FROM qr_codes WHERE id = ?')
-    .get(qr.id) as Record<string, unknown>;
-
-  res.json({
-    success: true,
-    status: 'VALIDATED',
-    qrCode: mapQRCodeRow(updatedRow),
-    completionPointsAwarded: result.completionPointsAwarded,
-    speedBonusAwarded: result.speedBonusAwarded,
-    unlockPointsAwarded: result.unlockPointsAwarded,
-    pointsAwarded: result.pointsAwarded,
-    nextMissionUnlocked: result.nextMissionUnlocked,
-    message: result.message,
-  });
-});
-
-// ============================================================================
-// 7. RANKING, CONQUISTAS E TRANSAÇÕES (AJUSTES PROTEGIDOS POR ADMIN)
+// 6. RANKING, CONQUISTAS E TRANSAÇÕES (AJUSTES PROTEGIDOS POR ADMIN)
 // ============================================================================
 
 app.get('/api/ranking/public', (req, res) => {
@@ -4499,6 +5733,8 @@ app.post('/api/ranking/adjust', requireAdmin, (req, res) => {
     throw err;
   }
 
+  revalidateActiveHomologationsInDb(db, 'Ajuste administrativo manual de pontuação');
+
   res.json({
     publicRanking: getPublicRankingFromDb(),
     transactions: (
@@ -4508,6 +5744,240 @@ app.post('/api/ranking/adjust', requireAdmin, (req, res) => {
       >[]
     ).map(mapTransactionRow),
     reservation: calculateParticipantReservedPoints(participantId),
+  });
+});
+
+// ============================================================================
+// 7B. DESCLASSIFICAÇÃO ADMINISTRATIVA E HOMOLOGAÇÃO DE VENCEDORES (ETAPA 2)
+// ============================================================================
+
+app.post('/api/admin/participants/:id/disqualify', requireAdmin, (req: RequestWithAuth, res) => {
+  const { id } = req.params;
+  const { reason, confirmed } = (req.body || {}) as {
+    reason?: string;
+    confirmed?: boolean;
+  };
+
+  const normalizedReason = typeof reason === 'string' ? reason.trim().slice(0, 500) : '';
+  if (normalizedReason.length < 5) {
+    res.status(400).json({
+      error: 'Informe uma justificativa administrativa obrigatória (mínimo de 5 caracteres) para desclassificação.',
+      code: 'DISQUALIFICATION_REASON_REQUIRED',
+    });
+    return;
+  }
+
+  if (confirmed !== true) {
+    res.status(400).json({
+      error: 'A desclassificação exige confirmação administrativa explícita.',
+      code: 'DISQUALIFICATION_CONFIRMATION_REQUIRED',
+    });
+    return;
+  }
+
+  const targetRow = db
+    .prepare("SELECT * FROM participants WHERE id = ? AND UPPER(role) = 'PARTICIPANT' LIMIT 1")
+    .get(id) as Record<string, unknown> | undefined;
+
+  if (!targetRow) {
+    res.status(404).json({ error: 'Participante não encontrado.' });
+    return;
+  }
+
+  if (String(targetRow.status) === 'Desclassificado') {
+    res.status(409).json({
+      error: 'Este participante já está desclassificado.',
+      code: 'ALREADY_DISQUALIFIED',
+    });
+    return;
+  }
+
+  const adminActor = req.authSession?.email || req.authSession?.userId || 'admin';
+  const nowIso = new Date().toISOString();
+
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    db.prepare(
+      `UPDATE participants
+       SET status = 'Desclassificado',
+           disqualified_at = ?,
+           disqualified_by = ?,
+           disqualification_reason = ?
+       WHERE id = ? AND UPPER(role) = 'PARTICIPANT'`
+    ).run(nowIso, adminActor, normalizedReason, id);
+    db.exec('COMMIT;');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // transação já revertida
+    }
+    throw err;
+  }
+
+  recalculateRankingsInDb();
+  revalidateActiveHomologationsInDb(
+    db,
+    `Desclassificação administrativa de ${String(targetRow.name)}`
+  );
+
+  const updatedRow = db
+    .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+    .get(id) as Record<string, unknown>;
+
+  res.json({
+    ok: true,
+    participant: mapParticipantRow(updatedRow),
+    publicRanking: getPublicRankingFromDb(),
+    dailyRankings: getDailyRankingsFromDb(db),
+  });
+});
+
+app.get('/api/homologations', requireAdmin, (_req, res) => {
+  const rows = (
+    db
+      .prepare('SELECT * FROM winner_homologations ORDER BY homologated_at_ms DESC')
+      .all() as Record<string, unknown>[]
+  ).map(mapHomologationRow);
+
+  const generalSnapshot = computeHomologationSnapshot(db, 'GERAL', null);
+  const dailySnapshots = DAILY_AWARD_DAYS.map((day) => ({
+    eventDate: day.eventDate,
+    dayLabel: day.dayLabel,
+    ...computeHomologationSnapshot(db, 'DIARIO', day.eventDate),
+  }));
+
+  res.json({
+    homologations: rows,
+    snapshots: {
+      general: generalSnapshot,
+      daily: dailySnapshots,
+    },
+  });
+});
+
+app.post('/api/admin/homologations', requireAdmin, (req: RequestWithAuth, res) => {
+  const { scope, eventDate, participantId, conferenceCompleted } = (req.body || {}) as {
+    scope?: 'GERAL' | 'DIARIO';
+    eventDate?: string | null;
+    participantId?: string;
+    conferenceCompleted?: boolean;
+  };
+
+  if (scope !== 'GERAL' && scope !== 'DIARIO') {
+    res.status(400).json({
+      error: 'Escopo inválido. Utilize "GERAL" ou "DIARIO".',
+      code: 'INVALID_HOMOLOGATION_SCOPE',
+    });
+    return;
+  }
+
+  const normalizedEventDate =
+    scope === 'DIARIO' && typeof eventDate === 'string' ? eventDate.trim() : null;
+  if (scope === 'DIARIO' && !DAILY_AWARD_DAYS.some((d) => d.eventDate === normalizedEventDate)) {
+    res.status(400).json({
+      error: 'Data do ranking diário inválida ou não cadastrada no evento.',
+      code: 'INVALID_EVENT_DATE',
+    });
+    return;
+  }
+
+  if (conferenceCompleted !== true) {
+    res.status(400).json({
+      error: 'É obrigatório confirmar que a conferência das evidências foi concluída antes de homologar.',
+      code: 'CONFERENCE_CONFIRMATION_REQUIRED',
+    });
+    return;
+  }
+
+  recalculateRankingsInDb();
+  const snapshot = computeHomologationSnapshot(db, scope, normalizedEventDate);
+
+  if (!snapshot.leader) {
+    res.status(400).json({
+      error: 'Não há participante elegível em 1º lugar para homologação neste ranking.',
+      code: 'NO_ELIGIBLE_LEADER',
+    });
+    return;
+  }
+
+  if (participantId && participantId !== snapshot.leader.participantId) {
+    res.status(409).json({
+      error:
+        'A classificação mudou durante a conferência: o participante informado não é mais o atual 1º colocado elegível. Atualize e confira o novo líder.',
+      code: 'LEADER_CHANGED',
+      currentLeader: snapshot.leader,
+    });
+    return;
+  }
+
+  const adminActor = req.authSession?.email || req.authSession?.userId || 'admin';
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const newId = `hom-${scope.toLowerCase()}-${nowMs}-${Math.random().toString(36).slice(2, 6)}`;
+
+  db.exec('BEGIN IMMEDIATE TRANSACTION;');
+  try {
+    if (scope === 'GERAL') {
+      db.prepare(
+        `UPDATE winner_homologations
+         SET status = 'Invalidado',
+             invalidated_reason = COALESCE(invalidated_reason, 'Substituída por nova homologação administrativa'),
+             invalidated_at = COALESCE(invalidated_at, ?)
+         WHERE scope = 'GERAL' AND status = 'Homologado'`
+      ).run(nowIso);
+    } else {
+      db.prepare(
+        `UPDATE winner_homologations
+         SET status = 'Invalidado',
+             invalidated_reason = COALESCE(invalidated_reason, 'Substituída por nova homologação administrativa'),
+             invalidated_at = COALESCE(invalidated_at, ?)
+         WHERE scope = 'DIARIO' AND event_date = ? AND status = 'Homologado'`
+      ).run(nowIso, normalizedEventDate);
+    }
+
+    db.prepare(
+      `INSERT INTO winner_homologations (
+         id, scope, event_date, participant_id, participant_name, points, ranking_position,
+         evidence_summary_json, data_fingerprint, homologated_by, homologated_at, homologated_at_ms, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Homologado')`
+    ).run(
+      newId,
+      scope,
+      normalizedEventDate,
+      snapshot.leader.participantId,
+      snapshot.leader.participantName,
+      snapshot.leader.points,
+      snapshot.leader.position,
+      JSON.stringify(snapshot.evidenceSummary),
+      snapshot.dataFingerprint,
+      adminActor,
+      nowIso,
+      nowMs
+    );
+
+    db.exec('COMMIT;');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // transação já revertida
+    }
+    throw err;
+  }
+
+  const createdRow = db
+    .prepare('SELECT * FROM winner_homologations WHERE id = ? LIMIT 1')
+    .get(newId) as Record<string, unknown>;
+
+  res.status(201).json({
+    ok: true,
+    homologation: mapHomologationRow(createdRow),
+    homologations: (
+      db
+        .prepare('SELECT * FROM winner_homologations ORDER BY homologated_at_ms DESC')
+        .all() as Record<string, unknown>[]
+    ).map(mapHomologationRow),
   });
 });
 

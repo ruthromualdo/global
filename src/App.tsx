@@ -20,7 +20,6 @@ import {
 
 import { ParticipantDashboard } from './pages/ParticipantDashboard';
 import { MissionsCenterPage } from './pages/MissionsCenterPage';
-import { QRScannerPage } from './pages/QRScannerPage';
 import { StartupsPage } from './pages/StartupsPage';
 import { RankingPage } from './pages/RankingPage';
 import { ProfilePage } from './pages/ProfilePage';
@@ -29,7 +28,6 @@ import { AdminLoginPage } from './pages/admin/AdminLoginPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { AdminStartupsPage } from './pages/admin/AdminStartupsPage';
 import { AdminMissionsPage } from './pages/admin/AdminMissionsPage';
-import { AdminQRCodesPage } from './pages/admin/AdminQRCodesPage';
 import { AdminValidationPage } from './pages/admin/AdminValidationPage';
 import { AdminParticipantsPage } from './pages/admin/AdminParticipantsPage';
 import { AdminRankingPage } from './pages/admin/AdminRankingPage';
@@ -72,14 +70,6 @@ export const App: React.FC = () => {
                 </RequireParticipantRoute>
               }
             />
-            <Route
-              path="escanear"
-              element={
-                <RequireParticipantRoute>
-                  <QRScannerPage />
-                </RequireParticipantRoute>
-              }
-            />
             <Route path="startups" element={<StartupsPage />} />
             <Route path="ranking" element={<RankingPage />} />
             <Route
@@ -108,7 +98,6 @@ export const App: React.FC = () => {
             <Route path="dashboard" element={<AdminDashboardPage />} />
             <Route path="startups" element={<AdminStartupsPage />} />
             <Route path="missoes" element={<AdminMissionsPage />} />
-            <Route path="qrcodes" element={<AdminQRCodesPage />} />
             <Route path="validacao" element={<AdminValidationPage />} />
             <Route path="participantes" element={<AdminParticipantsPage />} />
             <Route path="ranking" element={<AdminRankingPage />} />

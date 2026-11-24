@@ -5,7 +5,6 @@ import {
   Building2,
   CheckCircle2,
   Clock,
-  QrCode,
   TrendingUp,
   Users,
   Zap,
@@ -23,7 +22,7 @@ function formatAvgDuration(seconds: number | null): string {
 }
 
 export const AdminDashboardPage: React.FC = () => {
-  const { adminMetrics, startups, qrCodes, validationQueue } = useAppStore();
+  const { adminMetrics, startups, validationQueue } = useAppStore();
 
   const pendingValidations = validationQueue.filter((v) => v.status === 'Pendente').length;
 
@@ -60,12 +59,6 @@ export const AdminDashboardPage: React.FC = () => {
       icon: Clock,
     },
     {
-      label: 'QR Codes Escaneados',
-      value: formatNumber(adminMetrics.qrCodesScanned),
-      sub: `${qrCodes.filter((q) => q.active).length} totens ativos`,
-      icon: QrCode,
-    },
-    {
       label: 'Startups Cadastradas',
       value: String(startups.length).padStart(2, '0'),
       sub: `${startups.filter((s) => s.active).length} em exibição`,
@@ -91,7 +84,7 @@ export const AdminDashboardPage: React.FC = () => {
             Dashboard Administrativo
           </h1>
           <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed">
-            Monitoramento em tempo real de engajamento, leituras de QR Code e desempenho das startups na Arena BRB.
+            Monitoramento em tempo real de engajamento, conclusão de missões e desempenho das startups na Arena BRB.
           </p>
         </div>
 
@@ -183,7 +176,7 @@ export const AdminDashboardPage: React.FC = () => {
 
                     <div className="space-y-1.5 text-[11px]">
                       <div className="flex justify-between text-tutu-light/80">
-                        <span>Missões Iniciadas ({day.scans} QR scans)</span>
+                        <span>Missões Iniciadas</span>
                         <span className="font-bold">{day.missionsStarted}</span>
                       </div>
                       <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden">

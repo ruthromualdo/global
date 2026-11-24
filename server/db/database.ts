@@ -12,6 +12,7 @@ import {
 import {
   AdminDashboardMetrics,
   EventSettings,
+  EvidenceFileItem,
   GovernancePlan,
   Mission,
   MissionCompletion,
@@ -756,6 +757,32 @@ export function initializeDatabase(): void {
     ensureColumnExists('missions', 'allow_shared_evidence', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumnExists('missions', 'is_surprise', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumnExists('missions', 'external_link', 'TEXT');
+    ensureColumnExists('missions', 'required_evidence_count', 'INTEGER NOT NULL DEFAULT 1');
+
+    // Múltiplas evidências exclusivamente para a missão bônus etapa 5 (ms-2026-bonus-05)
+    db.prepare(
+      "UPDATE missions SET required_evidence_count = 3 WHERE id = 'ms-2026-bonus-05'"
+    ).run();
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS mission_completion_files (
+        id TEXT PRIMARY KEY,
+        completion_id TEXT NOT NULL,
+        file_order INTEGER NOT NULL DEFAULT 1,
+        file_name TEXT NOT NULL,
+        stored_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        duration_seconds INTEGER,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (completion_id) REFERENCES mission_completions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_mission_completion_files_completion
+        ON mission_completion_files(completion_id, file_order);
+      CREATE INDEX IF NOT EXISTS idx_mission_completion_files_sha256
+        ON mission_completion_files(sha256);
+    `);
 
     ensureColumnExists('startups', 'instagram_url', 'TEXT');
     ensureColumnExists('startups', 'logo_path', 'TEXT');
@@ -871,7 +898,16 @@ export function initializeDatabase(): void {
     ensureColumnExists('participants', 'image_publicity_consent', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumnExists('participants', 'image_publicity_consent_updated_at', 'TEXT');
     ensureColumnExists('participants', 'image_publicity_consent_version', 'TEXT');
+    ensureColumnExists('participants', 'disqualified_at', 'TEXT');
+    ensureColumnExists('participants', 'disqualified_by', 'TEXT');
+    ensureColumnExists('participants', 'disqualification_reason', 'TEXT');
     ensureColumnExists('points_transactions', 'created_at_ms', 'INTEGER');
+    ensureColumnExists('points_transactions', 'source_completion_id', 'TEXT');
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_points_tx_unique_reversal_evidence
+      ON points_transactions(event_key)
+      WHERE event_key LIKE 'REVERSAL_EVIDENCE:%';
+    `);
     ensureColumnExists('missions', 'timer_minutes', 'INTEGER');
     ensureColumnExists('missions', 'requires_evidence', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumnExists('missions', 'evidence_type', 'TEXT');
@@ -882,6 +918,31 @@ export function initializeDatabase(): void {
     ensureColumnExists('mission_completions', 'evidence_sha256', 'TEXT');
     ensureColumnExists('mission_completions', 'evidence_duration_seconds', 'INTEGER');
     ensureColumnExists('mission_completions', 'rejection_reason', 'TEXT');
+    ensureColumnExists('mission_completions', 'reviewed_by', 'TEXT');
+    ensureColumnExists('mission_completions', 'reviewed_at', 'TEXT');
+    ensureColumnExists('mission_completions', 'reversed_points', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumnExists('mission_completions', 'reversed_at', 'TEXT');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS winner_homologations (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL CHECK (scope IN ('GERAL', 'DIARIO')),
+        event_date TEXT,
+        participant_id TEXT NOT NULL,
+        participant_name TEXT NOT NULL,
+        points INTEGER NOT NULL,
+        ranking_position INTEGER NOT NULL,
+        evidence_summary_json TEXT NOT NULL,
+        data_fingerprint TEXT NOT NULL,
+        homologated_by TEXT NOT NULL,
+        homologated_at TEXT NOT NULL,
+        homologated_at_ms INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Homologado' CHECK (status IN ('Homologado', 'Invalidado')),
+        invalidated_reason TEXT,
+        invalidated_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_winner_homologations_scope
+      ON winner_homologations(scope, event_date, status);
+    `);
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_mission_completions_sha256
       ON mission_completions(evidence_sha256)
@@ -960,6 +1021,9 @@ export function mapParticipantRow(row: Record<string, unknown>): Participant {
     visitedStartupsIds: JSON.parse(String(row.visited_startups_json || '[]')),
     registeredAt: String(row.registered_at),
     status: row.status as Participant['status'],
+    disqualifiedAt: row.disqualified_at ? String(row.disqualified_at) : null,
+    disqualifiedBy: row.disqualified_by ? String(row.disqualified_by) : null,
+    disqualificationReason: row.disqualification_reason ? String(row.disqualification_reason) : null,
     privacyPreferences: {
       showNicknameInPublicRanking: Boolean(row.show_nickname_in_public_ranking),
       allowActivityNotifications: Boolean(row.allow_activity_notifications),
@@ -1052,6 +1116,10 @@ export function mapMissionRow(row: Record<string, unknown>): Mission {
     evidenceType: validEvidenceTypes.has(rawEvType)
       ? (rawEvType as Mission['evidenceType'])
       : undefined,
+    requiredEvidenceCount:
+      row.required_evidence_count !== null && row.required_evidence_count !== undefined
+        ? Math.max(1, Number(row.required_evidence_count))
+        : 1,
     maxVideoSeconds:
       row.max_video_seconds !== null && row.max_video_seconds !== undefined
         ? Number(row.max_video_seconds)
@@ -1077,7 +1145,53 @@ export function mapQRCodeRow(row: Record<string, unknown>): QRCode {
   };
 }
 
-export function mapValidationRow(row: Record<string, unknown>): MissionCompletion {
+export function getEvidenceFilesForCompletions(
+  completionIds: string[],
+  targetDb: DatabaseSync = db
+): Map<string, EvidenceFileItem[]> {
+  const result = new Map<string, EvidenceFileItem[]>();
+  const uniqueIds = Array.from(new Set(completionIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return result;
+
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  const rows = targetDb
+    .prepare(
+      `SELECT id, completion_id, file_order, file_name, mime_type, size_bytes, duration_seconds, created_at
+       FROM mission_completion_files
+       WHERE completion_id IN (${placeholders})
+       ORDER BY completion_id ASC, file_order ASC, rowid ASC`
+    )
+    .all(...uniqueIds) as Record<string, unknown>[];
+
+  for (const r of rows) {
+    const completionId = String(r.completion_id);
+    const id = String(r.id);
+    const list = result.get(completionId) || [];
+    list.push({
+      id,
+      completionId,
+      fileOrder: Number(r.file_order || list.length + 1),
+      fileName: String(r.file_name),
+      mimeType: String(r.mime_type),
+      sizeBytes: Number(r.size_bytes || 0),
+      durationSeconds:
+        r.duration_seconds !== null && r.duration_seconds !== undefined
+          ? Number(r.duration_seconds)
+          : null,
+      createdAt: r.created_at ? String(r.created_at) : undefined,
+      url: `/api/evidences/${completionId}/files/${id}`,
+    });
+    result.set(completionId, list);
+  }
+
+  return result;
+}
+
+export function mapValidationRow(
+  row: Record<string, unknown>,
+  evidenceFiles?: EvidenceFileItem[]
+): MissionCompletion {
+  const files = evidenceFiles && evidenceFiles.length > 0 ? evidenceFiles : undefined;
   return {
     id: String(row.id),
     participantId: String(row.participant_id),
@@ -1100,9 +1214,51 @@ export function mapValidationRow(row: Record<string, unknown>): MissionCompletio
         ? Number(row.evidence_duration_seconds)
         : null,
     rejectionReason: row.rejection_reason ? String(row.rejection_reason) : null,
-    hasFile: Boolean(row.evidence_stored_name),
+    reviewedBy: row.reviewed_by ? String(row.reviewed_by) : null,
+    reviewedAt: row.reviewed_at ? String(row.reviewed_at) : null,
+    reversedPoints:
+      row.reversed_points !== null && row.reversed_points !== undefined
+        ? Number(row.reversed_points)
+        : 0,
+    reversedAt: row.reversed_at ? String(row.reversed_at) : null,
+    trackId: row.track_id ? String(row.track_id) : null,
+    hasFile: Boolean(row.evidence_stored_name) || Boolean(files && files.length > 0),
+    evidenceFiles: files,
     pointsAwarded: Number(row.points_awarded),
     status: row.status as MissionCompletion['status'],
+  };
+}
+
+export function mapHomologationRow(row: Record<string, unknown>) {
+  let evidenceSummary = { total: 0, approved: 0, pending: 0, rejected: 0 };
+  try {
+    const parsed = JSON.parse(String(row.evidence_summary_json || '{}'));
+    evidenceSummary = {
+      total: Number(parsed.total || 0),
+      approved: Number(parsed.approved || 0),
+      pending: Number(parsed.pending || 0),
+      rejected: Number(parsed.rejected || 0),
+    };
+  } catch {
+    // mantém padrão
+  }
+
+  return {
+    id: String(row.id),
+    scope: String(row.scope) as 'GERAL' | 'DIARIO',
+    eventDate: row.event_date ? String(row.event_date) : null,
+    participantId: String(row.participant_id),
+    participantName: String(row.participant_name),
+    points: Number(row.points || 0),
+    rankingPosition: Number(row.ranking_position || 1),
+    evidenceSummary,
+    dataFingerprint: String(row.data_fingerprint),
+    homologatedBy: String(row.homologated_by),
+    homologatedAt: String(row.homologated_at),
+    homologatedAtMs: Number(row.homologated_at_ms || 0),
+    status: String(row.status) as 'Homologado' | 'Invalidado',
+    invalidatedReason: row.invalidated_reason ? String(row.invalidated_reason) : null,
+    invalidatedAt: row.invalidated_at ? String(row.invalidated_at) : null,
   };
 }
 

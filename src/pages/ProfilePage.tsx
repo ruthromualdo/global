@@ -205,6 +205,26 @@ export const ProfilePage: React.FC = () => {
         </div>
       </div>
 
+      {/* Aviso de conta desclassificada */}
+      {participant.status === 'Desclassificado' && (
+        <div className="tutu-card p-5 border-2 border-red-400/60 bg-red-500/15 flex items-start gap-3 text-xs text-red-100">
+          <AlertCircle className="w-5 h-5 text-red-300 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <strong className="text-red-200 block text-sm">
+              Conta Desclassificada Administrativamente
+            </strong>
+            <p className="leading-relaxed">
+              Esta conta foi desclassificada pela organização e está impedida de realizar novas ações competitivas ou pontuar nos rankings. Todo o histórico anterior permanece preservado.
+            </p>
+            {participant.disqualificationReason && (
+              <p className="text-red-200 font-medium pt-1">
+                Justificativa registrada: {participant.disqualificationReason}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 2. Seção Meus Dados */}
       <div className="tutu-card p-5 sm:p-6 space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
