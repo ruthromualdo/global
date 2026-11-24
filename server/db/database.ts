@@ -33,6 +33,8 @@ export const DB_FILE_PATH = process.env.DESAFIO_DB_PATH
   : path.join(__dirname, 'desafio_global.sqlite');
 const SCHEMA_FILE_PATH = path.join(__dirname, 'schema.sql');
 
+fs.mkdirSync(path.dirname(DB_FILE_PATH), { recursive: true });
+
 export const db = new DatabaseSync(DB_FILE_PATH);
 
 let isDatabaseClosed = false;
