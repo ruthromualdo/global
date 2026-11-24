@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import {
   AdminDashboardMetrics,
   DailyRankingDaySummary,
@@ -172,6 +172,8 @@ interface AppStoreContextValue {
   isRefreshingRanking: boolean;
 }
 
+const PARTICIPANT_POLL_INTERVAL_MS = 5000;
+
 const AppStoreContext = createContext<AppStoreContextValue | undefined>(undefined);
 
 const EMPTY_PARTICIPANT: Participant = {
@@ -243,46 +245,64 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const syncFromSqliteOrMemory = useCallback(async (): Promise<BootstrapPayload | null> => {
-    const data = await apiRequest<BootstrapPayload>('/bootstrap');
-    if (data) {
-      setSqliteConnected(true);
-      const isAdminParticipant =
-        String(data.participant?.role || '').toUpperCase() === 'ADMIN';
-      setParticipant(
-        isAdminParticipant
-          ? { ...data.participant, rankingPosition: 0 }
-          : data.participant
-      );
-      setAllParticipants(data.allParticipants);
-      setStartups(data.startups);
-      setMissions(data.missions);
-      setQrCodes(data.qrCodes);
-      setValidationQueue(data.validationQueue);
-      setPublicRanking(data.publicRanking);
-      setDailyRankings(Array.isArray(data.dailyRankings) ? data.dailyRankings : []);
-      setPointsTransactions(data.pointsTransactions);
-      setEventSettings(data.eventSettings);
-      setGovernancePlans(data.governancePlans);
-      setAdminMetrics(data.adminMetrics);
-      if (data.auth) {
-        setAuthState(data.auth);
-      }
-      setIsCheckingAuth(false);
-      return data;
-    }
+  const syncSeqRef = useRef<number>(0);
+  const isBackgroundPollInFlightRef = useRef<boolean>(false);
 
-    setSqliteConnected(false);
-    setIsCheckingAuth(false);
-    // Nunca injeta participantes ou rankings fictícios de mockData em caso de falha da API
-    setParticipant(EMPTY_PARTICIPANT);
-    setAllParticipants([]);
-    setPublicRanking([]);
-    setDailyRankings([]);
-    setPointsTransactions([]);
-    setValidationQueue([]);
-    return null;
-  }, []);
+  const syncFromSqliteOrMemory = useCallback(
+    async (options?: { preserveStateOnError?: boolean }): Promise<BootstrapPayload | null> => {
+      const requestSeq = ++syncSeqRef.current;
+      const data = await apiRequest<BootstrapPayload>('/bootstrap');
+
+      // Descarta respostas antigas caso outra sincronização mais recente já tenha sido iniciada
+      if (requestSeq !== syncSeqRef.current) {
+        return data;
+      }
+
+      if (data) {
+        setSqliteConnected(true);
+        const isAdminParticipant =
+          String(data.participant?.role || '').toUpperCase() === 'ADMIN';
+        setParticipant(
+          isAdminParticipant
+            ? { ...data.participant, rankingPosition: 0 }
+            : data.participant
+        );
+        setAllParticipants(data.allParticipants);
+        setStartups(data.startups);
+        setMissions(data.missions);
+        setQrCodes(data.qrCodes);
+        setValidationQueue(data.validationQueue);
+        setPublicRanking(data.publicRanking);
+        setDailyRankings(Array.isArray(data.dailyRankings) ? data.dailyRankings : []);
+        setPointsTransactions(data.pointsTransactions);
+        setEventSettings(data.eventSettings);
+        setGovernancePlans(data.governancePlans);
+        setAdminMetrics(data.adminMetrics);
+        if (data.auth) {
+          setAuthState(data.auth);
+        }
+        setIsCheckingAuth(false);
+        return data;
+      }
+
+      if (options?.preserveStateOnError) {
+        // Em polling de fundo, preserva o estado válido atual durante oscilações de rede sem recorrer a mockData
+        return null;
+      }
+
+      setSqliteConnected(false);
+      setIsCheckingAuth(false);
+      // Nunca injeta participantes ou rankings fictícios de mockData em caso de falha da API
+      setParticipant(EMPTY_PARTICIPANT);
+      setAllParticipants([]);
+      setPublicRanking([]);
+      setDailyRankings([]);
+      setPointsTransactions([]);
+      setValidationQueue([]);
+      return null;
+    },
+    []
+  );
 
   const [isRefreshingRanking, setIsRefreshingRanking] = useState<boolean>(false);
 
@@ -298,6 +318,49 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     void syncFromSqliteOrMemory();
   }, [syncFromSqliteOrMemory]);
+
+  // Polling automático a cada 5 segundos para participantes autenticados (reflete aprovações/reprovações em tempo real)
+  const isParticipantPollingActive =
+    authState.authenticated &&
+    authState.role === 'PARTICIPANT' &&
+    Boolean(participant.id);
+
+  useEffect(() => {
+    if (!isParticipantPollingActive) return;
+
+    let isDisposed = false;
+
+    const runBackgroundSync = async () => {
+      if (isDisposed || isBackgroundPollInFlightRef.current) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+      isBackgroundPollInFlightRef.current = true;
+      try {
+        await syncFromSqliteOrMemory({ preserveStateOnError: true });
+      } finally {
+        isBackgroundPollInFlightRef.current = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void runBackgroundSync();
+    }, PARTICIPANT_POLL_INTERVAL_MS);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void runBackgroundSync();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      isDisposed = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isParticipantPollingActive, syncFromSqliteOrMemory]);
 
   const loginDemo = async (
     email: string,
