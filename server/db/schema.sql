@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS participants (
   share_startup_interests INTEGER NOT NULL DEFAULT 0,
   is_current_session INTEGER NOT NULL DEFAULT 0,
   image_publicity_consent INTEGER NOT NULL DEFAULT 0,
-  image_publicity_consent_updated_at TEXT
+  image_publicity_consent_updated_at TEXT,
+  image_publicity_consent_version TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_participants_points ON participants(points DESC);
@@ -56,7 +57,9 @@ CREATE TABLE IF NOT EXISTS startups (
   available_points INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1,
   is_configurable_guest INTEGER NOT NULL DEFAULT 0,
-  website TEXT
+  website TEXT,
+  instagram_url TEXT,
+  logo_path TEXT
 );
 
 CREATE TABLE IF NOT EXISTS missions (
@@ -71,6 +74,8 @@ CREATE TABLE IF NOT EXISTS missions (
   completion_points INTEGER NOT NULL DEFAULT 180,
   max_speed_bonus INTEGER NOT NULL DEFAULT 50,
   sequence_order INTEGER,
+  track_id TEXT,
+  relative_weight INTEGER NOT NULL DEFAULT 10,
   estimated_time TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'Disponível',
   period TEXT NOT NULL,
@@ -79,7 +84,11 @@ CREATE TABLE IF NOT EXISTS missions (
   qr_code_required TEXT,
   quiz_questions_json TEXT,
   requires_evidence INTEGER NOT NULL DEFAULT 0,
-  evidence_type TEXT
+  evidence_type TEXT,
+  max_video_seconds INTEGER,
+  allow_shared_evidence INTEGER NOT NULL DEFAULT 0,
+  is_surprise INTEGER NOT NULL DEFAULT 0,
+  external_link TEXT
 );
 
 CREATE TABLE IF NOT EXISTS participant_missions (
@@ -90,6 +99,7 @@ CREATE TABLE IF NOT EXISTS participant_missions (
   status TEXT NOT NULL DEFAULT 'Bloqueada',
   unlocked_at_ms INTEGER,
   started_at_ms INTEGER,
+  submitted_at_ms INTEGER,
   completed_at_ms INTEGER,
   elapsed_seconds INTEGER,
   unlock_points_awarded INTEGER NOT NULL DEFAULT 0,
@@ -119,6 +129,8 @@ CREATE TABLE IF NOT EXISTS mission_completions (
   evidence_mime_type TEXT,
   evidence_size_bytes INTEGER,
   evidence_sha256 TEXT,
+  evidence_duration_seconds INTEGER,
+  rejection_reason TEXT,
   points_awarded INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Pendente'
 );

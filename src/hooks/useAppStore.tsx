@@ -114,7 +114,12 @@ interface AppStoreContextValue {
     acceptedTerms: boolean;
   }) => Promise<{ ok: boolean; error?: string }>;
   completeMissionInstant: (missionId: string) => void;
-  startMission: (missionId: string) => void;
+  startMission: (missionId: string) => Promise<{
+    ok: boolean;
+    error?: string;
+    errorCode?: string;
+    status?: number;
+  }>;
   submitMissionEvidence: (missionId: string, evidenceText: string) => void;
   uploadMissionEvidence: (
     missionId: string,
@@ -149,7 +154,11 @@ interface AppStoreContextValue {
   deleteMission: (id: string) => void;
   createQRCode: (payload: Omit<QRCode, 'id' | 'scansCount' | 'createdAt'>) => void;
   toggleQRCodeActive: (id: string) => void;
-  reviewValidationItem: (id: string, decision: 'Aprovada' | 'Rejeitada') => void;
+  reviewValidationItem: (
+    id: string,
+    decision: 'Aprovada' | 'Rejeitada',
+    rejectionReason?: string
+  ) => void;
   updateParticipantStatus: (id: string, status: Participant['status']) => void;
   resetParticipantPasswordAdmin: (
     participantId: string,
@@ -165,26 +174,40 @@ interface AppStoreContextValue {
 
 const AppStoreContext = createContext<AppStoreContextValue | undefined>(undefined);
 
+const EMPTY_PARTICIPANT: Participant = {
+  id: '',
+  name: '',
+  nickname: '',
+  email: '',
+  phone: null,
+  role: undefined,
+  avatar: '',
+  points: 0,
+  rankingPosition: 0,
+  completedMissionsCount: 0,
+  visitedStartupsIds: [],
+  registeredAt: '',
+  status: 'Ativo',
+  privacyPreferences: {
+    showNicknameInPublicRanking: true,
+    allowActivityNotifications: false,
+    shareStartupInterests: false,
+  },
+  imagePublicityConsent: false,
+  imagePublicityConsentUpdatedAt: null,
+  imagePublicityConsentVersion: null,
+};
+
 export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [participant, setParticipant] = useState<Participant>(() =>
-    participantService.getParticipantProfile()
-  );
-  const [allParticipants, setAllParticipants] = useState<Participant[]>(() =>
-    participantService.getAllParticipants()
-  );
+  const [participant, setParticipant] = useState<Participant>(EMPTY_PARTICIPANT);
+  const [allParticipants, setAllParticipants] = useState<Participant[]>([]);
   const [startups, setStartups] = useState<Startup[]>(() => startupService.getStartups());
   const [missions, setMissions] = useState<Mission[]>(() => missionService.getMissions());
   const [qrCodes, setQrCodes] = useState<QRCode[]>(() => qrCodeService.getQRCodes());
-  const [validationQueue, setValidationQueue] = useState<MissionCompletion[]>(() =>
-    missionService.getValidationQueue()
-  );
-  const [publicRanking, setPublicRanking] = useState<PublicRankingEntry[]>(() =>
-    rankingService.getPublicRanking()
-  );
+  const [validationQueue, setValidationQueue] = useState<MissionCompletion[]>([]);
+  const [publicRanking, setPublicRanking] = useState<PublicRankingEntry[]>([]);
   const [dailyRankings, setDailyRankings] = useState<DailyRankingDaySummary[]>([]);
-  const [pointsTransactions, setPointsTransactions] = useState<PointsTransaction[]>(() =>
-    rankingService.getPointsTransactions()
-  );
+  const [pointsTransactions, setPointsTransactions] = useState<PointsTransaction[]>([]);
   const [eventSettings, setEventSettings] = useState<EventSettings>(() =>
     adminService.getEventSettings()
   );
@@ -224,7 +247,13 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const data = await apiRequest<BootstrapPayload>('/bootstrap');
     if (data) {
       setSqliteConnected(true);
-      setParticipant(data.participant);
+      const isAdminParticipant =
+        String(data.participant?.role || '').toUpperCase() === 'ADMIN';
+      setParticipant(
+        isAdminParticipant
+          ? { ...data.participant, rankingPosition: 0 }
+          : data.participant
+      );
       setAllParticipants(data.allParticipants);
       setStartups(data.startups);
       setMissions(data.missions);
@@ -245,16 +274,13 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     setSqliteConnected(false);
     setIsCheckingAuth(false);
-    setParticipant(participantService.getParticipantProfile());
-    setAllParticipants(participantService.getAllParticipants());
-    setStartups(startupService.getStartups());
-    setMissions(missionService.getMissions());
-    setQrCodes(qrCodeService.getQRCodes());
-    setValidationQueue(missionService.getValidationQueue());
-    setPublicRanking(rankingService.getPublicRanking());
-    setPointsTransactions(rankingService.getPointsTransactions());
-    setEventSettings(adminService.getEventSettings());
-    setGovernancePlans(governanceService.getGovernancePlans());
+    // Nunca injeta participantes ou rankings fictícios de mockData em caso de falha da API
+    setParticipant(EMPTY_PARTICIPANT);
+    setAllParticipants([]);
+    setPublicRanking([]);
+    setDailyRankings([]);
+    setPointsTransactions([]);
+    setValidationQueue([]);
     return null;
   }, []);
 
@@ -371,31 +397,43 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return { ok: true };
   };
 
-  const startMission = (missionId: string) => {
-    void apiRequestWithStatus<Mission & { error?: string }>(`/missions/${missionId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'Em andamento' }),
-    }).then(async (res) => {
-      if (res.ok) {
-        missionService.updateMissionStatus(missionId, 'Em andamento');
-        await syncFromSqliteOrMemory();
-        const target = missions.find((m) => m.id === missionId);
-        if (target) {
-          notify(
-            'Missão Iniciada',
-            `A missão "${target.title}" agora está em andamento.`,
-            'info'
-          );
-        }
-      } else {
-        await syncFromSqliteOrMemory();
+  const startMission = async (
+    missionId: string
+  ): Promise<{ ok: boolean; error?: string; errorCode?: string; status?: number }> => {
+    const res = await apiRequestWithStatus<Mission & { error?: string; errorCode?: string }>(
+      `/missions/${missionId}/status`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'Em andamento' }),
+      }
+    );
+
+    if (res.ok) {
+      missionService.updateMissionStatus(missionId, 'Em andamento');
+      await syncFromSqliteOrMemory();
+      const target = missions.find((m) => m.id === missionId);
+      if (target) {
         notify(
-          'Missão Bloqueada',
-          res.error || 'Conclua a missão anterior na sequência antes de iniciar esta missão.',
-          'error'
+          'Missão Iniciada',
+          `Cronômetro iniciado para "${target.title}". Realize a atividade e clique em "Enviar Evidência" quando concluir.`,
+          'info'
         );
       }
-    });
+      return { ok: true, status: res.status };
+    }
+
+    await syncFromSqliteOrMemory();
+    const errorCode = res.data?.errorCode;
+    const isTimerConflict = res.status === 409 || errorCode === 'ACTIVE_TIMER_CONFLICT';
+    notify(
+      isTimerConflict ? 'Cronômetro Global em Execução' : 'Não Foi Possível Iniciar',
+      res.error ||
+        (isTimerConflict
+          ? 'Você já possui outra missão em andamento. Envie a evidência dela antes de iniciar uma nova.'
+          : 'Conclua e aguarde a aprovação da missão anterior antes de iniciar esta missão.'),
+      'error'
+    );
+    return { ok: false, error: res.error, errorCode, status: res.status };
   };
 
   const completeMissionInstant = (missionId: string) => {
@@ -775,12 +813,19 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     notify('Status do QR Code', 'Estado de ativação do QR Code atualizado.', 'info');
   };
 
-  const reviewValidationItem = (id: string, decision: 'Aprovada' | 'Rejeitada') => {
+  const reviewValidationItem = (
+    id: string,
+    decision: 'Aprovada' | 'Rejeitada',
+    rejectionReason?: string
+  ) => {
     const target = validationQueue.find((v) => v.id === id);
     missionService.reviewMissionValidation(id, decision);
     void apiRequest(`/validations/${id}/review`, {
       method: 'PATCH',
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify({
+        decision,
+        ...(rejectionReason ? { rejectionReason } : {}),
+      }),
     }).then(() => syncFromSqliteOrMemory());
 
     notify(

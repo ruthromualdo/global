@@ -47,44 +47,66 @@ export interface RecalculateCircuitResult {
 }
 
 /**
- * Função pura que calcula a partição exata dos 1.000 pontos entre N missões oficiais.
- *
- * Utiliza o método das cotas inteiras e restos maiores:
- * - quota = floor(TOTAL / N)
- * - remainder = TOTAL % N
- * As primeiras 'remainder' missões da sequência recebem quota + 1.
- * As demais recebem quota.
- *
- * Garante 100% de precisão inteira e soma final identicamente igual a 1.000 pontos.
+ * Particiona um total inteiro proporcionalmente aos pesos relativos utilizando o
+ * método das cotas inteiras e restos maiores (Hamilton), com desempate determinístico
+ * pela ordem de entrada. Garante soma final identicamente igual a `total`.
  */
-export function distributeCircuitPoints(n: number): MissionPointsDistribution[] {
-  if (!Number.isInteger(n) || n < 1) {
-    throw new Error(
-      `A quantidade de missões deve ser um número inteiro maior ou igual a 1. Recebido: ${n}`
-    );
+export function allocateByRelativeWeights(total: number, weights: number[]): number[] {
+  if (!Number.isInteger(total) || total < 0) {
+    throw new Error(`Total inválido para partição ponderada: ${total}`);
+  }
+  if (!Array.isArray(weights) || weights.length === 0) {
+    throw new Error('A lista de pesos relativos deve conter pelo menos 1 item.');
+  }
+  const normalizedWeights = weights.map((w) => {
+    const num = Number(w);
+    return Number.isFinite(num) && num > 0 ? num : 1;
+  });
+  const totalWeight = normalizedWeights.reduce((acc, w) => acc + w, 0);
+
+  const exact = normalizedWeights.map((w) => (total * w) / totalWeight);
+  const floors = exact.map((val) => Math.floor(val));
+  let remainder = total - floors.reduce((acc, f) => acc + f, 0);
+
+  const rankedIndices = exact
+    .map((val, idx) => ({ idx, frac: val - floors[idx] }))
+    .sort((a, b) => {
+      const diff = b.frac - a.frac;
+      if (Math.abs(diff) > 1e-12) return diff;
+      return a.idx - b.idx;
+    });
+
+  const result = [...floors];
+  for (let k = 0; k < remainder; k++) {
+    result[rankedIndices[k].idx] += 1;
   }
 
-  const unlockBase = Math.floor(TOTAL_UNLOCK_POINTS / n);
-  const unlockRemainder = TOTAL_UNLOCK_POINTS % n;
+  return result;
+}
 
-  const completionBase = Math.floor(TOTAL_COMPLETION_POINTS / n);
-  const completionRemainder = TOTAL_COMPLETION_POINTS % n;
+/**
+ * Função pura que calcula a partição exata dos 1.000 pontos entre missões oficiais
+ * considerando pesos relativos. Soma final garantidamente igual a 1.000 pontos.
+ */
+export function distributeWeightedCircuitPoints(weights: number[]): MissionPointsDistribution[] {
+  if (!Array.isArray(weights) || weights.length < 1) {
+    throw new Error('A quantidade de missões deve ser um número inteiro maior ou igual a 1.');
+  }
 
-  const speedBonusBase = Math.floor(TOTAL_SPEED_BONUS_POINTS / n);
-  const speedBonusRemainder = TOTAL_SPEED_BONUS_POINTS % n;
+  const unlockAlloc = allocateByRelativeWeights(TOTAL_UNLOCK_POINTS, weights);
+  const completionAlloc = allocateByRelativeWeights(TOTAL_COMPLETION_POINTS, weights);
+  const speedBonusAlloc = allocateByRelativeWeights(TOTAL_SPEED_BONUS_POINTS, weights);
 
   const result: MissionPointsDistribution[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const sequenceOrder = i + 1;
-    const unlockPoints = unlockBase + (i < unlockRemainder ? 1 : 0);
-    const completionPoints = completionBase + (i < completionRemainder ? 1 : 0);
-    const maxSpeedBonus = speedBonusBase + (i < speedBonusRemainder ? 1 : 0);
+  for (let i = 0; i < weights.length; i++) {
+    const unlockPoints = unlockAlloc[i];
+    const completionPoints = completionAlloc[i];
+    const maxSpeedBonus = speedBonusAlloc[i];
     const points = completionPoints;
     const totalPotentialPoints = unlockPoints + completionPoints + maxSpeedBonus;
 
     result.push({
-      sequenceOrder,
+      sequenceOrder: i + 1,
       unlockPoints,
       completionPoints,
       maxSpeedBonus,
@@ -94,6 +116,19 @@ export function distributeCircuitPoints(n: number): MissionPointsDistribution[] 
   }
 
   return result;
+}
+
+/**
+ * Função pura que calcula a partição exata dos 1.000 pontos entre N missões oficiais
+ * com pesos iguais (preservada para compatibilidade retroativa).
+ */
+export function distributeCircuitPoints(n: number): MissionPointsDistribution[] {
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(
+      `A quantidade de missões deve ser um número inteiro maior ou igual a 1. Recebido: ${n}`
+    );
+  }
+  return distributeWeightedCircuitPoints(Array.from({ length: n }, () => 1));
 }
 
 /**
@@ -166,52 +201,48 @@ export function compactCircuitSequencesInDb(database: DatabaseSync): void {
 
   const activeOfficial = database
     .prepare(`
-      SELECT id, sequence_order
+      SELECT id, sequence_order, COALESCE(track_id, 'default') AS track_key
       FROM missions
       WHERE active = 1 AND sequence_order IS NOT NULL
-      ORDER BY sequence_order ASC, rowid ASC
+      ORDER BY track_key ASC, sequence_order ASC, rowid ASC
     `)
-    .all() as { id: string; sequence_order: number }[];
+    .all() as { id: string; sequence_order: number; track_key: string }[];
 
   if (activeOfficial.length === 0) {
     return;
   }
 
-  // Passo 1: atribui valores negativos temporários -(i + 1)
-  const updateTemp = database.prepare('UPDATE missions SET sequence_order = ? WHERE id = ?');
-  for (let i = 0; i < activeOfficial.length; i++) {
-    updateTemp.run(-(i + 1), activeOfficial[i].id);
+  // Agrupa por trilha e compacta 1..K dentro de cada trilha independentemente
+  const byTrack = new Map<string, { id: string; sequence_order: number }[]>();
+  for (const row of activeOfficial) {
+    const list = byTrack.get(row.track_key) || [];
+    list.push({ id: row.id, sequence_order: row.sequence_order });
+    byTrack.set(row.track_key, list);
   }
 
-  // Passo 2: inverte os negativos para os positivos contíguos finais (1 .. N)
+  const updateTemp = database.prepare('UPDATE missions SET sequence_order = ? WHERE id = ?');
+  for (const [, list] of byTrack.entries()) {
+    for (let i = 0; i < list.length; i++) {
+      updateTemp.run(-(i + 1), list[i].id);
+    }
+  }
+
   database
     .prepare('UPDATE missions SET sequence_order = -sequence_order WHERE sequence_order < 0')
     .run();
 }
 
-/**
- * Recalcula e atualiza atomicamente as pontuações de todas as missões oficiais ativas no SQLite.
- *
- * Validações obrigatórias antes da atualização:
- * 1. Existência de pelo menos uma missão oficial elegível (active = 1 AND sequence_order IS NOT NULL).
- * 2. Todas as ordens devem ser números inteiros positivos.
- * 3. Ausência de ordens sequenciais duplicadas.
- * 4. Contiguidade estrita da sequência começando em 1 (1, 2, ..., N).
- *
- * Se qualquer validação falhar, nenhuma missão é modificada e um erro explícito é lançado.
- * A atualização é executada dentro de um SAVEPOINT transacional para garantir atomicidade.
- *
- * As missões extras (sequence_order IS NULL) e missões inativas (active = 0) NÃO são alteradas.
- */
 export function recalculateCircuitMissionPointsInDb(
   database: DatabaseSync
 ): RecalculateCircuitResult {
   const candidateRows = database
     .prepare(`
-      SELECT id, title, sequence_order, active, points, unlock_points, completion_points, max_speed_bonus
+      SELECT id, title, sequence_order, COALESCE(track_id, 'default') AS track_key,
+             COALESCE(relative_weight, 10) AS relative_weight,
+             active, points, unlock_points, completion_points, max_speed_bonus
       FROM missions
       WHERE active = 1 AND sequence_order IS NOT NULL
-      ORDER BY sequence_order ASC, rowid ASC
+      ORDER BY track_key ASC, sequence_order ASC, rowid ASC
     `)
     .all() as Record<string, unknown>[];
 
@@ -224,37 +255,50 @@ export function recalculateCircuitMissionPointsInDb(
 
   const n = candidateRows.length;
 
-  // 2. Validação: Ausência de duplicidade e valores inteiros positivos
-  const seenOrders = new Set<number>();
+  // 2 e 3. Validação por trilha: inteiros positivos, ausência de duplicidade e contiguidade 1..K por trilha
+  const byTrack = new Map<string, Record<string, unknown>[]>();
   for (const row of candidateRows) {
-    const seq = Number(row.sequence_order);
-    if (!Number.isInteger(seq) || seq < 1) {
-      throw new Error(
-        `Ordem sequencial inválida detectada na missão "${row.title}" (ID: ${row.id}): ${row.sequence_order}. Deve ser um número inteiro positivo.`
-      );
-    }
-    if (seenOrders.has(seq)) {
-      throw new Error(
-        `Ordem sequencial duplicada detectada no circuito oficial: posição ${seq} utilizada por mais de uma missão.`
-      );
-    }
-    seenOrders.add(seq);
+    const trackKey = String(row.track_key || 'default');
+    const list = byTrack.get(trackKey) || [];
+    list.push(row);
+    byTrack.set(trackKey, list);
   }
 
-  // 3. Validação: Contiguidade estrita começando em 1 até N
-  for (let i = 0; i < n; i++) {
-    const row = candidateRows[i];
-    const seq = Number(row.sequence_order);
-    const expected = i + 1;
-    if (seq !== expected) {
-      throw new Error(
-        `A sequência oficial não é contígua a partir de 1: esperava posição ${expected}, mas encontrou posição ${seq} na missão "${row.title}" (ID: ${row.id}).`
-      );
+  for (const [trackKey, trackRows] of byTrack.entries()) {
+    const seenOrders = new Set<number>();
+    for (const row of trackRows) {
+      const seq = Number(row.sequence_order);
+      if (!Number.isInteger(seq) || seq < 1) {
+        throw new Error(
+          `Ordem sequencial inválida detectada na missão "${row.title}" (ID: ${row.id}, trilha: ${trackKey}): ${row.sequence_order}. Deve ser um número inteiro positivo.`
+        );
+      }
+      if (seenOrders.has(seq)) {
+        throw new Error(
+          `Ordem sequencial duplicada detectada na trilha "${trackKey}": posição ${seq} utilizada por mais de uma missão.`
+        );
+      }
+      seenOrders.add(seq);
+    }
+
+    for (let i = 0; i < trackRows.length; i++) {
+      const row = trackRows[i];
+      const seq = Number(row.sequence_order);
+      const expected = i + 1;
+      if (seq !== expected) {
+        throw new Error(
+          `A sequência da trilha "${trackKey}" não é contígua a partir de 1: esperava posição ${expected}, mas encontrou posição ${seq} na missão "${row.title}" (ID: ${row.id}).`
+        );
+      }
     }
   }
 
-  // 4. Cálculo da partição matemática
-  const distributions = distributeCircuitPoints(n);
+  // 4. Cálculo da partição matemática ponderada pelos pesos relativos (soma global = 1.000 pts)
+  const weights = candidateRows.map((row) => {
+    const w = Number(row.relative_weight);
+    return Number.isFinite(w) && w > 0 ? w : 10;
+  });
+  const distributions = distributeWeightedCircuitPoints(weights);
 
   // 5. Execução transacional atômica via SAVEPOINT (compatível com transação externa BEGIN IMMEDIATE)
   const savepointName = `sp_circuit_recalc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -287,7 +331,7 @@ export function recalculateCircuitMissionPointsInDb(
       updatedMissions.push({
         id: String(row.id),
         title: String(row.title),
-        sequenceOrder: dist.sequenceOrder,
+        sequenceOrder: Number(row.sequence_order),
         unlockPoints: dist.unlockPoints,
         completionPoints: dist.completionPoints,
         maxSpeedBonus: dist.maxSpeedBonus,

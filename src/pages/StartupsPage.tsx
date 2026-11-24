@@ -5,6 +5,8 @@ import {
   Building2,
   CheckCircle2,
   Compass,
+  ExternalLink,
+  Instagram,
   MapPin,
   Sparkles,
   Zap,
@@ -21,6 +23,15 @@ export const StartupsPage: React.FC = () => {
   const [selectedStartup, setSelectedStartup] = useState<Startup | null>(null);
 
   const activeStartups = startups.filter((s) => s.active);
+
+  const resolveStartupTrackId = (st: Startup): string => {
+    const related = missions.find((m) => m.startupId === st.id && m.active && m.trackId && m.trackId !== 'bonus');
+    if (related?.trackId) return related.trackId;
+    if (st.id.includes('ex-devedor') || st.id.includes('tutu')) return 'ex_devedor';
+    if (st.id.includes('sign')) return 'sign';
+    if (st.id.includes('escreva')) return 'editora_escreva';
+    return 'ex_devedor';
+  };
 
   return (
     <div className="space-y-6 sm:space-y-8">
@@ -40,7 +51,9 @@ export const StartupsPage: React.FC = () => {
       {/* Startups Cards Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-6">
         {activeStartups.map((st) => {
-          const relatedMissions = missions.filter((m) => m.startupId === st.id && m.active);
+          const relatedMissions = missions.filter(
+            (m) => m.startupId === st.id && m.active && m.trackId !== 'bonus'
+          );
           const isVisited = participant.visitedStartupsIds.includes(st.id);
 
           return (
@@ -53,6 +66,8 @@ export const StartupsPage: React.FC = () => {
                   <div className="flex items-start gap-3.5 min-w-0">
                     <StartupAvatarBadge
                       logoText={st.logoText}
+                      logoPath={st.logoPath}
+                      name={st.name}
                       isGuest={st.isConfigurableGuest}
                     />
                     <div className="min-w-0">
@@ -77,9 +92,38 @@ export const StartupsPage: React.FC = () => {
                   )}
                 </div>
 
-                <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed">
+                <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed whitespace-pre-line">
                   {st.description}
                 </p>
+
+                {(st.instagramUrl || st.website) && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {st.instagramUrl && (
+                      <a
+                        href={st.instagramUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-tutu-dark/80 border border-tutu-secondary/50 hover:border-tutu-lime text-xs font-semibold text-tutu-light hover:text-tutu-lime transition-colors"
+                      >
+                        <Instagram className="w-3.5 h-3.5 text-tutu-lime shrink-0" />
+                        <span>Instagram Oficial</span>
+                        <ExternalLink className="w-3 h-3 opacity-70 shrink-0" />
+                      </a>
+                    )}
+                    {st.website && (
+                      <a
+                        href={st.website}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-tutu-lime/15 border border-tutu-lime/40 hover:bg-tutu-lime/25 text-xs font-semibold text-tutu-lime transition-colors"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                        <span>Acessar Plataforma</span>
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                      </a>
+                    )}
+                  </div>
+                )}
 
                 {/* Apresentação da Solução */}
                 <div className="p-3.5 sm:p-4 rounded-xl bg-tutu-dark/70 border border-tutu-secondary/40 space-y-1.5">
@@ -152,6 +196,8 @@ export const StartupsPage: React.FC = () => {
               <div className="flex items-center gap-3.5 min-w-0">
                 <StartupAvatarBadge
                   logoText={selectedStartup.logoText}
+                  logoPath={selectedStartup.logoPath}
+                  name={selectedStartup.name}
                   isGuest={selectedStartup.isConfigurableGuest}
                 />
                 <div className="min-w-0">
@@ -176,7 +222,7 @@ export const StartupsPage: React.FC = () => {
             </div>
 
             <div className="space-y-4 text-xs sm:text-sm text-tutu-light/90 leading-relaxed">
-              <p>{selectedStartup.description}</p>
+              <p className="whitespace-pre-line">{selectedStartup.description}</p>
               <div className="p-4 rounded-xl bg-tutu-dark/80 border border-tutu-secondary/50 space-y-1.5">
                 <p className="text-xs font-bold uppercase text-tutu-lime">
                   O que experimentar no estande:
@@ -185,6 +231,34 @@ export const StartupsPage: React.FC = () => {
                   {selectedStartup.solutionPresentation}
                 </p>
               </div>
+              {(selectedStartup.instagramUrl || selectedStartup.website) && (
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {selectedStartup.instagramUrl && (
+                    <a
+                      href={selectedStartup.instagramUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-tutu-dark border border-tutu-secondary/50 hover:border-tutu-lime text-xs font-semibold text-tutu-light hover:text-tutu-lime"
+                    >
+                      <Instagram className="w-4 h-4 text-tutu-lime shrink-0" />
+                      <span>Abrir Instagram</span>
+                      <ExternalLink className="w-3.5 h-3.5 opacity-70" />
+                    </a>
+                  )}
+                  {selectedStartup.website && (
+                    <a
+                      href={selectedStartup.website}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-tutu-lime/15 border border-tutu-lime/40 hover:bg-tutu-lime/25 text-xs font-semibold text-tutu-lime"
+                    >
+                      <Sparkles className="w-4 h-4 shrink-0" />
+                      <span>Acessar Plataforma</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-tutu-secondary/40">
@@ -199,7 +273,7 @@ export const StartupsPage: React.FC = () => {
                   Fechar
                 </button>
                 <Link
-                  to="/app/missoes"
+                  to={`/app/missoes?track=${resolveStartupTrackId(selectedStartup)}`}
                   onClick={() => setSelectedStartup(null)}
                   className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-1.5"
                 >

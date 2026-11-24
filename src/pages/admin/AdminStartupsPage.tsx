@@ -264,6 +264,8 @@ export const AdminStartupsPage: React.FC = () => {
                 <div className="flex items-center gap-3.5 min-w-0">
                   <StartupAvatarBadge
                     logoText={st.logoText}
+                    logoPath={st.logoPath}
+                    name={st.name}
                     isGuest={st.isConfigurableGuest}
                   />
                   <div className="min-w-0">

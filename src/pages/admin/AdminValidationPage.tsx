@@ -6,9 +6,12 @@ import {
   Eye,
   FileCheck,
   FileText,
+  Film,
   Image as ImageIcon,
   Loader2,
   Paperclip,
+  ShieldCheck,
+  Users,
   X,
   XCircle,
   Zap,
@@ -35,9 +38,12 @@ export const AdminValidationPage: React.FC = () => {
   const [previewModal, setPreviewModal] = useState<{
     url: string;
     fileName: string;
+    mimeType: string;
     participantName: string;
     missionTitle: string;
   } | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<MissionCompletion | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
 
   useEffect(() => {
     return () => {
@@ -63,10 +69,11 @@ export const AdminValidationPage: React.FC = () => {
     const fileName = res.fileName || item.evidenceFileName || 'evidencia';
     const blobUrl = URL.createObjectURL(res.blob);
 
-    if (mode === 'view' && mime.startsWith('image/')) {
+    if (mode === 'view' && (mime.startsWith('image/') || mime.startsWith('video/'))) {
       setPreviewModal({
         url: blobUrl,
         fileName,
+        mimeType: mime,
         participantName: item.participantName,
         missionTitle: item.missionTitle,
       });
@@ -160,9 +167,36 @@ export const AdminValidationPage: React.FC = () => {
                 <h3 className="font-display font-bold text-lg sm:text-xl text-tutu-light break-words">
                   {item.participantName} — <span className="text-tutu-lime">{item.missionTitle}</span>
                 </h3>
-                <p className="text-xs text-tutu-light/75">
-                  Startup relacionada: <strong>{item.startupName}</strong>
+                <p className="text-xs text-tutu-light/75 flex flex-wrap items-center gap-2">
+                  <span>
+                    Startup / Trilha: <strong>{item.startupName}</strong>
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      item.participantImageConsent
+                        ? 'bg-tutu-lime/20 text-tutu-lime border border-tutu-lime/40'
+                        : 'bg-tutu-dark/80 text-tutu-light/60 border border-tutu-secondary/40'
+                    }`}
+                  >
+                    <ShieldCheck className="w-3 h-3 shrink-0" />
+                    {item.participantImageConsent
+                      ? `LGPD: Divulgação autorizada${item.participantImageConsentVersion ? ` (${item.participantImageConsentVersion})` : ''}`
+                      : 'LGPD: Sem autorização para divulgação pública'}
+                  </span>
+                  {(item.sharedEvidenceCount || 0) > 1 && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400/20 text-amber-200 border border-amber-400/40">
+                      <Users className="w-3 h-3 shrink-0" />
+                      Foto coletiva enviada por {item.sharedEvidenceCount} participantes
+                    </span>
+                  )}
                 </p>
+
+                {item.status === 'Rejeitada' && item.rejectionReason && (
+                  <div className="p-3 rounded-xl bg-red-500/10 border border-red-400/40 text-xs text-red-200">
+                    <span className="font-bold block">Motivo da rejeição:</span>
+                    <span>{item.rejectionReason}</span>
+                  </div>
+                )}
 
                 <div className="p-3.5 rounded-xl bg-tutu-dark/75 border border-tutu-secondary/40 text-xs text-tutu-light/90 flex items-start gap-2.5">
                   <FileCheck className="w-4 h-4 text-tutu-lime shrink-0 mt-0.5" />
@@ -177,6 +211,8 @@ export const AdminValidationPage: React.FC = () => {
                     <div className="flex items-center gap-2.5 min-w-0">
                       {item.evidenceMimeType?.startsWith('image/') ? (
                         <ImageIcon className="w-4 h-4 text-tutu-lime shrink-0" />
+                      ) : item.evidenceMimeType?.startsWith('video/') ? (
+                        <Film className="w-4 h-4 text-tutu-lime shrink-0" />
                       ) : item.evidenceMimeType === 'application/pdf' ? (
                         <FileText className="w-4 h-4 text-tutu-lime shrink-0" />
                       ) : (
@@ -189,12 +225,16 @@ export const AdminValidationPage: React.FC = () => {
                         <div className="text-[11px] text-tutu-light/65">
                           {item.evidenceMimeType || 'application/octet-stream'} •{' '}
                           {formatEvidenceSize(item.evidenceSizeBytes)}
+                          {item.evidenceDurationSeconds
+                            ? ` • Duração: ${item.evidenceDurationSeconds}s`
+                            : ''}
                         </div>
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      {item.evidenceMimeType?.startsWith('image/') && (
+                      {(item.evidenceMimeType?.startsWith('image/') ||
+                        item.evidenceMimeType?.startsWith('video/')) && (
                         <button
                           type="button"
                           onClick={() => handleOpenEvidence(item, 'view')}
@@ -206,7 +246,11 @@ export const AdminValidationPage: React.FC = () => {
                           ) : (
                             <Eye className="w-3.5 h-3.5" />
                           )}
-                          <span>Visualizar Imagem</span>
+                          <span>
+                            {item.evidenceMimeType?.startsWith('video/')
+                              ? 'Visualizar Vídeo'
+                              : 'Visualizar Imagem'}
+                          </span>
                         </button>
                       )}
 
@@ -247,8 +291,11 @@ export const AdminValidationPage: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={() => reviewValidationItem(item.id, 'Rejeitada')}
-                  disabled={item.status === 'Rejeitada'}
+                  onClick={() => {
+                    setRejectTarget(item);
+                    setRejectionReason('');
+                  }}
+                  disabled={item.status === 'Rejeitada' || item.status === 'Aprovada'}
                   className="min-h-[44px] flex-1 sm:flex-initial px-4 py-2.5 rounded-xl btn-tutu-outline text-xs flex items-center justify-center gap-1.5 disabled:opacity-40"
                 >
                   <XCircle className="w-4 h-4 shrink-0" />
@@ -286,13 +333,87 @@ export const AdminValidationPage: React.FC = () => {
               </button>
             </div>
             <div className="rounded-xl overflow-hidden bg-tutu-dark border border-tutu-secondary/40 flex items-center justify-center max-h-[75vh]">
-              <img
-                src={previewModal.url}
-                alt={previewModal.fileName}
-                className="max-h-[75vh] w-auto object-contain"
-              />
+              {previewModal.mimeType.startsWith('video/') ? (
+                <video
+                  src={previewModal.url}
+                  controls
+                  playsInline
+                  className="max-h-[75vh] w-full object-contain"
+                />
+              ) : (
+                <img
+                  src={previewModal.url}
+                  alt={previewModal.fileName}
+                  className="max-h-[75vh] w-auto object-contain"
+                />
+              )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Modal de Motivo de Rejeição */}
+      {rejectTarget && (
+        <div className="fixed inset-0 z-50 bg-tutu-dark/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              reviewValidationItem(
+                rejectTarget.id,
+                'Rejeitada',
+                rejectionReason.trim() || 'Evidência não atende aos critérios da missão.'
+              );
+              setRejectTarget(null);
+              setRejectionReason('');
+            }}
+            className="tutu-card max-w-lg w-full p-5 sm:p-6 space-y-4 border-2 border-red-400/60"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-red-300 block">
+                  Reprovar Evidência
+                </span>
+                <h3 className="font-display font-bold text-lg text-tutu-light">
+                  {rejectTarget.participantName} — {rejectTarget.missionTitle}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRejectTarget(null)}
+                className="p-2 rounded-lg bg-tutu-secondary/30 text-tutu-light hover:text-tutu-lime"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-tutu-light/85">
+                Motivo da reprovação (exibido ao participante) *
+              </label>
+              <textarea
+                rows={3}
+                required
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+                placeholder="Ex.: A foto não mostra os três representantes juntos ou está ilegível."
+                className="input-tutu text-xs"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setRejectTarget(null)}
+                className="min-h-[40px] px-4 py-2 rounded-xl btn-tutu-outline text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-red-500/80 hover:bg-red-500 text-white text-xs font-bold"
+              >
+                Confirmar Rejeição
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Clock, Zap, AlertCircle, CheckCircle } from 'lucide-react';
 import { MissionStatus } from '../types';
 
@@ -14,6 +14,7 @@ interface MissionTimerProps {
   completionPoints?: number;
   maxSpeedBonus?: number;
   potentialSpeedBonus?: number;
+  compact?: boolean;
 }
 
 export const MissionTimer: React.FC<MissionTimerProps> = ({
@@ -26,8 +27,13 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
   completionPoints,
   maxSpeedBonus,
   potentialSpeedBonus: backendPotentialSpeedBonus,
+  compact = false,
 }) => {
-  const [clientOffset] = useState(() => (serverTimeMs ? serverTimeMs - Date.now() : 0));
+  // Recalcula o deslocamento de relógio sempre que o servidor devolver um novo serverTimeMs
+  const clientOffset = useMemo(
+    () => (serverTimeMs ? serverTimeMs - Date.now() : 0),
+    [serverTimeMs]
+  );
 
   const calculateRemainingSeconds = (): number => {
     if (!startedAtMs) return durationSeconds;
@@ -52,7 +58,7 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [status, startedAtMs, targetEndAtMs, durationSeconds]);
+  }, [status, startedAtMs, targetEndAtMs, durationSeconds, clientOffset]);
 
   const formatMMSS = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -132,20 +138,88 @@ export const MissionTimer: React.FC<MissionTimerProps> = ({
     );
   }
 
-  // 4. Missão Em Andamento ou Aguardando Validação
+  // 3.5. Missão Aguardando Validação (Tempo congelado no servidor)
+  if (status === 'Aguardando validação') {
+    return (
+      <div className="p-3 rounded-xl bg-tutu-dark border border-tutu-blue/50 space-y-1">
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <span className="flex items-center gap-1.5 text-tutu-lime font-bold">
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            Cronômetro pausado • Aguardando análise
+          </span>
+          {backendPotentialSpeedBonus !== undefined && backendPotentialSpeedBonus > 0 && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#C8FFD2] px-2 py-0.5 rounded-md bg-[#C8FFD2]/10 border border-[#C8FFD2]/30">
+              <Zap className="w-3 h-3 shrink-0" />
+              Bônus preservado: +{backendPotentialSpeedBonus} pts
+            </span>
+          )}
+        </div>
+        <p className="text-[11px] text-[#D0DED4] leading-tight">
+          Seu tempo foi congelado no envio da evidência. Enquanto aguarda aprovação, você pode avançar em outra trilha.
+        </p>
+      </div>
+    );
+  }
+
+  // 4. Missão Em Andamento — bônus potencial recalculado a cada segundo a partir do tempo restante real
   const isExpired = remainingSeconds <= 0;
   const effectiveMaxBonus = maxSpeedBonus ?? 0;
 
-  // Usa potentialSpeedBonus retornado pelo backend se disponível; senão calcula proporcionalmente com base em maxSpeedBonus do backend
   const potentialBonus = isExpired
     ? 0
-    : backendPotentialSpeedBonus !== undefined
-    ? backendPotentialSpeedBonus
     : effectiveMaxBonus > 0 && durationSeconds > 0
-    ? Math.max(0, Math.min(effectiveMaxBonus, Math.round(effectiveMaxBonus * (remainingSeconds / durationSeconds))))
+    ? Math.max(
+        0,
+        Math.min(effectiveMaxBonus, Math.round(effectiveMaxBonus * (remainingSeconds / durationSeconds)))
+      )
     : 0;
 
   const progressPercent = Math.max(0, Math.min(100, (remainingSeconds / durationSeconds) * 100));
+
+  if (compact) {
+    return (
+      <div
+        className={`px-3 py-2 rounded-xl border ${
+          isExpired
+            ? 'bg-tutu-dark border-tutu-blue/40 text-[#D0DED4]'
+            : 'bg-tutu-dark border-[#C8FFD2]/50 text-[#FFFFFF]'
+        } space-y-1.5`}
+      >
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-1.5">
+            <Clock
+              className={`w-3.5 h-3.5 shrink-0 ${
+                isExpired ? 'text-[#D0DED4]' : 'text-[#C8FFD2] animate-pulse'
+              }`}
+            />
+            <span className="text-[11px] text-[#D0DED4]">Tempo restante:</span>
+            <span className="font-mono font-bold text-sm tracking-wider text-[#FFFFFF]">
+              {formatMMSS(remainingSeconds)}
+            </span>
+          </div>
+          {isExpired ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#D0DED4] px-2 py-0.5 rounded-md bg-tutu-secondary border border-tutu-blue/40">
+              <AlertCircle className="w-3 h-3 shrink-0" />
+              Tempo esgotado
+            </span>
+          ) : effectiveMaxBonus > 0 ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#071812] px-2 py-0.5 rounded-md bg-[#C8FFD2]">
+              <Zap className="w-3 h-3 shrink-0" />
+              Bônus: +{potentialBonus} pts
+            </span>
+          ) : null}
+        </div>
+        {!isExpired && (
+          <div className="w-full h-1 bg-tutu-secondary rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#C8FFD2] transition-all duration-1000 ease-linear rounded-full"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div

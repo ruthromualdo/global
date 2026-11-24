@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import {
   AlertCircle,
   ArrowRight,
@@ -10,8 +10,10 @@ import {
   Clock,
   Crown,
   Download,
+  ExternalLink,
   Eye,
   FileText,
+  Film,
   HelpCircle,
   History,
   Loader2,
@@ -26,13 +28,21 @@ import {
   Zap,
 } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
-import { Mission, MissionCompletion } from '../types';
+import { EvidenceRequirementType, Mission, MissionCompletion } from '../types';
 import { CategoryPill, MissionStatusBadge } from '../components/UI';
 import { MissionTimer } from '../components/MissionTimer';
 import { formatPoints } from '../utils/formatters';
 import { fetchAuthenticatedEvidenceBlob } from '../services/apiClient';
 
 const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
+const MAX_VIDEO_EVIDENCE_BYTES = 25 * 1024 * 1024;
+
+const OFFICIAL_TRACK_TABS = [
+  { id: 'ex_devedor', label: 'Ex Devedor', subtitle: '3 missões' },
+  { id: 'sign', label: 'Sign', subtitle: '3 missões' },
+  { id: 'editora_escreva', label: 'Editora Escreva', subtitle: '3 missões' },
+  { id: 'bonus', label: 'Missões Bônus', subtitle: 'Trilha bônus' },
+] as const;
 
 function formatFileSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return '0 KB';
@@ -42,13 +52,28 @@ function formatFileSize(bytes?: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-function getEvidenceRequirementsLabel(type?: 'photo' | 'file' | 'both'): string {
+function getEvidenceRequirementsLabel(
+  type?: EvidenceRequirementType,
+  maxVideoSeconds?: number | null
+): string {
+  const durHint = maxVideoSeconds ? ` até ${maxVideoSeconds}s` : '';
+  if (type === 'text') return 'Resposta em texto (sem envio de arquivo)';
+  if (type === 'print') return 'Print de tela (JPG, PNG ou WEBP • máx. 5 MB)';
+  if (type === 'video') return `Vídeo obrigatório (MP4, MOV ou WEBM${durHint} • máx. 25 MB)`;
+  if (type === 'photo_or_video')
+    return `Foto/Print (máx. 5 MB) ou Vídeo (MP4, MOV, WEBM${durHint} • máx. 25 MB)`;
   if (type === 'file') return 'Arquivo (PDF, JPG, PNG ou WEBP • máx. 5 MB)';
   if (type === 'both') return 'Foto ou Arquivo (JPG, PNG, WEBP ou PDF • máx. 5 MB)';
   return 'Foto (JPG, JPEG, PNG ou WEBP • máx. 5 MB)';
 }
 
-function getEvidenceAcceptAttr(type?: 'photo' | 'file' | 'both'): string {
+function getEvidenceAcceptAttr(type?: EvidenceRequirementType): string {
+  if (type === 'video') {
+    return 'video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm';
+  }
+  if (type === 'photo_or_video') {
+    return 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.webm';
+  }
   if (type === 'file' || type === 'both') {
     return 'image/jpeg,image/png,image/webp,application/pdf,.jpg,.jpeg,.png,.webp,.pdf';
   }
@@ -67,6 +92,20 @@ export const MissionsCenterPage: React.FC = () => {
     notify,
   } = useAppStore();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Trilha selecionada (quando o catálogo de 4 trilhas está ativo)
+  const hasMultiTracks = missions.some((m) => Boolean(m.trackId) && m.active);
+  const queryTrack = searchParams.get('track');
+  const [selectedTrackId, setSelectedTrackId] = useState<string>(
+    queryTrack && OFFICIAL_TRACK_TABS.some((t) => t.id === queryTrack) ? queryTrack : 'ex_devedor'
+  );
+
+  useEffect(() => {
+    if (queryTrack && OFFICIAL_TRACK_TABS.some((t) => t.id === queryTrack)) {
+      setSelectedTrackId(queryTrack);
+    }
+  }, [queryTrack]);
 
   // Estados de modais interativos (Quiz / Evidência)
   const [activeQuizMission, setActiveQuizMission] = useState<Mission | null>(null);
@@ -77,6 +116,7 @@ export const MissionsCenterPage: React.FC = () => {
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
+  const [startingMissionId, setStartingMissionId] = useState<string | null>(null);
   const [previewModal, setPreviewModal] = useState<{ url: string; fileName: string } | null>(null);
   const [loadingEvidenceId, setLoadingEvidenceId] = useState<string | null>(null);
   const [showCompletedHistory, setShowCompletedHistory] = useState(false);
@@ -149,24 +189,38 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    if (file.size > MAX_EVIDENCE_BYTES) {
-      setSelectedFile(null);
-      setUploadError('O arquivo ultrapassa o limite máximo de 5 MB. Escolha um arquivo menor.');
-      return;
-    }
-
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const evType = evidenceMission?.evidenceType;
+    const isVideoFile = ['mp4', 'mov', 'webm'].includes(ext) || file.type.startsWith('video/');
+
     const allowedExts =
-      evidenceMission?.evidenceType === 'file' || evidenceMission?.evidenceType === 'both'
+      evType === 'video'
+        ? ['mp4', 'mov', 'webm']
+        : evType === 'photo_or_video'
+        ? ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov', 'webm']
+        : evType === 'file' || evType === 'both'
         ? ['jpg', 'jpeg', 'png', 'webp', 'pdf']
         : ['jpg', 'jpeg', 'png', 'webp'];
 
     if (!allowedExts.includes(ext)) {
       setSelectedFile(null);
       setUploadError(
-        evidenceMission?.evidenceType === 'photo'
-          ? 'Esta missão aceita somente fotos nos formatos JPG, JPEG, PNG ou WEBP.'
+        evType === 'video'
+          ? 'Esta missão exige obrigatoriamente um vídeo (MP4, MOV ou WEBM). Não é permitida substituição por foto ou texto.'
+          : evType === 'photo_or_video'
+          ? 'Envie uma foto/print (JPG, PNG, WEBP) ou um vídeo (MP4, MOV, WEBM).'
+          : evType === 'photo' || evType === 'print'
+          ? 'Esta missão aceita somente imagens nos formatos JPG, JPEG, PNG ou WEBP.'
           : 'Formato não permitido. Envie um arquivo JPG, JPEG, PNG, WEBP ou PDF.'
+      );
+      return;
+    }
+
+    const limitBytes = isVideoFile ? MAX_VIDEO_EVIDENCE_BYTES : MAX_EVIDENCE_BYTES;
+    if (file.size > limitBytes) {
+      setSelectedFile(null);
+      setUploadError(
+        `O arquivo ultrapassa o limite máximo de ${Math.round(limitBytes / (1024 * 1024))} MB. Escolha um arquivo menor.`
       );
       return;
     }
@@ -177,10 +231,21 @@ export const MissionsCenterPage: React.FC = () => {
     }
   };
 
-  // Missões sequenciais oficiais do circuito (1: Tutu, 2: Escreve Lab, 3: Futurize, 4: Startup Convidada)
-  const sequentialMissions = missions
-    .filter((m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined && m.active)
-    .sort((a, b) => (a.sequenceOrder || 0) - (b.sequenceOrder || 0));
+  // Todas as missões oficiais ativas (todas as trilhas)
+  const allOfficialMissions = missions.filter(
+    (m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined && m.active
+  );
+
+  // Missão atualmente em execução no cronômetro global (em qualquer trilha)
+  const globalRunningMission =
+    allOfficialMissions.find((m) => m.status === 'Em andamento' && !m.isExpired) || null;
+
+  // Missões sequenciais da trilha selecionada (ou circuito único no modo legado)
+  const sequentialMissions = (
+    hasMultiTracks
+      ? allOfficialMissions.filter((m) => m.trackId === selectedTrackId)
+      : allOfficialMissions
+  ).sort((a, b) => (a.sequenceOrder || 0) - (b.sequenceOrder || 0));
 
   // Missões extras ativas que exigem evidência (independentes da sequência oficial)
   const extraEvidenceMissions = missions.filter(
@@ -201,7 +266,7 @@ export const MissionsCenterPage: React.FC = () => {
     ? getOwnSubmissionForMission(currentMission.id)
     : undefined;
 
-  const handleActionClick = (mission: Mission) => {
+  const handleActionClick = async (mission: Mission) => {
     if (mission.status === 'Bloqueada') {
       notify(
         'Missão Bloqueada',
@@ -216,14 +281,40 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    // Inicia o cronômetro no servidor apenas para missões oficiais da sequência
+    // Cronômetro global único: avisa antes de tentar iniciar outra missão enquanto existe uma em execução
+    if (
+      globalRunningMission &&
+      globalRunningMission.id !== mission.id &&
+      mission.status === 'Disponível'
+    ) {
+      notify(
+        'Cronômetro Global em Execução',
+        `Você já está executando "${globalRunningMission.title}". Envie a evidência dela antes de iniciar outra missão.`,
+        'error'
+      );
+      if (globalRunningMission.trackId) {
+        setSelectedTrackId(globalRunningMission.trackId);
+        setSearchParams({ track: globalRunningMission.trackId });
+      }
+      return;
+    }
+
+    // ETAPA 1: Iniciar missão no servidor (sem abrir o modal de evidência automaticamente)
+    // Mantém o participante na tela da missão com o cronômetro regressivo visível em tempo real.
     const isOfficialMission =
       mission.sequenceOrder !== null && mission.sequenceOrder !== undefined;
     if (isOfficialMission && mission.status === 'Disponível') {
-      startMission(mission.id);
+      if (startingMissionId) return;
+      setStartingMissionId(mission.id);
+      try {
+        await startMission(mission.id);
+      } finally {
+        setStartingMissionId(null);
+      }
+      return;
     }
 
-    // Missões com exigência obrigatória de evidência (Etapa 5)
+    // ETAPA 2: Com a missão confirmada 'Em andamento', abre o fluxo de envio de evidência
     if (mission.requiresEvidence) {
       const existing = getOwnSubmissionForMission(mission.id);
       if (
@@ -296,7 +387,7 @@ export const MissionsCenterPage: React.FC = () => {
     e.preventDefault();
     if (!evidenceMission) return;
 
-    if (evidenceMission.requiresEvidence) {
+    if (evidenceMission.requiresEvidence && evidenceMission.evidenceType !== 'text') {
       if (!selectedFile) {
         setUploadError('Selecione um arquivo válido antes de enviar sua evidência.');
         return;
@@ -318,7 +409,12 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    submitMissionEvidence(evidenceMission.id, evidenceText);
+    if (evidenceText.trim().length < 5) {
+      setUploadError('Escreva sua resposta em texto (mínimo de 5 caracteres) antes de enviar.');
+      return;
+    }
+
+    submitMissionEvidence(evidenceMission.id, evidenceText.trim());
     resetEvidenceModal();
   };
 
@@ -353,6 +449,74 @@ export const MissionsCenterPage: React.FC = () => {
           </span>
         </div>
       </div>
+
+      {/* Seletor das 4 Trilhas Independentes (Catálogo Oficial 2026) */}
+      {hasMultiTracks && (
+        <div className="space-y-3">
+          {globalRunningMission && globalRunningMission.trackId !== selectedTrackId && (
+            <div className="p-3.5 rounded-xl bg-tutu-lime/15 border border-tutu-lime/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+              <div className="flex items-center gap-2 text-tutu-light">
+                <Clock className="w-4 h-4 text-tutu-lime animate-pulse shrink-0" />
+                <span>
+                  Cronômetro global ativo na missão <strong>{globalRunningMission.title}</strong> ({globalRunningMission.startupName}).
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (globalRunningMission.trackId) {
+                    setSelectedTrackId(globalRunningMission.trackId);
+                    setSearchParams({ track: globalRunningMission.trackId });
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-tutu-lime text-tutu-dark font-bold text-xs shrink-0"
+              >
+                Voltar à Missão em Execução
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {OFFICIAL_TRACK_TABS.map((tab) => {
+              const trackMissions = allOfficialMissions.filter((m) => m.trackId === tab.id);
+              const doneCount = trackMissions.filter((m) => m.status === 'Concluída').length;
+              const isRunningHere = globalRunningMission?.trackId === tab.id;
+              const isSelected = selectedTrackId === tab.id;
+
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedTrackId(tab.id);
+                    setSearchParams({ track: tab.id });
+                  }}
+                  className={`p-3.5 rounded-2xl border text-left transition-all space-y-1 ${
+                    isSelected
+                      ? 'bg-tutu-lime/15 border-tutu-lime text-tutu-light shadow-md'
+                      : 'bg-tutu-dark/70 border-tutu-secondary/40 text-tutu-light/80 hover:border-tutu-lime/50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-display font-bold text-sm text-tutu-light truncate">
+                      {tab.label}
+                    </span>
+                    {isRunningHere && (
+                      <span className="w-2 h-2 rounded-full bg-tutu-lime animate-pulse shrink-0" />
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-tutu-light/65">
+                    <span>{tab.id === 'bonus' ? 'Trilha Bônus' : 'Trilha Startup'}</span>
+                    <span className="font-mono font-bold text-tutu-lime">
+                      {doneCount}/{trackMissions.length}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Indicador Compacto de Progresso (Sem cartões ou detalhes de missões futuras) */}
       <div className="tutu-card p-4 sm:p-5 border border-tutu-secondary/40 bg-tutu-dark/70">
@@ -449,9 +613,20 @@ export const MissionsCenterPage: React.FC = () => {
               <h2 className="font-display font-bold text-2xl sm:text-3xl text-tutu-light">
                 {currentMission.title}
               </h2>
-              <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed max-w-4xl">
+              <p className="text-xs sm:text-sm text-tutu-light/85 leading-relaxed max-w-4xl whitespace-pre-line">
                 {currentMission.description}
               </p>
+              {currentMission.externalLink && (
+                <a
+                  href={currentMission.externalLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-tutu-lime/15 border border-tutu-lime/40 hover:bg-tutu-lime/25 text-xs font-semibold text-tutu-lime transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                  <span>Acessar Plataforma ({currentMission.externalLink})</span>
+                </a>
+              )}
             </div>
 
             {/* Recompensas e Informações */}
@@ -515,15 +690,22 @@ export const MissionsCenterPage: React.FC = () => {
               <div className="p-4 rounded-2xl bg-tutu-blue/15 border border-tutu-blue/40 space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs font-bold text-tutu-lime">
-                    {currentMission.evidenceType === 'photo' ? (
+                    {currentMission.evidenceType === 'video' ? (
+                      <Film className="w-4 h-4 shrink-0" />
+                    ) : currentMission.evidenceType === 'photo' || currentMission.evidenceType === 'print' ? (
                       <Camera className="w-4 h-4 shrink-0" />
+                    ) : currentMission.evidenceType === 'text' ? (
+                      <FileText className="w-4 h-4 shrink-0" />
                     ) : (
                       <Paperclip className="w-4 h-4 shrink-0" />
                     )}
                     <span>Evidência Obrigatória para Conclusão</span>
                   </div>
                   <span className="text-[11px] font-semibold text-tutu-light/85 px-2.5 py-0.5 rounded-full bg-tutu-dark/70 border border-tutu-secondary/40">
-                    {getEvidenceRequirementsLabel(currentMission.evidenceType)}
+                    {getEvidenceRequirementsLabel(
+                      currentMission.evidenceType,
+                      currentMission.maxVideoSeconds
+                    )}
                   </span>
                 </div>
                 <p className="text-xs text-tutu-light/80 leading-relaxed">
@@ -531,7 +713,18 @@ export const MissionsCenterPage: React.FC = () => {
                 </p>
 
                 {currentMissionSubmission && (
-                  <div className="pt-2 border-t border-tutu-secondary/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+                  <div className="pt-2 border-t border-tutu-secondary/30 space-y-2 text-xs">
+                    {currentMissionSubmission.status === 'Rejeitada' &&
+                      currentMissionSubmission.rejectionReason && (
+                        <div className="p-2.5 rounded-xl bg-red-500/15 border border-red-400/40 text-red-200 flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-300" />
+                          <div>
+                            <span className="font-bold block">Motivo da reprovação:</span>
+                            <span>{currentMissionSubmission.rejectionReason}</span>
+                          </div>
+                        </div>
+                      )}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                     <div className="flex flex-wrap items-center gap-2 min-w-0">
                       <span
                         className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
@@ -575,6 +768,7 @@ export const MissionsCenterPage: React.FC = () => {
                         </span>
                       </button>
                     )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -593,8 +787,9 @@ export const MissionsCenterPage: React.FC = () => {
 
               <button
                 type="button"
-                onClick={() => handleActionClick(currentMission)}
-                className={`min-h-[48px] w-full sm:w-auto px-6 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shrink-0 transition-all shadow-md ${
+                onClick={() => void handleActionClick(currentMission)}
+                disabled={startingMissionId === currentMission.id}
+                className={`min-h-[48px] w-full sm:w-auto px-6 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shrink-0 transition-all shadow-md disabled:opacity-60 ${
                   currentMission.status === 'Em andamento'
                     ? 'btn-tutu-lime'
                     : currentMission.status === 'Aguardando validação'
@@ -604,15 +799,15 @@ export const MissionsCenterPage: React.FC = () => {
               >
                 {currentMission.status === 'Disponível' && (
                   <>
-                    <Play className="w-4 h-4 shrink-0 fill-current" />
+                    {startingMissionId === currentMission.id ? (
+                      <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                    ) : (
+                      <Play className="w-4 h-4 shrink-0 fill-current" />
+                    )}
                     <span>
-                      {currentMission.requiresEvidence
-                        ? 'Iniciar Missão & Enviar Evidência'
-                        : currentMission.qrCodeRequired
-                        ? `Iniciar Missão & Validar QR (${currentMission.qrCodeRequired})`
-                        : currentMission.category === 'Quiz'
-                        ? 'Iniciar Missão & Abrir Quiz'
-                        : 'Iniciar Missão Agora'}
+                      {startingMissionId === currentMission.id
+                        ? 'Iniciando Missão...'
+                        : 'Iniciar Missão'}
                     </span>
                   </>
                 )}
@@ -623,8 +818,8 @@ export const MissionsCenterPage: React.FC = () => {
                         <Upload className="w-4 h-4 shrink-0" />
                         <span>
                           {currentMissionSubmission?.status === 'Rejeitada'
-                            ? 'Reenviar Evidência Obrigatória'
-                            : 'Enviar Evidência Obrigatória'}
+                            ? 'Reenviar Evidência'
+                            : 'Enviar Evidência'}
                         </span>
                       </>
                     ) : currentMission.category === 'Quiz' ? (
@@ -966,7 +1161,10 @@ export const MissionsCenterPage: React.FC = () => {
       )}
 
       {/* EVIDENCE SUBMISSION MODAL */}
-      {evidenceMission && (
+      {evidenceMission && (() => {
+        const liveEvidenceMission =
+          missions.find((m) => m.id === evidenceMission.id) || evidenceMission;
+        return (
         <div className="fixed inset-0 z-50 bg-tutu-dark/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
           <div className="tutu-card max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-8 space-y-5 border-2 border-tutu-lime">
             <div className="flex items-start justify-between gap-3">
@@ -980,9 +1178,9 @@ export const MissionsCenterPage: React.FC = () => {
                   {evidenceMission.title}
                 </h3>
                 <p className="text-xs text-tutu-light/75 mt-1 leading-relaxed">
-                  {evidenceMission.requiresEvidence
-                    ? `Anexe sua comprovação (${getEvidenceRequirementsLabel(evidenceMission.evidenceType)}) para análise administrativa.`
-                    : 'Descreva seu aprendizado ou informe o código recebido no estande para enviar à fila de validação administrativa.'}
+                  {evidenceMission.requiresEvidence && evidenceMission.evidenceType !== 'text'
+                    ? `Anexe sua comprovação (${getEvidenceRequirementsLabel(evidenceMission.evidenceType, evidenceMission.maxVideoSeconds)}) para análise administrativa.`
+                    : 'Escreva sua resposta completa abaixo para enviar à fila de validação administrativa.'}
                 </p>
               </div>
               <button
@@ -996,8 +1194,22 @@ export const MissionsCenterPage: React.FC = () => {
               </button>
             </div>
 
+            {liveEvidenceMission.status === 'Em andamento' && liveEvidenceMission.startedAtMs && (
+              <MissionTimer
+                compact
+                status={liveEvidenceMission.status}
+                startedAtMs={liveEvidenceMission.startedAtMs}
+                durationSeconds={liveEvidenceMission.durationSeconds}
+                targetEndAtMs={liveEvidenceMission.targetEndAtMs}
+                serverTimeMs={liveEvidenceMission.serverTimeMs}
+                completionPoints={liveEvidenceMission.completionPoints ?? liveEvidenceMission.points}
+                maxSpeedBonus={liveEvidenceMission.maxSpeedBonus}
+                potentialSpeedBonus={liveEvidenceMission.potentialSpeedBonus}
+              />
+            )}
+
             <form onSubmit={handleEvidenceSubmit} className="space-y-4">
-              {evidenceMission.requiresEvidence ? (
+              {evidenceMission.requiresEvidence && evidenceMission.evidenceType !== 'text' ? (
                 <>
                   <div className="space-y-2">
                     <label className="block text-xs font-semibold text-tutu-light">
@@ -1008,10 +1220,15 @@ export const MissionsCenterPage: React.FC = () => {
                       <span className="text-xs font-semibold text-tutu-light">
                         {selectedFile
                           ? 'Clique para trocar o arquivo selecionado'
-                          : 'Clique para selecionar ou tirar uma foto'}
+                          : evidenceMission.evidenceType === 'video'
+                          ? 'Clique para selecionar ou gravar o vídeo'
+                          : 'Clique para selecionar ou registrar sua evidência'}
                       </span>
                       <span className="text-[11px] text-tutu-light/65">
-                        {getEvidenceRequirementsLabel(evidenceMission.evidenceType)}
+                        {getEvidenceRequirementsLabel(
+                          evidenceMission.evidenceType,
+                          evidenceMission.maxVideoSeconds
+                        )}
                       </span>
                       <input
                         type="file"
@@ -1090,7 +1307,10 @@ export const MissionsCenterPage: React.FC = () => {
                 <button
                   type="submit"
                   disabled={
-                    isUploadingEvidence || (Boolean(evidenceMission.requiresEvidence) && !selectedFile)
+                    isUploadingEvidence ||
+                    (Boolean(evidenceMission.requiresEvidence) &&
+                      evidenceMission.evidenceType !== 'text' &&
+                      !selectedFile)
                   }
                   className="min-h-[44px] px-5 py-2.5 rounded-xl btn-tutu-lime text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
                 >
@@ -1103,7 +1323,8 @@ export const MissionsCenterPage: React.FC = () => {
             </form>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* AUTHENTICATED IMAGE PREVIEW MODAL */}
       {previewModal && (

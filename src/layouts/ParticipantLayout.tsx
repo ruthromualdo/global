@@ -4,7 +4,6 @@ import {
   Building2,
   Compass,
   Home,
-  QrCode,
   ShieldCheck,
   Trophy,
   User,
@@ -12,7 +11,6 @@ import {
 } from 'lucide-react';
 import { TutuBrandMark } from '../assets/logos';
 import { useAppStore } from '../hooks/useAppStore';
-import { formatPoints } from '../utils/formatters';
 
 export const ParticipantLayout: React.FC = () => {
   const { participant, isAdminAuthenticated } = useAppStore();
@@ -20,7 +18,6 @@ export const ParticipantLayout: React.FC = () => {
   const desktopLinks = [
     { to: '/app/dashboard', label: 'Início', icon: Home },
     { to: '/app/missoes', label: 'Missões', icon: Compass },
-    { to: '/app/escanear', label: 'Escanear QR', icon: QrCode, highlight: true },
     { to: '/app/startups', label: 'Startups', icon: Building2 },
     { to: '/app/ranking', label: 'Ranking', icon: Trophy },
     { to: '/app/perfil', label: 'Perfil', icon: User },
@@ -29,7 +26,6 @@ export const ParticipantLayout: React.FC = () => {
   const mobileBottomLinks = [
     { to: '/app/dashboard', label: 'Início', icon: Home },
     { to: '/app/missoes', label: 'Missões', icon: Compass },
-    { to: '/app/escanear', label: 'Escanear', icon: QrCode, centerHighlight: true },
     { to: '/app/ranking', label: 'Ranking', icon: Trophy },
     { to: '/app/perfil', label: 'Perfil', icon: User },
   ];
@@ -52,17 +48,11 @@ export const ParticipantLayout: React.FC = () => {
                   key={item.to}
                   to={item.to}
                   className={({ isActive }) =>
-                    item.highlight
-                      ? `px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all mx-1 whitespace-nowrap ${
-                          isActive
-                            ? 'bg-tutu-lime text-tutu-dark'
-                            : 'bg-tutu-blue text-tutu-light hover:bg-tutu-secondary border border-tutu-lime/40'
-                        }`
-                      : `px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-2 transition-colors whitespace-nowrap ${
-                          isActive
-                            ? 'bg-tutu-secondary/50 text-tutu-lime border border-tutu-blue/50'
-                            : 'text-tutu-light/80 hover:text-tutu-light hover:bg-tutu-secondary/20'
-                        }`
+                    `px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-2 transition-colors whitespace-nowrap ${
+                      isActive
+                        ? 'bg-tutu-secondary/50 text-tutu-lime border border-tutu-blue/50'
+                        : 'text-tutu-light/80 hover:text-tutu-light hover:bg-tutu-secondary/20'
+                    }`
                   }
                 >
                   <Icon className="w-4 h-4 shrink-0" />
@@ -150,39 +140,9 @@ export const ParticipantLayout: React.FC = () => {
         aria-label="Navegação móvel do participante"
         className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-tutu-dark/95 backdrop-blur-lg border-t border-tutu-secondary/60 px-1.5 sm:px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
       >
-        <div className="max-w-md mx-auto grid grid-cols-5 items-end gap-1">
+        <div className="max-w-md mx-auto grid grid-cols-4 items-end gap-1">
           {mobileBottomLinks.map((item) => {
             const Icon = item.icon;
-            if (item.centerHighlight) {
-              return (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className="flex flex-col items-center justify-center -mt-4 sm:-mt-5 py-1"
-                >
-                  {({ isActive }) => (
-                    <>
-                      <div
-                        className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center shadow-lg transition-transform ${
-                          isActive
-                            ? 'bg-tutu-lime text-tutu-dark scale-105 border-2 border-tutu-light'
-                            : 'bg-tutu-blue text-tutu-light border-2 border-tutu-lime'
-                        }`}
-                      >
-                        <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
-                      </div>
-                      <span
-                        className={`text-[10px] sm:text-[11px] mt-1 font-bold truncate max-w-full ${
-                          isActive ? 'text-tutu-lime' : 'text-tutu-light'
-                        }`}
-                      >
-                        {item.label}
-                      </span>
-                    </>
-                  )}
-                </NavLink>
-              );
-            }
 
             return (
               <NavLink

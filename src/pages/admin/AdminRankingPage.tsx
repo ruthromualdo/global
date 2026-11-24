@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Calendar, Clock, Crown, History, Lock, PlusCircle, Trophy, Zap } from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
 import { formatPoints } from '../../utils/formatters';
@@ -29,13 +29,23 @@ export const AdminRankingPage: React.FC = () => {
   const selectedDaily = dailyRankings[selectedDailyIdx] || dailyRankings[0] || null;
 
   const [selectedParticipantId, setSelectedParticipantId] = useState(
-    allParticipants[0]?.id || 'part-1794921152621'
+    allParticipants[0]?.id || ''
   );
+
+  useEffect(() => {
+    if (allParticipants.length === 0) {
+      if (selectedParticipantId !== '') setSelectedParticipantId('');
+    } else if (!allParticipants.some((p) => p.id === selectedParticipantId)) {
+      setSelectedParticipantId(allParticipants[0].id);
+    }
+  }, [allParticipants, selectedParticipantId]);
+
   const [pointsDelta, setPointsDelta] = useState(100);
   const [reason, setReason] = useState('Validação presencial de missão no estande');
 
   const handleManualAdjustment = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedParticipantId) return;
     adjustParticipantPointsAdmin(selectedParticipantId, Number(pointsDelta), reason);
   };
 
@@ -246,11 +256,15 @@ export const AdminRankingPage: React.FC = () => {
                 onChange={(e) => setSelectedParticipantId(e.target.value)}
                 className="input-tutu text-xs"
               >
-                {allParticipants.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({formatPoints(p.points)})
-                  </option>
-                ))}
+                {allParticipants.length === 0 ? (
+                  <option value="">Nenhum participante cadastrado</option>
+                ) : (
+                  allParticipants.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({formatPoints(p.points)})
+                    </option>
+                  ))
+                )}
               </select>
             </div>
 
@@ -292,7 +306,8 @@ export const AdminRankingPage: React.FC = () => {
 
             <button
               type="submit"
-              className="min-h-[44px] w-full py-2.5 rounded-xl btn-tutu-lime text-xs"
+              disabled={!selectedParticipantId}
+              className="min-h-[44px] w-full py-2.5 rounded-xl btn-tutu-lime text-xs disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Registrar Transação
             </button>

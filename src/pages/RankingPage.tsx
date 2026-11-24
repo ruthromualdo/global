@@ -48,11 +48,13 @@ export const RankingPage: React.FC = () => {
   const totalOfficialMissions = officialMissions.length;
 
   const topThree = publicRanking.slice(0, 3);
-  const currentUserEntry = publicRanking.find(
-    (r) => r.isCurrentUser || r.participantId === participant.id
-  );
-  const currentRank = currentUserEntry?.position || participant.rankingPosition || 1;
-  const isUserInTopThree = currentRank <= 3;
+  const isParticipantUser =
+    Boolean(participant.id) && String(participant.role || '').toUpperCase() !== 'ADMIN';
+  const currentUserEntry = isParticipantUser
+    ? publicRanking.find((r) => r.isCurrentUser || r.participantId === participant.id)
+    : undefined;
+  const currentRank = currentUserEntry ? currentUserEntry.position : null;
+  const isUserInTopThree = currentRank !== null && currentRank <= 3;
 
   return (
     <div className="space-y-6 sm:space-y-8">
@@ -99,79 +101,81 @@ export const RankingPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Indicador Global de Pontuação & Destaque do Participante Logado */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-stretch">
-        {/* Card Destaque: Sua Situação no Ranking */}
-        <div className="lg:col-span-5 tutu-card p-5 sm:p-6 flex flex-col justify-between space-y-4 border-2 border-tutu-lime/60 bg-tutu-secondary/20 shadow-md">
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
-                <User className="w-3.5 h-3.5 shrink-0" />
-                <span>Sua Classificação</span>
-              </span>
-              <span className="text-xs text-tutu-light/70 font-mono">
-                {totalOfficialMissions > 0
-                  ? `${participant.completedMissionsCount}/${totalOfficialMissions} missões`
-                  : `${participant.completedMissionsCount} missões`}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-3.5 pt-1">
-              <div className="w-14 h-14 rounded-2xl bg-tutu-blue text-tutu-light font-display font-bold text-xl flex items-center justify-center border-2 border-tutu-lime/50 shrink-0 shadow-sm">
-                {participant.avatar || 'VC'}
+      {/* Indicador Global de Pontuação & Destaque do Participante Logado (somente para PARTICIPANT) */}
+      {isParticipantUser && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-stretch">
+          {/* Card Destaque: Sua Situação no Ranking */}
+          <div className="lg:col-span-5 tutu-card p-5 sm:p-6 flex flex-col justify-between space-y-4 border-2 border-tutu-lime/60 bg-tutu-secondary/20 shadow-md">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-tutu-lime text-tutu-dark text-xs font-bold uppercase tracking-wider">
+                  <User className="w-3.5 h-3.5 shrink-0" />
+                  <span>Sua Classificação</span>
+                </span>
+                <span className="text-xs text-tutu-light/70 font-mono">
+                  {totalOfficialMissions > 0
+                    ? `${participant.completedMissionsCount}/${totalOfficialMissions} missões`
+                    : `${participant.completedMissionsCount} missões`}
+                </span>
               </div>
-              <div className="min-w-0">
-                <span className="text-xs text-tutu-light/60 block">Participante Conectado</span>
-                <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light truncate">
-                  {participant.name}
-                </h2>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="font-display font-bold text-xl sm:text-2xl text-tutu-lime">
-                    #{currentRank}º Lugar
-                  </span>
-                  <span className="text-xs text-tutu-light/50">•</span>
-                  <span className="text-xs font-semibold text-tutu-light/80">
-                    {formatPoints(participant.points)}
-                  </span>
+
+              <div className="flex items-center gap-3.5 pt-1">
+                <div className="w-14 h-14 rounded-2xl bg-tutu-blue text-tutu-light font-display font-bold text-xl flex items-center justify-center border-2 border-tutu-lime/50 shrink-0 shadow-sm">
+                  {participant.avatar || 'VC'}
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs text-tutu-light/60 block">Participante Conectado</span>
+                  <h2 className="font-display font-bold text-lg sm:text-xl text-tutu-light truncate">
+                    {participant.name}
+                  </h2>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="font-display font-bold text-xl sm:text-2xl text-tutu-lime">
+                      {currentRank !== null ? `#${currentRank}º Lugar` : 'Sem posição ainda'}
+                    </span>
+                    <span className="text-xs text-tutu-light/50">•</span>
+                    <span className="text-xs font-semibold text-tutu-light/80">
+                      {formatPoints(participant.points)}
+                    </span>
+                  </div>
                 </div>
               </div>
+
+              <p className="text-xs text-tutu-light/80 leading-relaxed pt-1">
+                {isUserInTopThree ? (
+                  <span className="text-tutu-lime font-medium flex items-center gap-1.5">
+                    <Crown className="w-4 h-4 shrink-0" />
+                    Sensacional! Você está atualmente no Pódio Top 3 do Desafio Global 2026.
+                  </span>
+                ) : (
+                  <span>
+                    O bônus de velocidade é distribuído dinamicamente entre as missões oficiais e concedido conforme seu tempo de conclusão. Continue avançando para alcançar o Top 3!
+                  </span>
+                )}
+              </p>
             </div>
 
-            <p className="text-xs text-tutu-light/80 leading-relaxed pt-1">
-              {isUserInTopThree ? (
-                <span className="text-tutu-lime font-medium flex items-center gap-1.5">
-                  <Crown className="w-4 h-4 shrink-0" />
-                  Sensacional! Você está atualmente no Pódio Top 3 do Desafio Global 2026.
-                </span>
-              ) : (
-                <span>
-                  O bônus de velocidade é distribuído dinamicamente entre as missões oficiais e concedido conforme seu tempo de conclusão. Continue avançando para alcançar o Top 3!
-                </span>
-              )}
-            </p>
+            <div className="pt-3 border-t border-tutu-secondary/40 space-y-2">
+              <div className="flex justify-between text-xs text-tutu-light/80">
+                <span>Meta: Teto de 1.000 pontos</span>
+                <strong className="text-tutu-lime font-mono">
+                  {Math.round((participant.points / 1000) * 100)}%
+                </strong>
+              </div>
+              <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden border border-tutu-secondary/60 p-0.5">
+                <div
+                  className="h-full bg-gradient-to-r from-tutu-blue to-tutu-lime rounded-full transition-all duration-700 ease-out"
+                  style={{ width: `${Math.min(100, Math.round((participant.points / 1000) * 100))}%` }}
+                />
+              </div>
+            </div>
           </div>
 
-          <div className="pt-3 border-t border-tutu-secondary/40 space-y-2">
-            <div className="flex justify-between text-xs text-tutu-light/80">
-              <span>Meta: Teto de 1.000 pontos</span>
-              <strong className="text-tutu-lime font-mono">
-                {Math.round((participant.points / 1000) * 100)}%
-              </strong>
-            </div>
-            <div className="w-full h-2.5 bg-tutu-dark rounded-full overflow-hidden border border-tutu-secondary/60 p-0.5">
-              <div
-                className="h-full bg-gradient-to-r from-tutu-blue to-tutu-lime rounded-full transition-all duration-700 ease-out"
-                style={{ width: `${Math.min(100, Math.round((participant.points / 1000) * 100))}%` }}
-              />
-            </div>
+          {/* Indicador Global Completo */}
+          <div className="lg:col-span-7 flex flex-col justify-center">
+            <GlobalPointsIndicator variant="card" showMilestones={true} />
           </div>
         </div>
-
-        {/* Indicador Global Completo com Marcadores das Missões Oficiais */}
-        <div className="lg:col-span-7 flex flex-col justify-center">
-          <GlobalPointsIndicator variant="card" showMilestones={true} />
-        </div>
-      </div>
+      )}
 
       {/* RANKING E PREMIAÇÃO DIÁRIA (SEPARADO DO RANKING GERAL ACUMULADO) */}
       {dailyRankings.length > 0 && selectedDaily && (

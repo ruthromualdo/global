@@ -343,7 +343,7 @@ export function ensureParticipantFirstMissionUnlockedInDb(participantId: string)
 
     const seqMissions = db
       .prepare(
-        'SELECT * FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY sequence_order ASC'
+        "SELECT * FROM missions WHERE sequence_order IS NOT NULL AND active = 1 ORDER BY COALESCE(track_id, 'default') ASC, sequence_order ASC"
       )
       .all() as Record<string, unknown>[];
     if (seqMissions.length === 0) {
@@ -358,8 +358,8 @@ export function ensureParticipantFirstMissionUnlockedInDb(participantId: string)
       const seqOrder = Number(mRow.sequence_order);
 
       if (seqOrder === 1) {
-        // Garante o registro da Missão 1 em participant_missions como 'Disponível',
-        // mas com unlock_points_awarded = 0 se ainda não concluída/validada.
+        // Garante o registro da 1ª missão de cada trilha como 'Disponível',
+        // preservando estados ativos ('Concluída', 'Em andamento', 'Aguardando validação').
         // NÃO gera transação contábil nem altera participants.points!
         db.prepare(`
           INSERT INTO participant_missions (
@@ -368,7 +368,11 @@ export function ensureParticipantFirstMissionUnlockedInDb(participantId: string)
             speed_bonus_awarded, total_points_awarded
           ) VALUES (?, ?, ?, 1, 'Disponível', ?, 0, 0, 0, 0)
           ON CONFLICT(participant_id, mission_id) DO UPDATE SET
-            status = CASE WHEN participant_missions.status = 'Concluída' THEN 'Concluída' ELSE 'Disponível' END,
+            status = CASE
+              WHEN participant_missions.status IN ('Concluída', 'Em andamento', 'Aguardando validação')
+                THEN participant_missions.status
+              ELSE 'Disponível'
+            END,
             unlocked_at_ms = COALESCE(participant_missions.unlocked_at_ms, excluded.unlocked_at_ms)
         `).run(
           `pm-${participantId}-${mId}`,
@@ -377,7 +381,7 @@ export function ensureParticipantFirstMissionUnlockedInDb(participantId: string)
           nowMs
         );
       } else {
-        // As missões subsequentes (2, 3 e 4) são inicializadas como Bloqueadas
+        // Missões subsequentes (2..K) da trilha iniciam Bloqueadas até aprovação da anterior
         db.prepare(`
           INSERT INTO participant_missions (
             id, participant_id, mission_id, sequence_order, status,
@@ -741,11 +745,20 @@ export function initializeDatabase(): void {
       }
     }
 
-    // 7. Migração Etapa 2 — Desbloqueio Sequencial (4 Startups, 4 Missões, Teto Global 1.000 pts)
+    // 7. Migração Etapa 2 + Catálogo Oficial 2026 (colunas aditivas idempotentes)
     ensureColumnExists('missions', 'unlock_points', 'INTEGER NOT NULL DEFAULT 20');
     ensureColumnExists('missions', 'completion_points', 'INTEGER NOT NULL DEFAULT 180');
     ensureColumnExists('missions', 'max_speed_bonus', 'INTEGER NOT NULL DEFAULT 50');
     ensureColumnExists('missions', 'sequence_order', 'INTEGER');
+    ensureColumnExists('missions', 'track_id', 'TEXT');
+    ensureColumnExists('missions', 'relative_weight', 'INTEGER NOT NULL DEFAULT 10');
+    ensureColumnExists('missions', 'max_video_seconds', 'INTEGER');
+    ensureColumnExists('missions', 'allow_shared_evidence', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumnExists('missions', 'is_surprise', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumnExists('missions', 'external_link', 'TEXT');
+
+    ensureColumnExists('startups', 'instagram_url', 'TEXT');
+    ensureColumnExists('startups', 'logo_path', 'TEXT');
 
     ensureColumnExists('points_transactions', 'event_key', 'TEXT');
     ensureColumnExists('points_transactions', 'mission_id', 'TEXT');
@@ -768,78 +781,87 @@ export function initializeDatabase(): void {
       ON qr_scans(qr_code_id, participant_id);
     `);
 
-    // Configura as 4 Startups com teto de 250 pontos cada (4 x 250 = 1.000 pts)
-    db.prepare(
-      "UPDATE startups SET available_points = 250 WHERE id IN ('st-tutu', 'st-escrevelab', 'st-futurize', 'st-convidada')"
-    ).run();
+    // Só aplica a sincronização legada das 4 missões se o catálogo oficial em 4 trilhas AINDA NÃO estiver carregado
+    const hasOfficialTracksCatalog =
+      Number(
+        (
+          db
+            .prepare('SELECT COUNT(*) as total FROM missions WHERE track_id IS NOT NULL')
+            .get() as { total: number }
+        )?.total || 0
+      ) > 0;
 
-    // Configura as 4 Missões Principais Sequenciais (20 desbloqueio + 180 conclusão + até 50 bônus na Etapa 3)
-    const sequentialMissionsConfig = [
-      {
-        id: 'ms-01',
-        seq: 1,
-        status: 'Disponível',
-        criteria: 'Missão 01/04 • Desbloqueio: +20 pts | Conclusão (QR Code TUTU-2026): +180 pts.',
-      },
-      {
-        id: 'ms-04',
-        seq: 2,
-        status: 'Bloqueada',
-        criteria:
-          'Missão 02/04 • Desbloqueada após concluir a Missão 01 (+20 pts) | Conclusão (QR Code ESCREVE-PITCH): +180 pts.',
-      },
-      {
-        id: 'ms-06',
-        seq: 3,
-        status: 'Bloqueada',
-        criteria:
-          'Missão 03/04 • Desbloqueada após concluir a Missão 02 (+20 pts) | Conclusão (QR Code FUTURIZE-2030): +180 pts.',
-      },
-      {
-        id: 'ms-08',
-        seq: 4,
-        status: 'Bloqueada',
-        criteria:
-          'Missão 04/04 • Desbloqueada após concluir a Missão 03 (+20 pts) | Conclusão (QR Code SUMMIT-SURPRESA): +180 pts.',
-      },
-    ];
+    if (!hasOfficialTracksCatalog) {
+      // Configura as 4 Startups legadas com teto de 250 pontos cada (4 x 250 = 1.000 pts)
+      db.prepare(
+        "UPDATE startups SET available_points = 250 WHERE id IN ('st-tutu', 'st-escrevelab', 'st-futurize', 'st-convidada')"
+      ).run();
 
-    for (const cfg of sequentialMissionsConfig) {
-      db.prepare(`
-        UPDATE missions
-        SET sequence_order = ?,
-            points = ?,
-            unlock_points = ?,
-            completion_points = ?,
-            max_speed_bonus = ?,
-            status = ?,
-            completion_criteria = ?,
-            active = 1
-        WHERE id = ?
-      `).run(
-        cfg.seq,
-        MISSION_COMPLETION_POINTS,
-        MISSION_UNLOCK_POINTS,
-        MISSION_COMPLETION_POINTS,
-        MISSION_MAX_SPEED_BONUS,
-        cfg.status,
-        cfg.criteria,
-        cfg.id
-      );
+      const sequentialMissionsConfig = [
+        {
+          id: 'ms-01',
+          seq: 1,
+          status: 'Disponível',
+          criteria: 'Missão 01/04 • Desbloqueio: +20 pts | Conclusão (QR Code TUTU-2026): +180 pts.',
+        },
+        {
+          id: 'ms-04',
+          seq: 2,
+          status: 'Bloqueada',
+          criteria:
+            'Missão 02/04 • Desbloqueada após concluir a Missão 01 (+20 pts) | Conclusão (QR Code ESCREVE-PITCH): +180 pts.',
+        },
+        {
+          id: 'ms-06',
+          seq: 3,
+          status: 'Bloqueada',
+          criteria:
+            'Missão 03/04 • Desbloqueada após concluir a Missão 02 (+20 pts) | Conclusão (QR Code FUTURIZE-2030): +180 pts.',
+        },
+        {
+          id: 'ms-08',
+          seq: 4,
+          status: 'Bloqueada',
+          criteria:
+            'Missão 04/04 • Desbloqueada após concluir a Missão 03 (+20 pts) | Conclusão (QR Code SUMMIT-SURPRESA): +180 pts.',
+        },
+      ];
+
+      for (const cfg of sequentialMissionsConfig) {
+        db.prepare(`
+          UPDATE missions
+          SET sequence_order = ?,
+              points = ?,
+              unlock_points = ?,
+              completion_points = ?,
+              max_speed_bonus = ?,
+              status = ?,
+              completion_criteria = ?,
+              active = 1
+          WHERE id = ?
+        `).run(
+          cfg.seq,
+          MISSION_COMPLETION_POINTS,
+          MISSION_UNLOCK_POINTS,
+          MISSION_COMPLETION_POINTS,
+          MISSION_MAX_SPEED_BONUS,
+          cfg.status,
+          cfg.criteria,
+          cfg.id
+        );
+      }
+
+      db.prepare(
+        "UPDATE missions SET sequence_order = NULL, active = 0 WHERE id IN ('ms-02', 'ms-03', 'ms-05', 'ms-07')"
+      ).run();
+
+      db.prepare('UPDATE qr_codes SET points = ?').run(MISSION_COMPLETION_POINTS);
+      db.prepare(
+        "UPDATE qr_codes SET mission_id = 'ms-01', mission_title = 'Check-in no Estande Tutu (Ex Devedor)' WHERE id = 'qr-02'"
+      ).run();
     }
 
-    // Mantém missões legadas secundárias preservadas no banco, porém fora da trilha principal de 4 missões
-    db.prepare(
-      "UPDATE missions SET sequence_order = NULL, active = 0 WHERE id IN ('ms-02', 'ms-03', 'ms-05', 'ms-07')"
-    ).run();
-
-    // Sincroniza pontuação de conclusão (180 pts) nos QR Codes e vincula qr-02 à Missão 1 (ms-01)
-    db.prepare('UPDATE qr_codes SET points = ?').run(MISSION_COMPLETION_POINTS);
-    db.prepare(
-      "UPDATE qr_codes SET mission_id = 'ms-01', mission_title = 'Check-in no Estande Tutu (Ex Devedor)' WHERE id = 'qr-02'"
-    ).run();
-
-    // 8. Migração Etapa 3 — Cronômetro e Bônus de Velocidade
+    // 8. Migração Etapa 3 + Catálogo 2026 — Cronômetro, Evidências, Vídeo e LGPD
     ensureColumnExists(
       'event_settings',
       'default_mission_timer_minutes',
@@ -848,6 +870,7 @@ export function initializeDatabase(): void {
     ensureColumnExists('participants', 'phone', 'TEXT');
     ensureColumnExists('participants', 'image_publicity_consent', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumnExists('participants', 'image_publicity_consent_updated_at', 'TEXT');
+    ensureColumnExists('participants', 'image_publicity_consent_version', 'TEXT');
     ensureColumnExists('points_transactions', 'created_at_ms', 'INTEGER');
     ensureColumnExists('missions', 'timer_minutes', 'INTEGER');
     ensureColumnExists('missions', 'requires_evidence', 'INTEGER NOT NULL DEFAULT 0');
@@ -857,6 +880,13 @@ export function initializeDatabase(): void {
     ensureColumnExists('mission_completions', 'evidence_mime_type', 'TEXT');
     ensureColumnExists('mission_completions', 'evidence_size_bytes', 'INTEGER');
     ensureColumnExists('mission_completions', 'evidence_sha256', 'TEXT');
+    ensureColumnExists('mission_completions', 'evidence_duration_seconds', 'INTEGER');
+    ensureColumnExists('mission_completions', 'rejection_reason', 'TEXT');
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_mission_completions_sha256
+      ON mission_completions(evidence_sha256)
+      WHERE evidence_sha256 IS NOT NULL;
+    `);
 
     // Índice único parcial para impedir mais de uma submissão ativa (Pendente/Aprovada) por participante e missão.
     // Verifica previamente se existem duplicidades legadas para preservar histórico sem falhar inicialização.
@@ -881,6 +911,7 @@ export function initializeDatabase(): void {
 
     ensureColumnExists('participant_missions', 'duration_seconds', 'INTEGER');
     ensureColumnExists('participant_missions', 'target_end_at_ms', 'INTEGER');
+    ensureColumnExists('participant_missions', 'submitted_at_ms', 'INTEGER');
 
     // Garante o limite global de 1.000 pontos e o desbloqueio inicial da Missão 1 (+20 pts) para participantes existentes
     db.prepare('UPDATE participants SET points = ? WHERE points > ?').run(
@@ -938,6 +969,9 @@ export function mapParticipantRow(row: Record<string, unknown>): Participant {
     imagePublicityConsentUpdatedAt: row.image_publicity_consent_updated_at
       ? String(row.image_publicity_consent_updated_at)
       : null,
+    imagePublicityConsentVersion: row.image_publicity_consent_version
+      ? String(row.image_publicity_consent_version)
+      : null,
   };
 }
 
@@ -956,10 +990,22 @@ export function mapStartupRow(row: Record<string, unknown>): Startup {
     active: Boolean(row.active),
     isConfigurableGuest: Boolean(row.is_configurable_guest),
     website: row.website ? String(row.website) : undefined,
+    instagramUrl: row.instagram_url ? String(row.instagram_url) : undefined,
+    logoPath: row.logo_path ? String(row.logo_path) : undefined,
   };
 }
 
 export function mapMissionRow(row: Record<string, unknown>): Mission {
+  const validEvidenceTypes = new Set([
+    'photo',
+    'print',
+    'video',
+    'photo_or_video',
+    'text',
+    'file',
+    'both',
+  ]);
+  const rawEvType = row.evidence_type ? String(row.evidence_type) : '';
   return {
     id: String(row.id),
     title: String(row.title),
@@ -985,6 +1031,11 @@ export function mapMissionRow(row: Record<string, unknown>): Mission {
       row.sequence_order !== null && row.sequence_order !== undefined
         ? Number(row.sequence_order)
         : undefined,
+    trackId: row.track_id ? String(row.track_id) : null,
+    relativeWeight:
+      row.relative_weight !== null && row.relative_weight !== undefined
+        ? Number(row.relative_weight)
+        : 10,
     unlockPoints:
       row.unlock_points !== null && row.unlock_points !== undefined
         ? Number(row.unlock_points)
@@ -998,12 +1049,15 @@ export function mapMissionRow(row: Record<string, unknown>): Mission {
         ? Number(row.max_speed_bonus)
         : undefined,
     requiresEvidence: Boolean(row.requires_evidence),
-    evidenceType:
-      row.evidence_type === 'photo' ||
-      row.evidence_type === 'file' ||
-      row.evidence_type === 'both'
-        ? row.evidence_type
-        : undefined,
+    evidenceType: validEvidenceTypes.has(rawEvType)
+      ? (rawEvType as Mission['evidenceType'])
+      : undefined,
+    maxVideoSeconds:
+      row.max_video_seconds !== null && row.max_video_seconds !== undefined
+        ? Number(row.max_video_seconds)
+        : null,
+    allowSharedEvidence: Boolean(row.allow_shared_evidence),
+    externalLink: row.external_link ? String(row.external_link) : undefined,
   };
 }
 
@@ -1041,6 +1095,11 @@ export function mapValidationRow(row: Record<string, unknown>): MissionCompletio
       row.evidence_size_bytes !== null && row.evidence_size_bytes !== undefined
         ? Number(row.evidence_size_bytes)
         : undefined,
+    evidenceDurationSeconds:
+      row.evidence_duration_seconds !== null && row.evidence_duration_seconds !== undefined
+        ? Number(row.evidence_duration_seconds)
+        : null,
+    rejectionReason: row.rejection_reason ? String(row.rejection_reason) : null,
     hasFile: Boolean(row.evidence_stored_name),
     pointsAwarded: Number(row.points_awarded),
     status: row.status as MissionCompletion['status'],
@@ -1205,12 +1264,13 @@ export function getAdminMetricsFromDb(
 
   // Carrega missões, participant_missions, qr_scans, mission_completions e points_transactions (somente PARTICIPANT)
   const missionsRows = targetDb
-    .prepare('SELECT id, title, startup_id, startup_name, category, points, active FROM missions')
+    .prepare('SELECT id, title, startup_id, startup_name, track_id, category, points, active FROM missions')
     .all() as {
       id: string;
       title: string;
       startup_id: string;
       startup_name: string;
+      track_id: string | null;
       category: string;
       points: number;
       active: number;
@@ -1371,15 +1431,20 @@ export function getAdminMetricsFromDb(
   const averageCompletionSeconds =
     elapsedCount > 0 ? Math.round(elapsedSum / elapsedCount) : null;
 
-  // BLOCO 1: Métricas por startup baseadas em participant_missions e transações efetivas
-  const startupsRows = targetDb.prepare('SELECT id, name FROM startups').all() as {
+  // BLOCO 1: Métricas por startup (exclusivamente startups ativas do catálogo oficial;
+  // startups inativas permanecem preservadas no banco mas não aparecem nesta visualização)
+  const startupsRows = targetDb
+    .prepare('SELECT id, name FROM startups WHERE active = 1 ORDER BY rowid ASC')
+    .all() as {
     id: string;
     name: string;
   }[];
 
   const participationByStartup = startupsRows.map((st) => {
     const startupMissionIds = new Set(
-      missionsRows.filter((m) => m.startup_id === st.id).map((m) => m.id)
+      missionsRows
+        .filter((m) => m.startup_id === st.id && m.track_id !== 'bonus')
+        .map((m) => m.id)
     );
 
     const startupParticipants = new Set<string>();

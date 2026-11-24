@@ -311,9 +311,10 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
     pmByMissionId.set(String(r.mission_id), r);
   }
 
-  const completedSeqOrders = new Set<number>();
+  const completedTrackSeqs = new Set<string>();
   for (const mRow of baseMissionsRows) {
     const mId = String(mRow.id);
+    const trackKey = String(mRow.track_id || 'default');
     const seq = Number(mRow.sequence_order);
     const pm = pmByMissionId.get(mId);
     const completeTx = findActiveTransactionByEventKeys(participant.id, [
@@ -322,7 +323,7 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
     ]);
 
     if ((pm && String(pm.status) === 'Concluída') || completeTx) {
-      completedSeqOrders.add(seq);
+      completedTrackSeqs.add(`${trackKey}:${seq}`);
     }
   }
 
@@ -330,14 +331,15 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
 
   const officialMapped = baseMissionsRows.map((mRow) => {
     const m = mapMissionRow(mRow);
+    const trackKey = String(mRow.track_id || 'default');
     const seq = Number(mRow.sequence_order);
     const pm = pmByMissionId.get(m.id);
-    const isCompleted = completedSeqOrders.has(seq);
+    const isCompleted = completedTrackSeqs.has(`${trackKey}:${seq}`);
 
     let computedStatus: 'Disponível' | 'Em andamento' | 'Aguardando validação' | 'Concluída' | 'Bloqueada' = 'Disponível';
     if (isCompleted) {
       computedStatus = 'Concluída';
-    } else if (seq > 1 && !completedSeqOrders.has(seq - 1)) {
+    } else if (seq > 1 && !completedTrackSeqs.has(`${trackKey}:${seq - 1}`)) {
       computedStatus = 'Bloqueada';
     } else {
       const pmStatus = pm ? String(pm.status) : 'Disponível';
@@ -354,13 +356,13 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
       ? Number(pm.duration_seconds)
       : getMissionConfiguredDurationSeconds(m.id);
     const startedAtMs = pm?.started_at_ms ? Number(pm.started_at_ms) : null;
+    const submittedAtMs = pm?.submitted_at_ms ? Number(pm.submitted_at_ms) : null;
     const targetEndAtMs = pm?.target_end_at_ms
       ? Number(pm.target_end_at_ms)
       : (startedAtMs ? startedAtMs + durationSeconds * 1000 : null);
     const completedAtMs = pm?.completed_at_ms ? Number(pm.completed_at_ms) : null;
     const speedBonusAwarded = Number(pm?.speed_bonus_awarded || 0);
 
-    const isOfficial = mRow.sequence_order !== null && mRow.sequence_order !== undefined;
     const rawMaxBonus = Number(mRow.max_speed_bonus);
     const missionMaxBonus = Number.isInteger(rawMaxBonus) && rawMaxBonus >= 0 ? rawMaxBonus : 0;
     let elapsedSeconds = 0;
@@ -369,8 +371,9 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
     let potentialSpeedBonus = missionMaxBonus;
 
     if (isCompleted) {
-      if (startedAtMs && completedAtMs) {
-        elapsedSeconds = Math.max(0, Math.round((completedAtMs - startedAtMs) / 1000));
+      if (startedAtMs && (submittedAtMs || completedAtMs)) {
+        const refEndMs = submittedAtMs ?? completedAtMs!;
+        elapsedSeconds = Math.max(0, Math.round((refEndMs - startedAtMs) / 1000));
         remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
       } else {
         elapsedSeconds = Number(pm?.elapsed_seconds || 0);
@@ -378,6 +381,17 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
       }
       isExpired = remainingSeconds <= 0;
       potentialSpeedBonus = 0;
+    } else if (computedStatus === 'Aguardando validação' && startedAtMs && submittedAtMs) {
+      // Tempo congelado no momento do envio: espera pela aprovação não consome o cronômetro
+      elapsedSeconds = Math.max(0, Math.round((submittedAtMs - startedAtMs) / 1000));
+      remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
+      isExpired = remainingSeconds <= 0;
+      potentialSpeedBonus = isExpired
+        ? 0
+        : Math.max(
+            0,
+            Math.min(missionMaxBonus, Math.round(missionMaxBonus * (remainingSeconds / durationSeconds)))
+          );
     } else if (startedAtMs && targetEndAtMs) {
       elapsedSeconds = Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
       remainingSeconds = Math.max(0, Math.ceil((targetEndAtMs - nowMs) / 1000));
@@ -395,6 +409,7 @@ function getParticipantMissionsFromDb(participant: ReturnType<typeof mapParticip
       status: computedStatus,
       durationSeconds,
       startedAtMs,
+      submittedAtMs,
       targetEndAtMs,
       completedAtMs,
       elapsedSeconds,
@@ -508,11 +523,14 @@ function completeSequentialMissionInSql(params: {
       };
     }
 
-    // Verifica bloqueio sequencial estrito: Missão N exige Missão N-1 concluída pelo participante
+    // Verifica bloqueio sequencial estrito dentro da mesma trilha: Missão N exige Missão N-1 concluída pelo participante
+    const missionTrackKey = missionRow.track_id ? String(missionRow.track_id) : 'default';
     if (seqOrder > 1) {
       const prevMissionRow = db
-        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-        .get(seqOrder - 1) as { id: string; title: string } | undefined;
+        .prepare(
+          "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
+        )
+        .get(missionTrackKey, seqOrder - 1) as { id: string; title: string } | undefined;
 
       if (prevMissionRow) {
         const prevCompleteTx = findActiveTransactionByEventKeys(params.participantId, [
@@ -604,6 +622,7 @@ function completeSequentialMissionInSql(params: {
     const missionMaxSpeedBonus = Number(rawBonus);
 
     const startedAtMs = pmRow?.started_at_ms ? Number(pmRow.started_at_ms) : null;
+    const submittedAtMs = pmRow?.submitted_at_ms ? Number(pmRow.submitted_at_ms) : null;
     const durationSeconds = pmRow?.duration_seconds
       ? Number(pmRow.duration_seconds)
       : getMissionConfiguredDurationSeconds(mission.id);
@@ -612,7 +631,10 @@ function completeSequentialMissionInSql(params: {
     let speedBonus = 0;
 
     if (startedAtMs) {
-      elapsedSeconds = Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
+      // Se a evidência foi submetida antes da aprovação administrativa, usa submittedAtMs
+      // para que o tempo de espera na fila de validação nunca penalize o participante.
+      const effectiveEndMs = submittedAtMs ?? nowMs;
+      elapsedSeconds = Math.max(0, Math.round((effectiveEndMs - startedAtMs) / 1000));
       const remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
       if (remainingSeconds > 0 && durationSeconds > 0) {
         speedBonus = Math.round(missionMaxSpeedBonus * (remainingSeconds / durationSeconds));
@@ -733,8 +755,10 @@ function completeSequentialMissionInSql(params: {
     let awardedNextUnlockPoints = 0;
 
     const nextMissionRow = db
-      .prepare('SELECT * FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-      .get(seqOrder + 1) as Record<string, unknown> | undefined;
+      .prepare(
+        "SELECT * FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
+      )
+      .get(missionTrackKey, seqOrder + 1) as Record<string, unknown> | undefined;
 
     if (nextMissionRow) {
       const nextMissionId = String(nextMissionRow.id);
@@ -936,7 +960,9 @@ app.get('/api/bootstrap', (req, res) => {
   const participant = authenticatedParticipant || guestParticipant;
 
   const startups = (
-    db.prepare('SELECT * FROM startups').all() as Record<string, unknown>[]
+    (isAdmin
+      ? db.prepare('SELECT * FROM startups').all()
+      : db.prepare('SELECT * FROM startups WHERE active = 1').all()) as Record<string, unknown>[]
   ).map(mapStartupRow);
 
   const qrCodes = (
@@ -966,12 +992,7 @@ app.get('/api/bootstrap', (req, res) => {
 
   // Sem sessão autenticada, nenhuma evidência ou submissão de participante é retornada
   const validationQueue = isAdmin
-    ? (
-        db.prepare('SELECT * FROM mission_completions ORDER BY rowid DESC').all() as Record<
-          string,
-          unknown
-        >[]
-      ).map(mapValidationRow)
+    ? getEnrichedAdminValidations()
     : authenticatedParticipant && isParticipantSession
     ? (
         db
@@ -1719,6 +1740,10 @@ app.put('/api/participants/me', requireAuth, (req: RequestWithAuth, res) => {
   });
 });
 
+const CURRENT_IMAGE_CONSENT_VERSION = 'v2-2026-11';
+const CURRENT_IMAGE_CONSENT_TEXT =
+  'Autorizo, de forma livre, opcional e revogável a qualquer momento (LGPD, Art. 7º, I), a divulgação institucional de fotos e vídeos registrados durante o Desafio Global Summit 2026 nos canais oficiais do evento e das startups participantes (Ex Devedor, Sign e Editora Escreva). As evidências enviadas para validação de missões permanecem privadas e minha participação ou pontuação não dependem desta autorização.';
+
 // Consulta e atualização da autorização opcional de divulgação pública de imagem (LGPD Art. 7º, I)
 // Totalmente desvinculada do envio de evidências obrigatórias (validação interna: Art. 7º, V)
 app.get('/api/participants/me/image-consent', requireAuth, (req: RequestWithAuth, res) => {
@@ -1734,6 +1759,9 @@ app.get('/api/participants/me/image-consent', requireAuth, (req: RequestWithAuth
   res.json({
     authorized: Boolean(current.imagePublicityConsent),
     updatedAt: current.imagePublicityConsentUpdatedAt ?? null,
+    version: current.imagePublicityConsentVersion ?? null,
+    currentVersion: CURRENT_IMAGE_CONSENT_VERSION,
+    consentText: CURRENT_IMAGE_CONSENT_TEXT,
     optional: true,
     legalBasis: 'Consentimento livre, informado e revogável (LGPD, Art. 7º, I)',
     validationNote:
@@ -1764,14 +1792,17 @@ app.put('/api/participants/me/image-consent', requireAuth, (req: RequestWithAuth
   const updatedAt = new Date().toISOString();
   db.prepare(
     `UPDATE participants
-     SET image_publicity_consent = ?, image_publicity_consent_updated_at = ?
+     SET image_publicity_consent = ?,
+         image_publicity_consent_updated_at = ?,
+         image_publicity_consent_version = ?
      WHERE id = ?`
-  ).run(authorized ? 1 : 0, updatedAt, userId);
+  ).run(authorized ? 1 : 0, updatedAt, CURRENT_IMAGE_CONSENT_VERSION, userId);
 
   res.json({
     ok: true,
     authorized,
     updatedAt,
+    version: CURRENT_IMAGE_CONSENT_VERSION,
     message: authorized
       ? 'Autorização opcional para divulgação pública de imagem registrada com sucesso.'
       : 'Autorização para divulgação pública de imagem revogada. A revogação não impede sua participação nem o envio de evidências.',
@@ -1949,8 +1980,14 @@ app.post('/api/participants/:id/reset-password', requireAdmin, (req: RequestWith
 // 4. STARTUPS EXPOSITORAS (LEITURA PÚBLICA / ESCRITA PROTEGIDA POR ADMIN)
 // ============================================================================
 
-app.get('/api/startups', (_req, res) => {
-  const rows = db.prepare('SELECT * FROM startups').all() as Record<string, unknown>[];
+app.get('/api/startups', (req, res) => {
+  const session = resolveSessionFromRequest(req);
+  const isAdmin = session?.role === 'ADMIN';
+  const rows = (
+    isAdmin
+      ? db.prepare('SELECT * FROM startups').all()
+      : db.prepare('SELECT * FROM startups WHERE active = 1').all()
+  ) as Record<string, unknown>[];
   res.json(rows.map(mapStartupRow));
 });
 
@@ -2104,10 +2141,13 @@ app.post('/api/missions', requireAdmin, (req, res) => {
         return;
       }
 
-      // Validação de unicidade da ordem sequencial
+      const trackKeyForInsert = p.trackId ? String(p.trackId).trim() : null;
+      // Validação de unicidade da ordem sequencial dentro da mesma trilha
       const existingSeq = db
-        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? LIMIT 1')
-        .get(parsedSeq) as { id: string; title: string } | undefined;
+        .prepare(
+          "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? LIMIT 1"
+        )
+        .get(trackKeyForInsert || 'default', parsedSeq) as { id: string; title: string } | undefined;
 
       if (existingSeq) {
         db.exec('ROLLBACK;');
@@ -2126,6 +2166,18 @@ app.post('/api/missions', requireAdmin, (req, res) => {
         ? Math.max(1, Math.min(30, Math.trunc(Number(p.timerMinutes))))
         : null;
 
+    const parsedRelativeWeight =
+      p.relativeWeight !== null && p.relativeWeight !== undefined && p.relativeWeight !== ''
+        ? Math.max(1, Math.trunc(Number(p.relativeWeight)))
+        : 10;
+    const parsedMaxVideoSeconds =
+      p.maxVideoSeconds !== null && p.maxVideoSeconds !== undefined && p.maxVideoSeconds !== ''
+        ? Math.max(1, Math.min(300, Math.trunc(Number(p.maxVideoSeconds))))
+        : null;
+    const trackIdValue = p.trackId ? String(p.trackId).trim() : null;
+    const allowSharedEvidence = Boolean(p.allowSharedEvidence) ? 1 : 0;
+    const externalLink = p.externalLink ? String(p.externalLink).trim() : null;
+
     const points = isOfficial ? 0 : Number(p.points || 200);
     const unlockPoints = 0;
     const completionPoints = isOfficial ? 0 : points;
@@ -2133,9 +2185,18 @@ app.post('/api/missions', requireAdmin, (req, res) => {
 
     const requiresEvidence = Boolean(p.requiresEvidence) ? 1 : 0;
     const rawEvidenceType = String(p.evidenceType || '').toLowerCase();
+    const validEvTypes: EvidenceRequirementType[] = [
+      'photo',
+      'print',
+      'video',
+      'photo_or_video',
+      'text',
+      'file',
+      'both',
+    ];
     const evidenceType: EvidenceRequirementType | null = requiresEvidence
-      ? rawEvidenceType === 'photo' || rawEvidenceType === 'file' || rawEvidenceType === 'both'
-        ? rawEvidenceType
+      ? validEvTypes.includes(rawEvidenceType as EvidenceRequirementType)
+        ? (rawEvidenceType as EvidenceRequirementType)
         : 'photo'
       : null;
 
@@ -2145,9 +2206,11 @@ app.post('/api/missions', requireAdmin, (req, res) => {
         id, title, description, startup_id, startup_name, category,
         points, estimated_time, status, period, completion_criteria,
         active, qr_code_required, quiz_questions_json,
-        sequence_order, timer_minutes, unlock_points, completion_points, max_speed_bonus,
-        requires_evidence, evidence_type
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        sequence_order, track_id, relative_weight, timer_minutes,
+        unlock_points, completion_points, max_speed_bonus,
+        requires_evidence, evidence_type, max_video_seconds,
+        allow_shared_evidence, external_link
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       newId,
       p.title,
@@ -2164,12 +2227,17 @@ app.post('/api/missions', requireAdmin, (req, res) => {
       p.qrCodeRequired || null,
       p.quizQuestions ? JSON.stringify(p.quizQuestions) : null,
       sequenceOrder,
+      trackIdValue,
+      parsedRelativeWeight,
       parsedTimerMinutes,
       unlockPoints,
       completionPoints,
       maxSpeedBonus,
       requiresEvidence,
-      evidenceType
+      evidenceType,
+      parsedMaxVideoSeconds,
+      allowSharedEvidence,
+      externalLink
     );
 
     // Se for oficial e ativa, compacta a sequência e recalcula os 1.000 pontos
@@ -2206,6 +2274,15 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
     const u = req.body;
     const currentIsOfficial = current.sequenceOrder !== null && current.sequenceOrder !== undefined;
     const isStarted = hasOfficialCircuitStartedInDb(db);
+    const validEvTypes: EvidenceRequirementType[] = [
+      'photo',
+      'print',
+      'video',
+      'photo_or_video',
+      'text',
+      'file',
+      'both',
+    ];
 
     if (isStarted) {
       if (currentIsOfficial) {
@@ -2418,9 +2495,12 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
         });
         return;
       }
+      const nextTrackKey = u.trackId !== undefined ? String(u.trackId || 'default') : String(current.trackId || 'default');
       const duplicate = db
-        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND id != ? LIMIT 1')
-        .get(parsedSeq, id) as { id: string; title: string } | undefined;
+        .prepare(
+          "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND id != ? LIMIT 1"
+        )
+        .get(nextTrackKey, parsedSeq, id) as { id: string; title: string } | undefined;
       if (duplicate) {
         db.exec('ROLLBACK;');
         res.status(409).json({
@@ -2439,6 +2519,18 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
           : null
         : (current.timerMinutes ?? null);
 
+    const parsedRelativeWeight =
+      u.relativeWeight !== undefined && u.relativeWeight !== null && u.relativeWeight !== ''
+        ? Math.max(1, Math.trunc(Number(u.relativeWeight)))
+        : (current.relativeWeight ?? 10);
+    const parsedMaxVideoSeconds =
+      u.maxVideoSeconds !== undefined
+        ? u.maxVideoSeconds !== null && u.maxVideoSeconds !== ''
+          ? Math.max(1, Math.min(300, Math.trunc(Number(u.maxVideoSeconds))))
+          : null
+        : (current.maxVideoSeconds ?? null);
+    const nextTrackId = u.trackId !== undefined ? (u.trackId ? String(u.trackId).trim() : null) : (current.trackId ?? null);
+
     const willBeActive = (u.active ?? current.active) ? 1 : 0;
     // Se desativar uma missão oficial, zera a ordem sequencial dela
     if (willBeActive === 0 && newSequenceOrder !== null) {
@@ -2455,8 +2547,8 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
         : 0;
     const rawNextEvType = String(u.evidenceType ?? current.evidenceType ?? '').toLowerCase();
     const nextEvidenceType: EvidenceRequirementType | null = nextRequiresEvidence
-      ? rawNextEvType === 'photo' || rawNextEvType === 'file' || rawNextEvType === 'both'
-        ? rawNextEvType
+      ? validEvTypes.includes(rawNextEvType as EvidenceRequirementType)
+        ? (rawNextEvType as EvidenceRequirementType)
         : 'photo'
       : null;
 
@@ -2465,8 +2557,8 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
       SET title = ?, description = ?, startup_id = ?, startup_name = ?,
           category = ?, points = ?, estimated_time = ?, status = ?,
           period = ?, completion_criteria = ?, active = ?,
-          sequence_order = ?, timer_minutes = ?,
-          requires_evidence = ?, evidence_type = ?
+          sequence_order = ?, track_id = ?, relative_weight = ?, timer_minutes = ?,
+          requires_evidence = ?, evidence_type = ?, max_video_seconds = ?
       WHERE id = ?
     `).run(
       u.title ?? current.title,
@@ -2481,9 +2573,12 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
       u.completionCriteria ?? current.completionCriteria,
       willBeActive,
       newSequenceOrder,
+      nextTrackId,
+      parsedRelativeWeight,
       parsedTimerMinutes,
       nextRequiresEvidence,
       nextEvidenceType,
+      parsedMaxVideoSeconds,
       id
     );
 
@@ -2532,12 +2627,15 @@ function startMissionForParticipant(participantId: string, missionId: string) {
     }
 
     const seqOrder = Number(missionRow.sequence_order);
+    const missionTrackKey = missionRow.track_id ? String(missionRow.track_id) : 'default';
 
-    // Se for missão > 1, exige que a missão anterior esteja Concluída pelo participante
+    // Se for missão > 1 na mesma trilha, exige que a missão anterior da MESMA trilha esteja Concluída
     if (seqOrder > 1) {
       const prevMission = db
-        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-        .get(seqOrder - 1) as { id: string; title: string } | undefined;
+        .prepare(
+          "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
+        )
+        .get(missionTrackKey, seqOrder - 1) as { id: string; title: string } | undefined;
 
       if (prevMission) {
         const prevCompleteTx = findActiveTransactionByEventKeys(participantId, [
@@ -2558,9 +2656,43 @@ function startMissionForParticipant(participantId: string, missionId: string) {
             ok: false,
             httpStatus: 403,
             errorCode: 'MISSION_LOCKED',
-            error: `Missão bloqueada: conclua primeiro a Missão 0${seqOrder - 1} ("${prevMission.title}") para desbloquear esta missão.`,
+            error: `Missão bloqueada: conclua e aguarde a aprovação da Missão 0${seqOrder - 1} ("${prevMission.title}") para desbloquear esta missão.`,
           };
         }
+      }
+    }
+
+    const nowMs = Date.now();
+
+    // CRONÔMETRO GLOBAL ÚNICO: impede iniciar outra missão enquanto existir uma missão em andamento (não expirada)
+    const otherActivePm = db
+      .prepare(`
+        SELECT pm.mission_id, pm.target_end_at_ms, m.title
+        FROM participant_missions pm
+        INNER JOIN missions m ON m.id = pm.mission_id
+        WHERE pm.participant_id = ?
+          AND pm.status = 'Em andamento'
+          AND pm.mission_id != ?
+          AND m.active = 1
+        LIMIT 1
+      `)
+      .get(participantId, missionId) as
+      | { mission_id: string; target_end_at_ms: number | null; title: string }
+      | undefined;
+
+    if (otherActivePm) {
+      const otherTargetEnd = otherActivePm.target_end_at_ms
+        ? Number(otherActivePm.target_end_at_ms)
+        : null;
+      const otherIsStillRunning = otherTargetEnd === null || nowMs < otherTargetEnd;
+      if (otherIsStillRunning) {
+        db.exec('ROLLBACK;');
+        return {
+          ok: false,
+          httpStatus: 409,
+          errorCode: 'ACTIVE_TIMER_CONFLICT',
+          error: `Você já possui uma missão em andamento ("${otherActivePm.title}"). Envie a evidência dela antes de iniciar outra missão.`,
+        };
       }
     }
 
@@ -2580,7 +2712,16 @@ function startMissionForParticipant(participantId: string, missionId: string) {
       };
     }
 
-    const nowMs = Date.now();
+    if (currentPm && String(currentPm.status) === 'Aguardando validação') {
+      db.exec('ROLLBACK;');
+      return {
+        ok: false,
+        httpStatus: 409,
+        errorCode: 'AWAITING_VALIDATION',
+        error: 'Sua evidência já foi enviada e está aguardando análise administrativa.',
+      };
+    }
+
     const durationSeconds = currentPm?.duration_seconds
       ? Number(currentPm.duration_seconds)
       : getMissionConfiguredDurationSeconds(missionId);
@@ -3021,12 +3162,35 @@ export function submitEvidenceUploadInDb(
     };
   }
 
-  const requiredType: EvidenceRequirementType =
-    missionRow.evidence_type === 'photo' ||
-    missionRow.evidence_type === 'file' ||
-    missionRow.evidence_type === 'both'
-      ? missionRow.evidence_type
-      : 'photo';
+  const rawEvType = String(missionRow.evidence_type || 'photo').toLowerCase();
+  const validEvTypes: EvidenceRequirementType[] = [
+    'photo',
+    'print',
+    'video',
+    'photo_or_video',
+    'text',
+    'file',
+    'both',
+  ];
+  const requiredType: EvidenceRequirementType = validEvTypes.includes(
+    rawEvType as EvidenceRequirementType
+  )
+    ? (rawEvType as EvidenceRequirementType)
+    : 'photo';
+
+  if (requiredType === 'text') {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'TEXT_EVIDENCE_ONLY',
+      error: 'Esta missão exige resposta em texto pela rota de submissão de texto.',
+    };
+  }
+
+  const maxVideoSeconds =
+    missionRow.max_video_seconds !== null && missionRow.max_video_seconds !== undefined
+      ? Number(missionRow.max_video_seconds)
+      : null;
 
   const isOfficial =
     missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
@@ -3053,12 +3217,13 @@ export function submitEvidenceUploadInDb(
     completionPoints = Number(missionRow.points || 0);
   }
 
-  // Validação completa do arquivo no backend (extensão, MIME, magic bytes, tamanho <= 5 MB)
+  // Validação completa do arquivo no backend (extensão, MIME, magic bytes, tamanho, duração de vídeo)
   const fileCheck = validateAndDetectEvidenceFile({
     buffer: params.buffer,
     originalName: params.originalName,
     declaredMimeType: params.declaredMimeType,
     requiredType,
+    maxVideoSeconds,
   });
   if (!fileCheck.ok) {
     return fileCheck;
@@ -3069,7 +3234,8 @@ export function submitEvidenceUploadInDb(
 
   const newId = `val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const evidenceCode = `EV-${Date.now().toString().slice(-6)}`;
-  const nowStr = new Date().toLocaleString('pt-BR', {
+  const nowMs = Date.now();
+  const nowStr = new Date(nowMs).toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -3079,14 +3245,19 @@ export function submitEvidenceUploadInDb(
   const description =
     (params.description || '').trim() || `Arquivo enviado: ${fileCheck.safeDisplayName}`;
 
+  const missionTrackKey = missionRow.track_id ? String(missionRow.track_id) : 'default';
+  const allowSharedEvidence = Boolean(missionRow.allow_shared_evidence);
+
   targetDb.exec('BEGIN IMMEDIATE TRANSACTION;');
   try {
-    // Verifica bloqueio sequencial dentro da transação (elimina TOCTOU)
+    // Verifica bloqueio sequencial dentro da mesma trilha (elimina TOCTOU)
     if (isOfficial && Number(missionRow.sequence_order) > 1) {
       const seqOrder = Number(missionRow.sequence_order);
       const prevMission = targetDb
-        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-        .get(seqOrder - 1) as { id: string; title: string } | undefined;
+        .prepare(
+          "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
+        )
+        .get(missionTrackKey, seqOrder - 1) as { id: string; title: string } | undefined;
 
       if (prevMission) {
         const prevCompleteTx = findActiveTransactionByEventKeys(
@@ -3110,7 +3281,7 @@ export function submitEvidenceUploadInDb(
             ok: false,
             httpStatus: 403,
             code: 'MISSION_LOCKED',
-            error: `Bloqueio sequencial: conclua primeiro a Missão 0${seqOrder - 1} antes de enviar evidências desta missão.`,
+            error: `Bloqueio sequencial: conclua e aguarde a aprovação da Missão 0${seqOrder - 1} antes de enviar evidências desta missão.`,
           };
         }
       }
@@ -3127,9 +3298,11 @@ export function submitEvidenceUploadInDb(
     );
     const existingPm = targetDb
       .prepare(
-        'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+        'SELECT status, started_at_ms, target_end_at_ms FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
       )
-      .get(params.participantId, params.missionId) as { status: string } | undefined;
+      .get(params.participantId, params.missionId) as
+      | { status: string; started_at_ms: number | null; target_end_at_ms: number | null }
+      | undefined;
     const existingSubmission = targetDb
       .prepare(
         "SELECT id, status FROM mission_completions WHERE participant_id = ? AND mission_id = ? AND status IN ('Pendente', 'Aprovada') LIMIT 1"
@@ -3154,6 +3327,80 @@ export function submitEvidenceUploadInDb(
       };
     }
 
+    // Bloqueia envio após expiração do cronômetro iniciado pelo servidor
+    if (
+      isOfficial &&
+      existingPm?.started_at_ms &&
+      existingPm?.target_end_at_ms &&
+      nowMs > Number(existingPm.target_end_at_ms)
+    ) {
+      targetDb.exec('ROLLBACK;');
+      deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'MISSION_TIMER_EXPIRED',
+        error: 'O tempo limite desta missão expirou. Não é permitido enviar evidência após a expiração.',
+      };
+    }
+
+    // Proteção contra duplicidade de arquivo via SHA-256
+    // 1. Mesmo participante jamais pode reutilizar o mesmo arquivo em qualquer missão ativa
+    const sameParticipantReuse = targetDb
+      .prepare(
+        `SELECT id, mission_id, mission_title
+         FROM mission_completions
+         WHERE evidence_sha256 = ?
+           AND participant_id = ?
+           AND status IN ('Pendente', 'Aprovada')
+         LIMIT 1`
+      )
+      .get(fileCheck.sha256, params.participantId) as
+      | { id: string; mission_id: string; mission_title: string }
+      | undefined;
+
+    if (sameParticipantReuse) {
+      targetDb.exec('ROLLBACK;');
+      deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: 'DUPLICATE_EVIDENCE_FILE',
+        error: `Este arquivo já foi utilizado por você na missão "${sameParticipantReuse.mission_title}". Envie uma evidência inédita.`,
+      };
+    }
+
+    // 2. Outro participante usando o mesmo arquivo: bloqueado em todas as missões,
+    // EXCETO quando allow_shared_evidence = 1 na MESMA missão (ex.: Trio de inovação)
+    const otherParticipantReuse = targetDb
+      .prepare(
+        `SELECT id, mission_id, mission_title, participant_id
+         FROM mission_completions
+         WHERE evidence_sha256 = ?
+           AND participant_id != ?
+           AND status IN ('Pendente', 'Aprovada')
+         LIMIT 1`
+      )
+      .get(fileCheck.sha256, params.participantId) as
+      | { id: string; mission_id: string; mission_title: string; participant_id: string }
+      | undefined;
+
+    if (otherParticipantReuse) {
+      const isAllowedCollectivePhoto =
+        allowSharedEvidence && otherParticipantReuse.mission_id === String(missionRow.id);
+      if (!isAllowedCollectivePhoto) {
+        targetDb.exec('ROLLBACK;');
+        deleteEvidenceFileIfExists(fileCheck.storedName, storageDir);
+        return {
+          ok: false,
+          httpStatus: 409,
+          code: 'DUPLICATE_EVIDENCE_FILE',
+          error:
+            'Este arquivo já foi enviado anteriormente em outra submissão. Utilize um registro inédito para esta missão.',
+        };
+      }
+    }
+
     targetDb
       .prepare(`
         INSERT INTO mission_completions (
@@ -3161,8 +3408,8 @@ export function submitEvidenceUploadInDb(
           startup_id, startup_name, submitted_at, evidence_description,
           evidence_code, evidence_file_name, evidence_stored_name,
           evidence_mime_type, evidence_size_bytes, evidence_sha256,
-          points_awarded, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendente')
+          evidence_duration_seconds, points_awarded, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendente')
       `)
       .run(
         newId,
@@ -3180,15 +3427,23 @@ export function submitEvidenceUploadInDb(
         fileCheck.mimeType,
         fileCheck.sizeBytes,
         fileCheck.sha256,
+        fileCheck.durationSeconds,
         completionPoints
       );
 
     if (isOfficial) {
+      const frozenElapsed = existingPm?.started_at_ms
+        ? Math.max(0, Math.round((nowMs - Number(existingPm.started_at_ms)) / 1000))
+        : 0;
       targetDb
         .prepare(
-          "UPDATE participant_missions SET status = 'Aguardando validação' WHERE participant_id = ? AND mission_id = ?"
+          `UPDATE participant_missions
+           SET status = 'Aguardando validação',
+               submitted_at_ms = ?,
+               elapsed_seconds = ?
+           WHERE participant_id = ? AND mission_id = ?`
         )
-        .run(params.participantId, String(missionRow.id));
+        .run(nowMs, frozenElapsed, params.participantId, String(missionRow.id));
     }
 
     targetDb.exec('COMMIT;');
@@ -3223,7 +3478,7 @@ export function submitEvidenceUploadInDb(
 
 const evidenceRawBodyMiddleware = express.raw({
   type: 'application/octet-stream',
-  limit: '6mb',
+  limit: '26mb',
 });
 
 app.post(
@@ -3426,11 +3681,40 @@ app.get('/api/evidences/:id/file', (req, res) => {
   }
 });
 
-app.get('/api/validations', requireAdmin, (_req, res) => {
+function getEnrichedAdminValidations() {
   const rows = db
-    .prepare('SELECT * FROM mission_completions ORDER BY rowid DESC')
+    .prepare(`
+      SELECT mc.*,
+             p.image_publicity_consent AS participant_image_consent,
+             p.image_publicity_consent_version AS participant_image_consent_version,
+             CASE
+               WHEN mc.evidence_sha256 IS NOT NULL THEN (
+                 SELECT COUNT(DISTINCT mc2.participant_id)
+                 FROM mission_completions mc2
+                 WHERE mc2.evidence_sha256 = mc.evidence_sha256
+                   AND mc2.mission_id = mc.mission_id
+                   AND mc2.status IN ('Pendente', 'Aprovada')
+               )
+               ELSE 0
+             END AS shared_evidence_count
+      FROM mission_completions mc
+      LEFT JOIN participants p ON p.id = mc.participant_id
+      ORDER BY mc.rowid DESC
+    `)
     .all() as Record<string, unknown>[];
-  res.json(rows.map(mapValidationRow));
+
+  return rows.map((r) => ({
+    ...mapValidationRow(r),
+    sharedEvidenceCount: Number(r.shared_evidence_count || 0),
+    participantImageConsent: Boolean(r.participant_image_consent),
+    participantImageConsentVersion: r.participant_image_consent_version
+      ? String(r.participant_image_consent_version)
+      : null,
+  }));
+}
+
+app.get('/api/validations', requireAdmin, (_req, res) => {
+  res.json(getEnrichedAdminValidations());
 });
 
 app.post('/api/validations', (req, res) => {
@@ -3493,7 +3777,8 @@ app.post('/api/validations', (req, res) => {
     return;
   }
 
-  if (Boolean(missionRow.requires_evidence)) {
+  const evType = String(missionRow.evidence_type || '').toLowerCase();
+  if (Boolean(missionRow.requires_evidence) && evType !== 'text') {
     res.status(400).json({
       error: `A missão "${missionRow.title}" exige o envio de arquivo de evidência pela rota oficial de upload.`,
       status: 'EVIDENCE_REQUIRED',
@@ -3502,7 +3787,17 @@ app.post('/api/validations', (req, res) => {
     return;
   }
 
+  const rawTextEvidence = String(p.evidenceDescription || '').trim();
+  if (evType === 'text' && rawTextEvidence.length < 5) {
+    res.status(400).json({
+      error: 'Escreva uma resposta em texto válida (mínimo de 5 caracteres) para concluir esta missão.',
+      code: 'TEXT_EVIDENCE_REQUIRED',
+    });
+    return;
+  }
+
   const isOfficial = missionRow.sequence_order !== null && missionRow.sequence_order !== undefined;
+  const missionTrackKey = missionRow.track_id ? String(missionRow.track_id) : 'default';
   let completionPoints = 0;
 
   if (isOfficial) {
@@ -3525,14 +3820,15 @@ app.post('/api/validations', (req, res) => {
   }
 
   const newId = `val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const nowStr = new Date().toLocaleString('pt-BR', {
+  const nowMs = Date.now();
+  const nowStr = new Date(nowMs).toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   });
-  const evidenceDescription = String(p.evidenceDescription || '').trim() || 'Registro enviado para validação';
+  const evidenceDescription = rawTextEvidence || 'Registro enviado para validação';
   const evidenceCode = String(p.evidenceCode || `EV-${Date.now().toString().slice(-6)}`).trim();
 
   db.exec('BEGIN IMMEDIATE TRANSACTION;');
@@ -3540,8 +3836,10 @@ app.post('/api/validations', (req, res) => {
     if (isOfficial && Number(missionRow.sequence_order) > 1) {
       const seqOrder = Number(missionRow.sequence_order);
       const prevMission = db
-        .prepare('SELECT id, title FROM missions WHERE sequence_order = ? AND active = 1 LIMIT 1')
-        .get(seqOrder - 1) as { id: string; title: string } | undefined;
+        .prepare(
+          "SELECT id, title FROM missions WHERE COALESCE(track_id, 'default') = ? AND sequence_order = ? AND active = 1 LIMIT 1"
+        )
+        .get(missionTrackKey, seqOrder - 1) as { id: string; title: string } | undefined;
 
       if (prevMission) {
         const prevCompleteTx = findActiveTransactionByEventKeys(targetParticipantId, [
@@ -3557,7 +3855,7 @@ app.post('/api/validations', (req, res) => {
         if (!prevCompleteTx && (!prevPm || prevPm.status !== 'Concluída')) {
           db.exec('ROLLBACK;');
           res.status(403).json({
-            error: `Bloqueio sequencial: conclua primeiro a Missão 0${seqOrder - 1} antes de enviar evidências desta missão.`,
+            error: `Bloqueio sequencial: conclua e aguarde a aprovação da Missão 0${seqOrder - 1} antes de enviar evidências desta missão.`,
             code: 'MISSION_LOCKED',
           });
           return;
@@ -3571,9 +3869,11 @@ app.post('/api/validations', (req, res) => {
     ]);
     const existingPm = db
       .prepare(
-        'SELECT status FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
+        'SELECT status, started_at_ms, target_end_at_ms FROM participant_missions WHERE participant_id = ? AND mission_id = ? LIMIT 1'
       )
-      .get(targetParticipantId, missionId) as { status: string } | undefined;
+      .get(targetParticipantId, missionId) as
+      | { status: string; started_at_ms: number | null; target_end_at_ms: number | null }
+      | undefined;
     const existingSubmission = db
       .prepare(
         "SELECT id, status FROM mission_completions WHERE participant_id = ? AND mission_id = ? AND status IN ('Pendente', 'Aprovada') LIMIT 1"
@@ -3592,6 +3892,20 @@ app.post('/api/validations', (req, res) => {
             ? 'Você já possui uma validação pendente para esta missão.'
             : 'Esta missão já foi concluída e validada anteriormente.',
         code: 'EVIDENCE_ALREADY_SUBMITTED',
+      });
+      return;
+    }
+
+    if (
+      isOfficial &&
+      existingPm?.started_at_ms &&
+      existingPm?.target_end_at_ms &&
+      nowMs > Number(existingPm.target_end_at_ms)
+    ) {
+      db.exec('ROLLBACK;');
+      res.status(409).json({
+        error: 'O tempo limite desta missão expirou. Não é permitido enviar evidência após a expiração.',
+        code: 'MISSION_TIMER_EXPIRED',
       });
       return;
     }
@@ -3617,9 +3931,16 @@ app.post('/api/validations', (req, res) => {
     );
 
     if (isOfficial) {
+      const frozenElapsed = existingPm?.started_at_ms
+        ? Math.max(0, Math.round((nowMs - Number(existingPm.started_at_ms)) / 1000))
+        : 0;
       db.prepare(
-        "UPDATE participant_missions SET status = 'Aguardando validação' WHERE participant_id = ? AND mission_id = ?"
-      ).run(targetParticipantId, String(missionRow.id));
+        `UPDATE participant_missions
+         SET status = 'Aguardando validação',
+             submitted_at_ms = ?,
+             elapsed_seconds = ?
+         WHERE participant_id = ? AND mission_id = ?`
+      ).run(nowMs, frozenElapsed, targetParticipantId, String(missionRow.id));
     }
     db.exec('COMMIT;');
   } catch (err: any) {
@@ -3646,7 +3967,14 @@ app.post('/api/validations', (req, res) => {
 
 app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
   const { id } = req.params;
-  const { decision } = (req.body || {}) as { decision?: 'Aprovada' | 'Rejeitada' };
+  const { decision, rejectionReason } = (req.body || {}) as {
+    decision?: 'Aprovada' | 'Rejeitada';
+    rejectionReason?: string;
+  };
+  const normalizedRejectionReason =
+    typeof rejectionReason === 'string' && rejectionReason.trim().length > 0
+      ? rejectionReason.trim().slice(0, 500)
+      : null;
 
   if (decision !== 'Aprovada' && decision !== 'Rejeitada') {
     res.status(400).json({
@@ -3885,9 +4213,11 @@ app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
         return;
       }
 
-      db.prepare("UPDATE mission_completions SET status = 'Rejeitada' WHERE id = ? AND status = 'Pendente'").run(id);
       db.prepare(
-        "UPDATE participant_missions SET status = 'Disponível' WHERE participant_id = ? AND mission_id = ? AND status != 'Concluída'"
+        "UPDATE mission_completions SET status = 'Rejeitada', rejection_reason = ? WHERE id = ? AND status = 'Pendente'"
+      ).run(normalizedRejectionReason, id);
+      db.prepare(
+        "UPDATE participant_missions SET status = 'Disponível', submitted_at_ms = NULL WHERE participant_id = ? AND mission_id = ? AND status != 'Concluída'"
       ).run(item.participantId, item.missionId);
       db.exec('COMMIT;');
     } catch (err) {
@@ -3900,10 +4230,7 @@ app.patch('/api/validations/:id/review', requireAdmin, (req, res) => {
     }
   }
 
-  const rows = db
-    .prepare('SELECT * FROM mission_completions ORDER BY rowid DESC')
-    .all() as Record<string, unknown>[];
-  res.json(rows.map(mapValidationRow));
+  res.json(getEnrichedAdminValidations());
 });
 
 // ============================================================================

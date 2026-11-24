@@ -27,7 +27,6 @@ const MAX_POINTS = 1000;
 export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
   variant = 'card',
   pointsOverride,
-  showMilestones = true,
   className = '',
 }) => {
   const { participant, missions } = useAppStore();
@@ -136,62 +135,6 @@ export const GlobalPointsIndicator: React.FC<GlobalPointsIndicatorProps> = ({
             )}
           </div>
         </div>
-
-        {/* Marcadores Dinâmicos das Missões Oficiais */}
-        {showMilestones && totalOfficialMissions > 0 && (
-          <div
-            className="grid gap-1 sm:gap-2 pt-1"
-            style={{
-              gridTemplateColumns: `repeat(${totalOfficialMissions}, minmax(0, 1fr))`,
-            }}
-          >
-            {officialMissions.map((m, idx) => {
-              const seq = m.sequenceOrder ?? idx + 1;
-              const isCompleted =
-                m.status === 'Concluída' ||
-                (participant.completedMissionsCount !== undefined &&
-                  seq <= participant.completedMissionsCount);
-              const isCurrent =
-                !isCompleted &&
-                (m.status === 'Em andamento' ||
-                  m.status === 'Disponível' ||
-                  m.status === 'Aguardando validação');
-
-              return (
-                <div
-                  key={m.id || `mission-seq-${seq}`}
-                  className={`p-2 rounded-xl text-center border transition-all ${
-                    isCompleted
-                      ? 'bg-[#C8FFD2]/15 border-[#C8FFD2]/60 text-[#C8FFD2]'
-                      : isCurrent
-                      ? 'bg-tutu-dark border-[#C8FFD2]/60 text-[#FFFFFF] shadow-sm'
-                      : 'bg-tutu-dark/70 border-tutu-blue/30 text-[#D0DED4]/60'
-                  }`}
-                >
-                  <div className="flex items-center justify-center gap-1">
-                    {isCompleted ? (
-                      <CheckCircle2 className="w-3 h-3 text-[#C8FFD2] shrink-0" />
-                    ) : isCurrent ? (
-                      <span className="w-2 h-2 rounded-full bg-[#C8FFD2] shrink-0 animate-pulse" />
-                    ) : (
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#D0DED4]/40 shrink-0" />
-                    )}
-                    <span className="font-display font-bold text-xs sm:text-sm">
-                      {`M${seq}`}
-                    </span>
-                  </div>
-                  <span className="text-[10px] hidden sm:block truncate opacity-80 mt-0.5 text-[#D0DED4]">
-                    {isCompleted
-                      ? 'Concluída'
-                      : isCurrent
-                      ? (m.status === 'Em andamento' ? 'Em curso' : m.status)
-                      : 'Bloqueada'}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {/* Contextual Info Banner */}

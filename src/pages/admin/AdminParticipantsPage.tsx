@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Calendar,
@@ -10,6 +10,7 @@ import {
   Lock,
   Mail,
   Phone,
+  RefreshCw,
   Search,
   Users,
   X,
@@ -20,9 +21,23 @@ import { Participant, ParticipantStatus } from '../../types';
 import { formatBrazilianPhone, formatPoints } from '../../utils/formatters';
 
 export const AdminParticipantsPage: React.FC = () => {
-  const { allParticipants, updateParticipantStatus, resetParticipantPasswordAdmin } = useAppStore();
+  const {
+    allParticipants,
+    updateParticipantStatus,
+    resetParticipantPasswordAdmin,
+    refreshRanking,
+    isRefreshingRanking,
+  } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'Todos' | ParticipantStatus>('Todos');
+  const didInitialSyncRef = useRef(false);
+
+  // Sincroniza automaticamente a lista de participantes com o servidor ao abrir a tela
+  useEffect(() => {
+    if (didInitialSyncRef.current) return;
+    didInitialSyncRef.current = true;
+    void refreshRanking();
+  }, [refreshRanking]);
 
   // Estado do modal de redefinição administrativa de senha
   const [resetTarget, setResetTarget] = useState<Participant | null>(null);
@@ -96,7 +111,11 @@ export const AdminParticipantsPage: React.FC = () => {
     }
   };
 
-  const filtered = allParticipants
+  const visibleParticipants = allParticipants.filter(
+    (p) => String(p.role || 'PARTICIPANT').toUpperCase() !== 'ADMIN'
+  );
+
+  const filtered = visibleParticipants
     .filter((p) => (statusFilter === 'Todos' ? true : p.status === statusFilter))
     .filter(
       (p) =>
@@ -141,7 +160,7 @@ export const AdminParticipantsPage: React.FC = () => {
             aria-label="Filtrar por status do participante"
             className="input-tutu text-sm"
           >
-            <option value="Todos">Todos os Status ({allParticipants.length})</option>
+            <option value="Todos">Todos os Status ({visibleParticipants.length})</option>
             <option value="Ativo">Ativo</option>
             <option value="Pendente">Pendente</option>
             <option value="Inativo">Inativo</option>
@@ -156,6 +175,18 @@ export const AdminParticipantsPage: React.FC = () => {
             <Users className="w-5 h-5 text-tutu-lime shrink-0" />
             <span>Participantes Registrados ({filtered.length})</span>
           </h2>
+          <button
+            type="button"
+            onClick={() => void refreshRanking()}
+            disabled={isRefreshingRanking}
+            className="min-h-[36px] px-3 py-1.5 rounded-xl bg-tutu-secondary/25 hover:bg-tutu-secondary/45 border border-tutu-secondary/50 text-xs font-semibold text-tutu-light inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            title="Atualizar lista de participantes do servidor"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 text-tutu-lime ${isRefreshingRanking ? 'animate-spin' : ''}`}
+            />
+            <span>{isRefreshingRanking ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
         </div>
 
         {filtered.length === 0 ? (
@@ -197,6 +228,16 @@ export const AdminParticipantsPage: React.FC = () => {
                     <span className="inline-flex items-center gap-1">
                       <CheckCircle2 className="w-3.5 h-3.5 text-tutu-lime" />
                       {p.completedMissionsCount} missões
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        p.imagePublicityConsent
+                          ? 'bg-tutu-lime/20 text-tutu-lime border border-tutu-lime/40'
+                          : 'bg-tutu-dark/80 text-tutu-light/60 border border-tutu-secondary/40'
+                      }`}
+                    >
+                      LGPD Imagem: {p.imagePublicityConsent ? 'Autorizada' : 'Não autorizada'}
+                      {p.imagePublicityConsentVersion ? ` (${p.imagePublicityConsentVersion})` : ''}
                     </span>
                     <span className="inline-flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5 text-tutu-lime" />
@@ -252,9 +293,21 @@ export const AdminParticipantsPage: React.FC = () => {
                   {filtered.map((p) => (
                     <tr key={p.id} className="hover:bg-tutu-secondary/15">
                       <td className="py-3.5 px-4 font-semibold text-tutu-light">
-                        {p.name}{' '}
-                        <span className="text-xs text-tutu-light/60 font-normal">
-                          ({p.nickname})
+                        <div>
+                          {p.name}{' '}
+                          <span className="text-xs text-tutu-light/60 font-normal">
+                            ({p.nickname})
+                          </span>
+                        </div>
+                        <span
+                          className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            p.imagePublicityConsent
+                              ? 'bg-tutu-lime/20 text-tutu-lime border border-tutu-lime/40'
+                              : 'bg-tutu-dark/80 text-tutu-light/55 border border-tutu-secondary/40'
+                          }`}
+                        >
+                          LGPD: {p.imagePublicityConsent ? 'Imagem autorizada' : 'Sem autorização pública'}
+                          {p.imagePublicityConsentVersion ? ` • ${p.imagePublicityConsentVersion}` : ''}
                         </span>
                       </td>
                       <td className="py-3.5 px-4 text-tutu-light/80 font-mono text-xs">

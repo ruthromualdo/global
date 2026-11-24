@@ -7,7 +7,19 @@ export type MissionCategory =
   | 'Experimentação'
   | 'Quiz'
   | 'Compartilhamento'
-  | 'Missão surpresa';
+  | 'Missão surpresa'
+  | 'Bônus';
+
+export type MissionTrackId = 'ex_devedor' | 'sign' | 'editora_escreva' | 'bonus';
+
+export type EvidenceRequirementType =
+  | 'photo'
+  | 'print'
+  | 'video'
+  | 'photo_or_video'
+  | 'text'
+  | 'file'
+  | 'both';
 
 export type MissionStatus =
   | 'Disponível'
@@ -40,6 +52,7 @@ export interface Participant {
   };
   imagePublicityConsent?: boolean;
   imagePublicityConsentUpdatedAt?: string | null;
+  imagePublicityConsentVersion?: string | null;
 }
 
 export interface Startup {
@@ -56,6 +69,8 @@ export interface Startup {
   active: boolean;
   isConfigurableGuest?: boolean;
   website?: string;
+  instagramUrl?: string;
+  logoPath?: string;
 }
 
 export interface QuizQuestion {
@@ -80,12 +95,15 @@ export interface Mission {
   qrCodeRequired?: string;
   quizQuestions?: QuizQuestion[];
   sequenceOrder?: number;
+  trackId?: string | null;
+  relativeWeight?: number;
   unlockPoints?: number;
   completionPoints?: number;
   maxSpeedBonus?: number;
   timerMinutes?: number | null;
   durationSeconds?: number;
   startedAtMs?: number | null;
+  submittedAtMs?: number | null;
   targetEndAtMs?: number | null;
   completedAtMs?: number | null;
   elapsedSeconds?: number;
@@ -95,7 +113,10 @@ export interface Mission {
   speedBonusAwarded?: number;
   serverTimeMs?: number;
   requiresEvidence?: boolean;
-  evidenceType?: 'photo' | 'file' | 'both';
+  evidenceType?: EvidenceRequirementType;
+  maxVideoSeconds?: number | null;
+  allowSharedEvidence?: boolean;
+  externalLink?: string;
 }
 
 export interface MissionCompletion {
@@ -112,6 +133,11 @@ export interface MissionCompletion {
   evidenceFileName?: string;
   evidenceMimeType?: string;
   evidenceSizeBytes?: number;
+  evidenceDurationSeconds?: number | null;
+  rejectionReason?: string | null;
+  sharedEvidenceCount?: number;
+  participantImageConsent?: boolean;
+  participantImageConsentVersion?: string | null;
   hasFile?: boolean;
   pointsAwarded: number;
   status: 'Pendente' | 'Aprovada' | 'Rejeitada';

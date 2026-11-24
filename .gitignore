@@ -14,6 +14,7 @@ coverage/
 *.sqlite
 *.sqlite3
 *.sqlite-*
+*.sqlite.*
 *.db
 *.db-wal
 *.db-shm
@@ -25,11 +26,12 @@ coverage/
 .DS_Store
 Thumbs.db
 
-# Arquivos auxiliares SQLite
-*.sqlite-*
-
 # Evidências enviadas pelos participantes (armazenamento privado)
 server/storage/evidences/
 
 # Backups locais do banco e evidências
 server/backups/
+server/db/backups/
+
+# Scripts temporários locais
+scratch/

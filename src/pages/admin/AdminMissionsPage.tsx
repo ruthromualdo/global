@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Clock, Edit3, Paperclip, Plus, Power, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
-import { Mission, MissionCategory, MissionStatus } from '../../types';
+import { EvidenceRequirementType, Mission, MissionCategory, MissionStatus } from '../../types';
 import { CategoryPill, MissionStatusBadge } from '../../components/UI';
 import { formatPoints } from '../../utils/formatters';
 import { apiRequestWithStatus } from '../../services/apiClient';
@@ -46,9 +46,51 @@ export const AdminMissionsPage: React.FC = () => {
   const [timerMinutes, setTimerMinutes] = useState<string>('');
   const [missionType, setMissionType] = useState<'official' | 'extra'>('official');
   const [sequenceOrder, setSequenceOrder] = useState<number | ''>(5);
+  const [trackId, setTrackId] = useState<string>('');
+  const [relativeWeight, setRelativeWeight] = useState<number>(10);
   const [requiresEvidence, setRequiresEvidence] = useState<boolean>(false);
-  const [evidenceType, setEvidenceType] = useState<'photo' | 'file' | 'both'>('photo');
+  const [evidenceType, setEvidenceType] = useState<EvidenceRequirementType>('photo');
+  const [maxVideoSeconds, setMaxVideoSeconds] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [statusFilter, setStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
+
+  const TRACK_ORDER: Record<string, number> = {
+    ex_devedor: 1,
+    sign: 2,
+    editora_escreva: 3,
+    bonus: 4,
+  };
+  const TRACK_LABELS: Record<string, string> = {
+    ex_devedor: 'Ex Devedor',
+    sign: 'Sign',
+    editora_escreva: 'Editora Escreva',
+    bonus: 'Missões Bônus',
+  };
+
+  const sortMissionsByTrackAndSequence = (list: Mission[]): Mission[] =>
+    [...list].sort((a, b) => {
+      const aActive = a.active ? 0 : 1;
+      const bActive = b.active ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      const aTrack = a.trackId ? (TRACK_ORDER[a.trackId] ?? 50) : 99;
+      const bTrack = b.trackId ? (TRACK_ORDER[b.trackId] ?? 50) : 99;
+      if (aTrack !== bTrack) return aTrack - bTrack;
+      const startupCmp = (a.startupName || '').localeCompare(b.startupName || '');
+      if (startupCmp !== 0) return startupCmp;
+      const aSeq = a.sequenceOrder ?? 9999;
+      const bSeq = b.sequenceOrder ?? 9999;
+      if (aSeq !== bSeq) return aSeq - bSeq;
+      return a.title.localeCompare(b.title);
+    });
+
+  const activeMissions = sortMissionsByTrackAndSequence(missions.filter((m) => m.active));
+  const inactiveMissions = sortMissionsByTrackAndSequence(missions.filter((m) => !m.active));
+  const filteredMissions =
+    statusFilter === 'active'
+      ? activeMissions
+      : statusFilter === 'inactive'
+      ? inactiveMissions
+      : sortMissionsByTrackAndSequence(missions);
 
   const maxSequence = missions
     .filter((m) => m.sequenceOrder !== null && m.sequenceOrder !== undefined)
@@ -127,8 +169,11 @@ export const AdminMissionsPage: React.FC = () => {
     setTimerMinutes('');
     setMissionType('official');
     setSequenceOrder(nextSuggestedSequence);
-    setRequiresEvidence(false);
+    setTrackId('bonus');
+    setRelativeWeight(20);
+    setRequiresEvidence(true);
     setEvidenceType('photo');
+    setMaxVideoSeconds('');
     setShowForm(true);
   };
 
@@ -151,8 +196,15 @@ export const AdminMissionsPage: React.FC = () => {
       setMissionType('extra');
       setSequenceOrder('');
     }
+    setTrackId(m.trackId || '');
+    setRelativeWeight(m.relativeWeight ?? 10);
     setRequiresEvidence(Boolean(m.requiresEvidence));
     setEvidenceType(m.evidenceType || 'photo');
+    setMaxVideoSeconds(
+      m.maxVideoSeconds !== null && m.maxVideoSeconds !== undefined
+        ? String(m.maxVideoSeconds)
+        : ''
+    );
     setShowForm(true);
   };
 
@@ -174,17 +226,23 @@ export const AdminMissionsPage: React.FC = () => {
       }
       const orderNum = Number(sequenceOrder);
       const duplicate = missions.find(
-        (m) => m.id !== editingId && m.sequenceOrder === orderNum
+        (m) =>
+          m.id !== editingId &&
+          m.sequenceOrder === orderNum &&
+          (m.trackId || '') === (trackId || '')
       );
       if (duplicate) {
         notify(
           'Posição Já Ocupada',
-          `A posição ${orderNum} do circuito já está ocupada pela missão "${duplicate.title}". Escolha outro número ou selecione "Missão Extra".`,
+          `A posição ${orderNum} nesta trilha já está ocupada pela missão "${duplicate.title}". Escolha outro número ou selecione "Missão Extra".`,
           'error'
         );
         return;
       }
     }
+
+    const parsedMaxVideo =
+      maxVideoSeconds.trim() === '' ? null : Math.max(1, Math.min(300, Math.trunc(Number(maxVideoSeconds))));
 
     const payload = {
       title,
@@ -201,8 +259,14 @@ export const AdminMissionsPage: React.FC = () => {
       timerMinutes: parsedTimerMinutes,
       missionType,
       sequenceOrder: missionType === 'official' ? Number(sequenceOrder) : undefined,
+      trackId: trackId || null,
+      relativeWeight: Math.max(1, Math.trunc(Number(relativeWeight) || 10)),
       requiresEvidence,
       evidenceType: requiresEvidence ? evidenceType : undefined,
+      maxVideoSeconds:
+        requiresEvidence && (evidenceType === 'video' || evidenceType === 'photo_or_video')
+          ? parsedMaxVideo
+          : null,
     };
 
     setIsSubmitting(true);
@@ -404,8 +468,35 @@ export const AdminMissionsPage: React.FC = () => {
                 <option value="Experimentação">Experimentação</option>
                 <option value="Quiz">Quiz</option>
                 <option value="Compartilhamento">Compartilhamento</option>
+                <option value="Bônus">Bônus</option>
                 <option value="Missão surpresa">Missão surpresa</option>
               </select>
+            </div>
+            <div>
+              <label className="block text-xs text-tutu-light/80 mb-1">Trilha</label>
+              <select
+                value={trackId}
+                onChange={(e) => setTrackId(e.target.value)}
+                className="input-tutu text-sm"
+              >
+                <option value="">Padrão (Circuito Geral)</option>
+                <option value="ex_devedor">Ex Devedor</option>
+                <option value="sign">Sign</option>
+                <option value="editora_escreva">Editora Escreva</option>
+                <option value="bonus">Missões Bônus</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-tutu-light/80 mb-1">Peso Relativo</label>
+              <input
+                type="number"
+                required
+                min={1}
+                step={1}
+                value={relativeWeight}
+                onChange={(e) => setRelativeWeight(Math.max(1, Number(e.target.value)))}
+                className="input-tutu text-sm"
+              />
             </div>
             <div>
               <label className="block text-xs text-tutu-light/80 mb-1">Pontuação</label>
@@ -508,23 +599,43 @@ export const AdminMissionsPage: React.FC = () => {
             </div>
 
             {requiresEvidence ? (
-              <div className="pt-2 border-t border-tutu-secondary/30 grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+              <div className="pt-2 border-t border-tutu-secondary/30 grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
                 <div>
                   <label className="block text-xs font-semibold text-tutu-light/90 mb-1">
                     Tipo de Evidência Aceita *
                   </label>
                   <select
                     value={evidenceType}
-                    onChange={(e) => setEvidenceType(e.target.value as 'photo' | 'file' | 'both')}
+                    onChange={(e) => setEvidenceType(e.target.value as EvidenceRequirementType)}
                     className="input-tutu text-xs"
                   >
-                    <option value="photo">Foto (JPG, JPEG, PNG, WEBP)</option>
-                    <option value="file">Arquivo (PDF ou Imagem)</option>
-                    <option value="both">Foto ou Arquivo (JPG, PNG, WEBP, PDF)</option>
+                    <option value="photo">Foto (JPG, JPEG, PNG, WEBP • 5 MB)</option>
+                    <option value="print">Print de Tela (JPG, PNG, WEBP • 5 MB)</option>
+                    <option value="video">Vídeo Obrigatório (MP4, MOV, WEBM • 25 MB)</option>
+                    <option value="photo_or_video">Foto ou Vídeo (5 MB / 25 MB)</option>
+                    <option value="text">Resposta em Texto</option>
+                    <option value="file">Arquivo (PDF ou Imagem • 5 MB)</option>
+                    <option value="both">Foto ou Arquivo (JPG, PNG, WEBP, PDF • 5 MB)</option>
                   </select>
                 </div>
+                {(evidenceType === 'video' || evidenceType === 'photo_or_video') && (
+                  <div>
+                    <label className="block text-xs font-semibold text-tutu-light/90 mb-1">
+                      Duração Máx. do Vídeo (seg)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={300}
+                      placeholder="Ex.: 60 ou 15"
+                      value={maxVideoSeconds}
+                      onChange={(e) => setMaxVideoSeconds(e.target.value)}
+                      className="input-tutu text-xs"
+                    />
+                  </div>
+                )}
                 <div className="text-[11px] text-tutu-light/70 leading-relaxed">
-                  Limite de <strong>5 MB</strong> por arquivo. Os pontos só serão creditados após a aprovação administrativa na Fila de Validação. Em missões oficiais, esta configuração fica bloqueada após o início do circuito.
+                  Imagens/PDF: até <strong>5 MB</strong>. Vídeos: até <strong>25 MB</strong> com validação de duração no servidor. Os pontos só são creditados após aprovação administrativa.
                 </div>
               </div>
             ) : (
@@ -605,10 +716,10 @@ export const AdminMissionsPage: React.FC = () => {
 
           <div className="space-y-2">
             <div className="text-xs font-semibold text-tutu-light/80">
-              Tempos Individuais por Missão (Sobreposição ao padrão)
+              Tempos Individuais por Missão Ativa ({activeMissions.length} missões • Sobreposição ao padrão)
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-              {missions.map((m) => {
+              {activeMissions.map((m) => {
                 const isCustom = (missionTimersMap[m.id] ?? '').trim() !== '';
                 const effective = isCustom ? Number(missionTimersMap[m.id]) : defaultTimerMinutes;
                 return (
@@ -667,26 +778,85 @@ export const AdminMissionsPage: React.FC = () => {
         </form>
       </div>
 
+      {/* Filtro de Status do Catálogo (Padrão: Missões Ativas) */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+        <div className="flex flex-wrap items-center gap-2">
+          {(
+            [
+              { id: 'active', label: 'Missões ativas', count: activeMissions.length },
+              { id: 'inactive', label: 'Missões inativas', count: inactiveMissions.length },
+              { id: 'all', label: 'Todas', count: missions.length },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setStatusFilter(tab.id)}
+              className={`min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-2 transition-colors ${
+                statusFilter === tab.id
+                  ? 'bg-tutu-lime text-tutu-dark'
+                  : 'bg-tutu-secondary/25 text-tutu-light/80 hover:text-tutu-light border border-tutu-secondary/40'
+              }`}
+            >
+              <span>{tab.label}</span>
+              <span
+                className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${
+                  statusFilter === tab.id
+                    ? 'bg-tutu-dark/20 text-tutu-dark'
+                    : 'bg-tutu-dark/60 text-tutu-lime'
+                }`}
+              >
+                {tab.count}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <span className="text-xs text-tutu-light/70">
+          Exibindo <strong className="text-tutu-lime">{filteredMissions.length}</strong>{' '}
+          {filteredMissions.length === 1 ? 'missão' : 'missões'}
+          {statusFilter === 'active'
+            ? ' ativas do catálogo oficial'
+            : statusFilter === 'inactive'
+            ? ' inativas (histórico preservado)'
+            : ` no total (${activeMissions.length} ativas, ${inactiveMissions.length} inativas)`}
+        </span>
+      </div>
+
       {/* Missions Cards */}
       <div className="space-y-4">
-        {missions.map((m) => (
+        {filteredMissions.length === 0 ? (
+          <div className="tutu-card p-6 text-center text-xs text-tutu-light/70">
+            Nenhuma missão encontrada para o filtro selecionado.
+          </div>
+        ) : (
+          filteredMissions.map((m) => (
           <div
             key={m.id}
             className={`tutu-card p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
-              !m.active ? 'opacity-60' : ''
+              !m.active ? 'opacity-65 border-tutu-secondary/30' : ''
             }`}
           >
             <div className="space-y-2 max-w-3xl min-w-0">
               <div className="flex flex-wrap items-center gap-2">
+                {!m.active && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-500/20 border border-red-400/50 text-red-200 text-[11px] font-bold uppercase tracking-wider">
+                    INATIVA
+                  </span>
+                )}
                 {m.sequenceOrder !== null && m.sequenceOrder !== undefined ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-tutu-lime/15 border border-tutu-lime/40 text-tutu-lime text-[11px] font-bold">
                     <span className="w-1.5 h-1.5 rounded-full bg-tutu-lime" />
-                    <span>Circuito Oficial • Etapa {String(m.sequenceOrder).padStart(2, '0')}</span>
+                    <span>
+                      {m.trackId && TRACK_LABELS[m.trackId]
+                        ? `${TRACK_LABELS[m.trackId]} • Etapa ${String(m.sequenceOrder).padStart(2, '0')}`
+                        : `Circuito Oficial • Etapa ${String(m.sequenceOrder).padStart(2, '0')}`}
+                    </span>
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-tutu-secondary/30 border border-tutu-secondary/50 text-[#D0DED4] text-[11px] font-semibold">
                     <span className="w-1.5 h-1.5 rounded-full bg-tutu-secondary" />
-                    <span>Missão Extra</span>
+                    <span>{!m.active ? 'Catálogo Legado' : 'Missão Extra'}</span>
                   </span>
                 )}
                 <CategoryPill category={m.category} />
@@ -702,7 +872,15 @@ export const AdminMissionsPage: React.FC = () => {
                     <Paperclip className="w-3 h-3 text-tutu-lime" />
                     <span>
                       Evidência:{' '}
-                      {m.evidenceType === 'file'
+                      {m.evidenceType === 'print'
+                        ? 'Print'
+                        : m.evidenceType === 'video'
+                        ? `Vídeo${m.maxVideoSeconds ? ` (até ${m.maxVideoSeconds}s)` : ''}`
+                        : m.evidenceType === 'photo_or_video'
+                        ? `Foto ou Vídeo${m.maxVideoSeconds ? ` (até ${m.maxVideoSeconds}s)` : ''}`
+                        : m.evidenceType === 'text'
+                        ? 'Texto'
+                        : m.evidenceType === 'file'
                         ? 'Arquivo'
                         : m.evidenceType === 'both'
                         ? 'Foto ou Arquivo'
@@ -714,7 +892,7 @@ export const AdminMissionsPage: React.FC = () => {
               <h3 className="font-display font-bold text-lg text-tutu-light break-words">
                 {m.title}
               </h3>
-              <p className="text-xs text-tutu-light/80 leading-relaxed">{m.description}</p>
+              <p className="text-xs text-tutu-light/80 leading-relaxed whitespace-pre-line">{m.description}</p>
               <p className="text-[11px] text-tutu-lime break-words">
                 Critério: {m.completionCriteria}
               </p>
@@ -752,7 +930,8 @@ export const AdminMissionsPage: React.FC = () => {
               </div>
             </div>
           </div>
-        ))}
+          ))
+        )}
       </div>
     </div>
   );

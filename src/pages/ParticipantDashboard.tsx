@@ -15,7 +15,7 @@ import { GlobalPointsIndicator } from '../components/GlobalPointsIndicator';
 import { formatPoints } from '../utils/formatters';
 
 export const ParticipantDashboard: React.FC = () => {
-  const { participant, missions } = useAppStore();
+  const { participant, missions, publicRanking } = useAppStore();
 
   const activeMissions = missions.filter((m) => m.active);
   const completedMissionsCount = participant.completedMissionsCount;
@@ -23,6 +23,17 @@ export const ParticipantDashboard: React.FC = () => {
     (m) => m.status === 'Disponível' || m.status === 'Em andamento'
   );
   const recommendedMission = availableMissions[0] || activeMissions[0];
+
+  const isAdminUser = String(participant.role || '').toUpperCase() === 'ADMIN';
+  const currentRankingEntry =
+    !isAdminUser && participant.id
+      ? publicRanking.find((r) => r.isCurrentUser || r.participantId === participant.id)
+      : undefined;
+  const displayRank = currentRankingEntry
+    ? currentRankingEntry.position
+    : !isAdminUser && publicRanking.length > 0 && participant.rankingPosition > 0
+    ? participant.rankingPosition
+    : null;
 
   return (
     <div className="space-y-6 sm:space-y-8">
@@ -42,13 +53,6 @@ export const ParticipantDashboard: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2.5 sm:gap-3 shrink-0">
-          <Link
-            to="/app/escanear"
-            className="min-h-[48px] px-5 py-3 rounded-xl btn-tutu-lime text-sm flex items-center justify-center gap-2"
-          >
-            <QrCode className="w-4 h-4 shrink-0" />
-            <span>Escanear QR Code</span>
-          </Link>
           <Link
             to="/app/missoes"
             className="min-h-[48px] px-5 py-3 rounded-xl btn-tutu-primary text-sm flex items-center justify-center gap-2"
@@ -95,9 +99,20 @@ export const ParticipantDashboard: React.FC = () => {
             <span>Classificação no Ranking</span>
             <Trophy className="w-4 h-4 text-tutu-lime shrink-0" />
           </div>
-          <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
-            #{participant.rankingPosition}
-          </p>
+          {isAdminUser ? (
+            <>
+              <p className="font-display font-bold text-lg sm:text-xl text-tutu-light/80 pt-1">
+                Não participante
+              </p>
+              <span className="text-[11px] text-tutu-light/60 block">
+                Contas administrativas não entram no ranking
+              </span>
+            </>
+          ) : (
+            <p className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
+              {displayRank !== null ? `#${displayRank}` : '—'}
+            </p>
+          )}
           <Link to="/app/ranking" className="text-[11px] text-tutu-lime hover:underline block py-0.5">
             Ver ranking →
           </Link>

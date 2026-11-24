@@ -353,9 +353,14 @@ export const ProfilePage: React.FC = () => {
               >
                 {participant.imagePublicityConsent ? 'Autorizada' : 'Não autorizada'}
               </span>
+              {participant.imagePublicityConsentVersion && (
+                <span className="px-2 py-0.5 rounded-md bg-tutu-dark/80 border border-tutu-secondary/40 text-[10px] font-mono text-tutu-light/70">
+                  Termo {participant.imagePublicityConsentVersion}
+                </span>
+              )}
             </div>
             <p className="text-xs text-tutu-light/75 leading-relaxed">
-              Esta autorização é <strong>totalmente opcional</strong> e refere-se apenas à eventual divulgação institucional de fotos do evento (LGPD, Art. 7º, I). O envio de evidências para validação interna de missões continua funcionando normalmente e permanece privado mesmo sem esta autorização.
+              Autorizo, de forma <strong>livre, opcional e revogável a qualquer momento</strong> (LGPD, Art. 7º, I), a divulgação institucional de fotos e vídeos registrados durante o Desafio Global Summit 2026 nos canais oficiais do evento e das startups participantes (Ex Devedor, Sign e Editora Escreva). As evidências enviadas para validação de missões permanecem privadas e sua participação ou pontuação não dependem desta autorização.
             </p>
             {participant.imagePublicityConsentUpdatedAt && (
               <p className="text-[11px] text-tutu-light/55">
