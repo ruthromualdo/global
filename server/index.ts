@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { VALID_BRAZILIAN_DDDS } from '../src/utils/formatters';
 import {
@@ -6309,6 +6311,23 @@ app.use(
     });
   }
 );
+
+// Serve o frontend compilado (dist/) em produção (ex.: deploy unificado na Hostinger)
+const __serverFilename = fileURLToPath(import.meta.url);
+const __serverDirname = path.dirname(__serverFilename);
+const frontendDistDir = path.resolve(__serverDirname, '../dist');
+const frontendIndexPath = path.join(frontendDistDir, 'index.html');
+
+if (fs.existsSync(frontendIndexPath)) {
+  app.use(express.static(frontendDistDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      next();
+      return;
+    }
+    res.sendFile(frontendIndexPath);
+  });
+}
 
 const server = app.listen(PORT);
 let dailyCloseTimer: ReturnType<typeof setInterval> | null = null;
