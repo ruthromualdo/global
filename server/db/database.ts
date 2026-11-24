@@ -28,10 +28,14 @@ import { hashPassword } from '../security/auth';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const DB_DIR = fs.existsSync(path.join(__dirname, 'schema.sql'))
+  ? __dirname
+  : path.resolve(process.cwd(), 'server/db');
+
 export const DB_FILE_PATH = process.env.DESAFIO_DB_PATH
   ? path.resolve(process.env.DESAFIO_DB_PATH)
-  : path.join(__dirname, 'desafio_global.sqlite');
-const SCHEMA_FILE_PATH = path.join(__dirname, 'schema.sql');
+  : path.join(DB_DIR, 'desafio_global.sqlite');
+const SCHEMA_FILE_PATH = path.join(DB_DIR, 'schema.sql');
 
 fs.mkdirSync(path.dirname(DB_FILE_PATH), { recursive: true });
 

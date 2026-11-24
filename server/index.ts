@@ -1,9 +1,9 @@
+import './env';
 import express from 'express';
 import cors from 'cors';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { VALID_BRAZILIAN_DDDS } from '../src/utils/formatters';
 import {
@@ -67,6 +67,10 @@ initializeDatabase();
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 let isShuttingDown = false;
+
+if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
 
 app.use((_req, res, next) => {
   if (isShuttingDown) {
@@ -6259,6 +6263,25 @@ app.put('/api/admin/governance/:id', requireAdmin, (req, res) => {
   res.json(rows.map(mapGovernancePlanRow));
 });
 
+// Garante resposta JSON 404 para rotas /api/* inexistentes antes do fallback do frontend
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'Endpoint da API não encontrado.', code: 'API_NOT_FOUND' });
+});
+
+// Serve o frontend compilado (dist/) em produção / deploy único na Hostinger
+const DIST_DIR = path.resolve(process.cwd(), 'dist');
+const DIST_INDEX_FILE = path.join(DIST_DIR, 'index.html');
+if (fs.existsSync(DIST_INDEX_FILE)) {
+  app.use(express.static(DIST_DIR, { index: 'index.html' }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      next();
+      return;
+    }
+    res.sendFile(DIST_INDEX_FILE);
+  });
+}
+
 // Middleware global de tratamento de erros (JSON padronizado, sem exposição de stack trace ou caminhos físicos)
 app.use(
   (
@@ -6311,23 +6334,6 @@ app.use(
     });
   }
 );
-
-// Serve o frontend compilado (dist/) em produção (ex.: deploy unificado na Hostinger)
-const __serverFilename = fileURLToPath(import.meta.url);
-const __serverDirname = path.dirname(__serverFilename);
-const frontendDistDir = path.resolve(__serverDirname, '../dist');
-const frontendIndexPath = path.join(frontendDistDir, 'index.html');
-
-if (fs.existsSync(frontendIndexPath)) {
-  app.use(express.static(frontendDistDir));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api')) {
-      next();
-      return;
-    }
-    res.sendFile(frontendIndexPath);
-  });
-}
 
 const server = app.listen(PORT);
 let dailyCloseTimer: ReturnType<typeof setInterval> | null = null;

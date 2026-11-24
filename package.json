@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "server.js",
   "engines": {
     "node": ">=22.5.0"
   },
@@ -11,9 +12,10 @@
     "dev:front": "vite",
     "dev:api": "tsx server/index.ts",
     "server": "tsx server/index.ts",
-    "start": "tsx server/index.ts",
+    "start": "NODE_ENV=production node server.js",
     "setup:admin": "tsx server/scripts/createAdmin.ts",
-    "build": "tsc && vite build",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=server.js",
+    "build": "tsc && vite build && npm run build:server",
     "preview": "vite preview"
   },
   "dependencies": {
