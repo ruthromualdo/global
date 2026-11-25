@@ -9,6 +9,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
+import { downloadCsv } from '../../utils/csvExport';
 import { formatNumber, formatPoints } from '../../utils/formatters';
 
 export const AdminReportsPage: React.FC = () => {
@@ -24,11 +25,66 @@ export const AdminReportsPage: React.FC = () => {
       : `${adminMetrics.averageCompletionSeconds}s`;
 
   const handleSimulatedExport = (format: 'CSV' | 'PDF', reportName: string) => {
-    notify(
-      `Exportação ${format} Preparada`,
-      `Relatório "${reportName}" processado com os dados atuais do banco SQLite.`,
-      'info'
-    );
+    if (format === 'CSV') {
+      const today = new Date().toISOString().slice(0, 10);
+      if (reportName === 'Participação Geral') {
+        downloadCsv(
+          `participacao-geral-${today}.csv`,
+          ['Dia', 'Iniciadas', 'Concluídas', 'Expiradas', 'Taxa Conclusão (%)', 'Usuários Ativos', 'Pontos Concedidos'],
+          adminMetrics.engagementByDay.map((d) => [
+            d.day,
+            d.missionsStarted,
+            d.missionsCompleted,
+            d.missionsExpired,
+            d.completionRate,
+            d.activeUsers,
+            d.pointsAwarded,
+          ])
+        );
+      } else if (reportName === 'Missões Mais Realizadas') {
+        downloadCsv(
+          `missoes-circuito-${today}.csv`,
+          ['ID', 'Título', 'Startup', 'Inícios', 'Conclusões'],
+          adminMetrics.missionPerformance.map((m) => [
+            m.missionId,
+            m.title,
+            m.startupName,
+            m.starts,
+            m.completions,
+          ])
+        );
+      } else if (reportName === 'Pontuação por Participante') {
+        downloadCsv(
+          `ranking-participantes-${today}.csv`,
+          ['Posição', 'ID', 'Participante', 'Pontos', 'Missões Concluídas'],
+          publicRanking.map((p) => [
+            p.position,
+            p.participantId,
+            p.displayName,
+            p.points,
+            p.completedMissionsCount,
+          ])
+        );
+      } else {
+        downloadCsv(
+          `consolidado-desafio-2026-${today}.csv`,
+          ['Startup', 'Participantes Únicos', 'Iniciadas', 'Concluídas', 'Pendentes', 'Taxa (%)', 'Pontos Emitidos'],
+          adminMetrics.participationByStartup.map((s) => [
+            s.startupName,
+            s.uniqueParticipants,
+            s.missionsStarted,
+            s.missionsCompleted,
+            s.missionsPending,
+            s.completionRate,
+            s.pointsIssued,
+          ])
+        );
+      }
+      notify('Exportação CSV Concluída', `Arquivo "${reportName}" baixado com os dados atuais.`, 'success');
+      return;
+    }
+
+    window.print();
   };
 
   return (

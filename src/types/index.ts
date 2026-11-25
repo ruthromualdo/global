@@ -29,7 +29,7 @@ export type MissionStatus =
   | 'Bloqueada';
 
 export type ParticipantStatus = 'Ativo' | 'Pendente' | 'Inativo' | 'Desclassificado';
-export type UserRole = 'PARTICIPANT' | 'ADMIN';
+export type UserRole = 'PARTICIPANT' | 'STARTUP' | 'ADMIN';
 
 export interface Participant {
   id: string;
@@ -38,6 +38,7 @@ export interface Participant {
   email: string;
   phone?: string | null;
   role?: UserRole;
+  startupId?: string | null;
   avatar: string;
   points: number;
   rankingPosition: number;

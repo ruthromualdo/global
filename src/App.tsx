@@ -45,6 +45,9 @@ const AdminValidationPage = lazy(() =>
 const AdminParticipantsPage = lazy(() =>
   import('./pages/admin/AdminParticipantsPage').then((m) => ({ default: m.AdminParticipantsPage }))
 );
+const AdminUsersPage = lazy(() =>
+  import('./pages/admin/AdminUsersPage').then((m) => ({ default: m.AdminUsersPage }))
+);
 const AdminRankingPage = lazy(() =>
   import('./pages/admin/AdminRankingPage').then((m) => ({ default: m.AdminRankingPage }))
 );
@@ -130,6 +133,7 @@ export const App: React.FC = () => {
             <Route path="missoes" element={<AdminMissionsPage />} />
             <Route path="validacao" element={<AdminValidationPage />} />
             <Route path="participantes" element={<AdminParticipantsPage />} />
+            <Route path="usuarios" element={<AdminUsersPage />} />
             <Route path="ranking" element={<AdminRankingPage />} />
             <Route path="configuracoes" element={<AdminSettingsPage />} />
             <Route path="relatorios" element={<AdminReportsPage />} />

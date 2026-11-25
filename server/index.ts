@@ -5810,6 +5810,339 @@ app.post('/api/ranking/adjust', requireAdmin, (req, res) => {
 });
 
 // ============================================================================
+// 7A. GESTÃO ADMINISTRATIVA DE USUÁRIOS E PERFIS (ADMIN | STARTUP | PARTICIPANT)
+// ============================================================================
+
+const ALLOWED_ADMIN_USER_ROLES = new Set(['PARTICIPANT', 'STARTUP', 'ADMIN']);
+const ALLOWED_ADMIN_USER_STATUSES = new Set(['Ativo', 'Pendente', 'Inativo', 'Desclassificado']);
+
+function normalizeAdminUserRole(raw: unknown): 'PARTICIPANT' | 'STARTUP' | 'ADMIN' | null {
+  const upper = String(raw || '').trim().toUpperCase();
+  return ALLOWED_ADMIN_USER_ROLES.has(upper)
+    ? (upper as 'PARTICIPANT' | 'STARTUP' | 'ADMIN')
+    : null;
+}
+
+function countOtherActiveAdmins(excludeUserId: string): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS cnt FROM participants WHERE UPPER(role) = 'ADMIN' AND status = 'Ativo' AND id != ?"
+    )
+    .get(excludeUserId) as { cnt: number } | undefined;
+  return Number(row?.cnt || 0);
+}
+
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  const roleFilter = req.query.role ? normalizeAdminUserRole(req.query.role) : null;
+  if (req.query.role && !roleFilter) {
+    res.status(400).json({ error: 'Filtro de perfil inválido.', code: 'INVALID_ROLE_FILTER' });
+    return;
+  }
+
+  const rows = roleFilter
+    ? (db
+        .prepare(
+          `SELECT * FROM participants WHERE UPPER(role) = ? ORDER BY LOWER(name) ASC`
+        )
+        .all(roleFilter) as Record<string, unknown>[])
+    : (db
+        .prepare(
+          `SELECT * FROM participants
+           ORDER BY CASE UPPER(role) WHEN 'ADMIN' THEN 1 WHEN 'STARTUP' THEN 2 ELSE 3 END, LOWER(name) ASC`
+        )
+        .all() as Record<string, unknown>[]);
+
+  res.json(rows.map(mapParticipantRow));
+});
+
+app.post('/api/admin/users', requireAdmin, (req, res) => {
+  const body = (req.body || {}) as {
+    name?: string;
+    nickname?: string;
+    email?: string;
+    phone?: string | null;
+    role?: string;
+    startupId?: string | null;
+    status?: string;
+    password?: string;
+  };
+
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+  const nickname =
+    typeof body.nickname === 'string' && body.nickname.trim().length > 0
+      ? body.nickname.trim()
+      : name.split(/\s+/)[0] || 'Usuário';
+  const role = normalizeAdminUserRole(body.role);
+  const status =
+    typeof body.status === 'string' && ALLOWED_ADMIN_USER_STATUSES.has(body.status)
+      ? body.status
+      : 'Ativo';
+  const password = typeof body.password === 'string' ? body.password : '';
+  const phone = typeof body.phone === 'string' && body.phone.trim() ? body.phone.trim() : null;
+  let startupId =
+    typeof body.startupId === 'string' && body.startupId.trim().length > 0
+      ? body.startupId.trim()
+      : null;
+
+  if (name.length < 2) {
+    res.status(400).json({ error: 'Informe um nome válido (mínimo 2 caracteres).' });
+    return;
+  }
+  if (!EMAIL_VALIDATION_REGEX.test(email)) {
+    res.status(400).json({ error: 'Informe um e-mail válido.' });
+    return;
+  }
+  if (!role) {
+    res.status(400).json({ error: 'Perfil inválido. Use ADMIN, STARTUP ou PARTICIPANT.' });
+    return;
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    res.status(400).json({
+      error: `A senha inicial deve conter no mínimo ${MIN_PASSWORD_LENGTH} caracteres.`,
+    });
+    return;
+  }
+
+  if (role === 'STARTUP') {
+    if (!startupId) {
+      res.status(400).json({ error: 'Selecione a startup vinculada para o perfil STARTUP.' });
+      return;
+    }
+    const startupExists = db
+      .prepare('SELECT id FROM startups WHERE id = ? LIMIT 1')
+      .get(startupId) as { id: string } | undefined;
+    if (!startupExists) {
+      res.status(400).json({ error: 'Startup selecionada não encontrada.' });
+      return;
+    }
+  } else {
+    startupId = null;
+  }
+
+  const emailTaken = db
+    .prepare('SELECT id FROM participants WHERE LOWER(email) = ? LIMIT 1')
+    .get(email) as { id: string } | undefined;
+  if (emailTaken) {
+    res.status(409).json({ error: 'Já existe uma conta cadastrada com este e-mail.' });
+    return;
+  }
+
+  const id = `usr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const avatar = computeInitialsFromName(name);
+  const passwordHash = hashPassword(password);
+  const registeredAt = new Date().toISOString().slice(0, 10);
+
+  db.prepare(`
+    INSERT INTO participants (
+      id, name, nickname, email, phone, password_hash, role, startup_id, avatar,
+      points, ranking_position, completed_missions_count, visited_startups_json,
+      registered_at, status, show_nickname_in_public_ranking,
+      allow_activity_notifications, share_startup_interests, is_current_session
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 999, 0, '[]', ?, ?, 1, 1, 0, 0)
+  `).run(id, name, nickname, email, phone, passwordHash, role, startupId, avatar, registeredAt, status);
+
+  const created = db
+    .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+    .get(id) as Record<string, unknown>;
+  res.status(201).json(mapParticipantRow(created));
+});
+
+app.put('/api/admin/users/:id', requireAdmin, (req: RequestWithAuth, res) => {
+  const { id } = req.params;
+  const existing = db
+    .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+    .get(id) as Record<string, unknown> | undefined;
+
+  if (!existing) {
+    res.status(404).json({ error: 'Usuário não encontrado.' });
+    return;
+  }
+
+  const body = (req.body || {}) as {
+    name?: string;
+    nickname?: string;
+    email?: string;
+    phone?: string | null;
+    role?: string;
+    startupId?: string | null;
+    status?: string;
+    password?: string;
+  };
+
+  const currentRole = normalizeAdminUserRole(existing.role) || 'PARTICIPANT';
+  const nextRole = body.role !== undefined ? normalizeAdminUserRole(body.role) : currentRole;
+  if (!nextRole) {
+    res.status(400).json({ error: 'Perfil inválido. Use ADMIN, STARTUP ou PARTICIPANT.' });
+    return;
+  }
+
+  const nextStatus =
+    body.status !== undefined
+      ? ALLOWED_ADMIN_USER_STATUSES.has(body.status)
+        ? body.status
+        : null
+      : String(existing.status || 'Ativo');
+  if (!nextStatus) {
+    res.status(400).json({ error: 'Status inválido.' });
+    return;
+  }
+
+  const isSelf = req.authSession?.userId === id;
+  if (isSelf && (nextRole !== 'ADMIN' || nextStatus !== 'Ativo')) {
+    res.status(400).json({
+      error: 'Você não pode remover seu próprio perfil de administrador nem desativar sua conta.',
+    });
+    return;
+  }
+
+  if (currentRole === 'ADMIN' && (nextRole !== 'ADMIN' || nextStatus !== 'Ativo')) {
+    if (countOtherActiveAdmins(id) === 0) {
+      res.status(400).json({
+        error: 'Não é possível alterar ou desativar o único administrador ativo do sistema.',
+      });
+      return;
+    }
+  }
+
+  const nextName =
+    body.name !== undefined ? String(body.name).trim() : String(existing.name || '');
+  const nextNickname =
+    body.nickname !== undefined && String(body.nickname).trim().length > 0
+      ? String(body.nickname).trim()
+      : String(existing.nickname || nextName.split(/\s+/)[0] || 'Usuário');
+  const nextEmail =
+    body.email !== undefined
+      ? String(body.email).trim().toLowerCase()
+      : String(existing.email || '').toLowerCase();
+  const nextPhone =
+    body.phone !== undefined
+      ? body.phone && String(body.phone).trim()
+        ? String(body.phone).trim()
+        : null
+      : existing.phone
+      ? String(existing.phone)
+      : null;
+
+  if (nextName.length < 2) {
+    res.status(400).json({ error: 'Informe um nome válido (mínimo 2 caracteres).' });
+    return;
+  }
+  if (!EMAIL_VALIDATION_REGEX.test(nextEmail)) {
+    res.status(400).json({ error: 'Informe um e-mail válido.' });
+    return;
+  }
+
+  const duplicateEmail = db
+    .prepare('SELECT id FROM participants WHERE LOWER(email) = ? AND id != ? LIMIT 1')
+    .get(nextEmail, id) as { id: string } | undefined;
+  if (duplicateEmail) {
+    res.status(409).json({ error: 'Já existe outro usuário cadastrado com este e-mail.' });
+    return;
+  }
+
+  let nextStartupId =
+    body.startupId !== undefined
+      ? body.startupId && String(body.startupId).trim().length > 0
+        ? String(body.startupId).trim()
+        : null
+      : existing.startup_id
+      ? String(existing.startup_id)
+      : null;
+
+  if (nextRole === 'STARTUP') {
+    if (!nextStartupId) {
+      res.status(400).json({ error: 'Selecione a startup vinculada para o perfil STARTUP.' });
+      return;
+    }
+    const startupExists = db
+      .prepare('SELECT id FROM startups WHERE id = ? LIMIT 1')
+      .get(nextStartupId) as { id: string } | undefined;
+    if (!startupExists) {
+      res.status(400).json({ error: 'Startup selecionada não encontrada.' });
+      return;
+    }
+  } else {
+    nextStartupId = null;
+  }
+
+  let nextPasswordHash = String(existing.password_hash || '');
+  let passwordChanged = false;
+  if (typeof body.password === 'string' && body.password.length > 0) {
+    if (body.password.length < MIN_PASSWORD_LENGTH) {
+      res.status(400).json({
+        error: `A nova senha deve conter no mínimo ${MIN_PASSWORD_LENGTH} caracteres.`,
+      });
+      return;
+    }
+    nextPasswordHash = hashPassword(body.password);
+    passwordChanged = true;
+  }
+
+  const nextAvatar = computeInitialsFromName(nextName);
+  db.prepare(`
+    UPDATE participants
+    SET name = ?,
+        nickname = ?,
+        email = ?,
+        phone = ?,
+        role = ?,
+        startup_id = ?,
+        status = ?,
+        avatar = ?,
+        password_hash = ?
+    WHERE id = ?
+  `).run(
+    nextName,
+    nextNickname,
+    nextEmail,
+    nextPhone,
+    nextRole,
+    nextStartupId,
+    nextStatus,
+    nextAvatar,
+    nextPasswordHash,
+    id
+  );
+
+  if (passwordChanged || nextRole !== currentRole || nextStatus !== 'Ativo') {
+    db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(id);
+  }
+
+  const updated = db
+    .prepare('SELECT * FROM participants WHERE id = ? LIMIT 1')
+    .get(id) as Record<string, unknown>;
+  res.json(mapParticipantRow(updated));
+});
+
+app.delete('/api/admin/users/:id', requireAdmin, (req: RequestWithAuth, res) => {
+  const { id } = req.params;
+  if (req.authSession?.userId === id) {
+    res.status(400).json({ error: 'Você não pode excluir a própria conta logada.' });
+    return;
+  }
+
+  const existing = db
+    .prepare('SELECT id, role FROM participants WHERE id = ? LIMIT 1')
+    .get(id) as { id: string; role: string } | undefined;
+  if (!existing) {
+    res.status(404).json({ error: 'Usuário não encontrado.' });
+    return;
+  }
+
+  if (String(existing.role).toUpperCase() === 'ADMIN' && countOtherActiveAdmins(id) === 0) {
+    res.status(400).json({
+      error: 'Não é possível excluir o único administrador ativo do sistema.',
+    });
+    return;
+  }
+
+  db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(id);
+  db.prepare('DELETE FROM participants WHERE id = ?').run(id);
+  res.json({ deleted: true, id });
+});
+
+// ============================================================================
 // 7B. DESCLASSIFICAÇÃO ADMINISTRATIVA E HOMOLOGAÇÃO DE VENCEDORES (ETAPA 2)
 // ============================================================================
 

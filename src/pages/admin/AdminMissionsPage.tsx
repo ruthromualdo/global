@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Clock, Edit3, Paperclip, Plus, Power, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
+import { Clock, Download, Edit3, Paperclip, Plus, Power, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
 import { EvidenceRequirementType, Mission, MissionCategory, MissionStatus } from '../../types';
 import { CategoryPill, MissionStatusBadge } from '../../components/UI';
+import { downloadCsv } from '../../utils/csvExport';
 import { formatPoints } from '../../utils/formatters';
 import { apiRequestWithStatus } from '../../services/apiClient';
 
@@ -302,13 +303,38 @@ export const AdminMissionsPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={openCreate}
-          className="min-h-[44px] w-full sm:w-auto px-5 py-3 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-2 self-start shrink-0"
-        >
-          <Plus className="w-4 h-4 shrink-0" />
-          <span>Criar Nova Missão</span>
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2.5 self-start shrink-0 w-full sm:w-auto">
+          <button
+            onClick={() =>
+              downloadCsv(
+                `missoes-${new Date().toISOString().slice(0, 10)}.csv`,
+                ['ID', 'Ordem', 'Título', 'Startup', 'Categoria', 'Pontos', 'Tipo', 'Ativa', 'Período'],
+                filteredMissions.map((m) => [
+                  m.id,
+                  m.sequenceOrder ?? '',
+                  m.title,
+                  m.startupName,
+                  m.category,
+                  m.points,
+                  m.sequenceOrder !== null && m.sequenceOrder !== undefined ? 'Oficial' : 'Extra',
+                  m.active ? 'Sim' : 'Não',
+                  m.period,
+                ])
+              )
+            }
+            className="min-h-[44px] px-4 py-3 rounded-xl btn-tutu-outline text-xs flex items-center justify-center gap-2"
+          >
+            <Download className="w-4 h-4 shrink-0" />
+            <span>Exportar CSV</span>
+          </button>
+          <button
+            onClick={openCreate}
+            className="min-h-[44px] px-5 py-3 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-2"
+          >
+            <Plus className="w-4 h-4 shrink-0" />
+            <span>Criar Nova Missão</span>
+          </button>
+        </div>
       </div>
 
       {showForm && (
