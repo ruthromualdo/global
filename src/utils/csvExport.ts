@@ -8,7 +8,11 @@ export function downloadCsv(
 ): void {
   const escapeCell = (value: string | number | boolean | null | undefined): string => {
     if (value === null || value === undefined) return '';
-    const str = String(value).replace(/\r?\n/g, ' ');
+    let str = String(value).replace(/\r?\n/g, ' ');
+    // Proteção contra CSV Formula Injection no Excel/Sheets
+    if (/^[=+\-@\t\r]/.test(str)) {
+      str = `'${str}`;
+    }
     if (str.includes(';') || str.includes('"') || str.includes(',')) {
       return `"${str.replace(/"/g, '""')}"`;
     }

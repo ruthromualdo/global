@@ -8,12 +8,11 @@
  * Vídeos, PDFs e imagens já pequenas (<= 250 KB) são devolvidos intactos.
  */
 
-const COMPRESSIBLE_IMAGE_MIMES = new Set([
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'image/webp',
-]);
+const STANDARD_WEB_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp']);
+const EXTRA_CAMERA_IMAGE_EXTS = new Set(['jfif', 'heic', 'heif', 'bmp']);
+
+// Evita recompressão dupla quando o arquivo já passou pela otimização na seleção
+const alreadyOptimizedFiles = new WeakSet<File>();
 
 export interface ImageCompressionOptions {
   maxDimension?: number;
@@ -21,10 +20,25 @@ export interface ImageCompressionOptions {
   minBytesToCompress?: number;
 }
 
+function getFileExtension(fileName: string): string {
+  const parts = (fileName || '').trim().split('.');
+  return parts.length > 1 ? (parts.pop() || '').toLowerCase() : '';
+}
+
 function replaceExtensionWithJpg(fileName: string): string {
   const trimmed = (fileName || 'evidencia.jpg').trim();
-  const base = trimmed.replace(/\.[^/.]+$/, '');
+  const base = trimmed.includes('.') ? trimmed.replace(/\.[^/.]+$/, '') : trimmed;
   return `${base || 'evidencia'}.jpg`;
+}
+
+function isLikelyImageFile(file: File): boolean {
+  const mime = (file.type || '').toLowerCase();
+  if (mime.startsWith('image/')) return true;
+  if (!mime || mime === 'application/octet-stream') {
+    const ext = getFileExtension(file.name);
+    return STANDARD_WEB_IMAGE_EXTS.has(ext) || EXTRA_CAMERA_IMAGE_EXTS.has(ext);
+  }
+  return false;
 }
 
 function loadImageElement(file: File): Promise<HTMLImageElement> {
@@ -53,17 +67,40 @@ export async function compressImageForUpload(
   file: File,
   options: ImageCompressionOptions = {}
 ): Promise<File> {
+  if (alreadyOptimizedFiles.has(file)) {
+    return file;
+  }
+
   const maxDimension = options.maxDimension ?? 1600;
   const quality = options.quality ?? 0.8;
   const minBytesToCompress = options.minBytesToCompress ?? 250 * 1024; // 250 KB
 
-  const mime = (file.type || '').toLowerCase();
-  if (!COMPRESSIBLE_IMAGE_MIMES.has(mime)) {
+  if (!isLikelyImageFile(file)) {
     return file;
   }
 
-  if (file.size <= minBytesToCompress) {
+  const ext = getFileExtension(file.name);
+  const mime = (file.type || '').toLowerCase();
+  const hasStandardExt = STANDARD_WEB_IMAGE_EXTS.has(ext);
+  const needsFormatNormalization = !hasStandardExt || EXTRA_CAMERA_IMAGE_EXTS.has(ext);
+
+  if (!needsFormatNormalization && file.size <= minBytesToCompress) {
+    alreadyOptimizedFiles.add(file);
     return file;
+  }
+
+  // Se veio da câmera como JPEG pequeno mas sem extensão (ex.: "image"), apenas normaliza para .jpg
+  if (
+    !hasStandardExt &&
+    (mime === 'image/jpeg' || mime === 'image/jpg') &&
+    file.size <= minBytesToCompress
+  ) {
+    const normalized = new File([file], replaceExtensionWithJpg(file.name), {
+      type: 'image/jpeg',
+      lastModified: file.lastModified || Date.now(),
+    });
+    alreadyOptimizedFiles.add(normalized);
+    return normalized;
   }
 
   if (typeof document === 'undefined') {
@@ -125,14 +162,21 @@ export async function compressImageForUpload(
     }
 
     const compressedBlob = await canvasToJpegBlob(canvas, quality);
-    if (!compressedBlob || compressedBlob.size === 0 || compressedBlob.size >= file.size) {
+    if (!compressedBlob || compressedBlob.size === 0) {
       return file;
     }
 
-    return new File([compressedBlob], replaceExtensionWithJpg(file.name), {
+    if (!needsFormatNormalization && compressedBlob.size >= file.size) {
+      alreadyOptimizedFiles.add(file);
+      return file;
+    }
+
+    const outputFile = new File([compressedBlob], replaceExtensionWithJpg(file.name), {
       type: 'image/jpeg',
       lastModified: file.lastModified || Date.now(),
     });
+    alreadyOptimizedFiles.add(outputFile);
+    return outputFile;
   } catch {
     return file;
   }

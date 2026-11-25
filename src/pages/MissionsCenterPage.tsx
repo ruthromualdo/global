@@ -278,9 +278,10 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    const file = rawFile.type.startsWith('image/')
-      ? await compressImageForUpload(rawFile)
-      : rawFile;
+    const rawExt = rawFile.name.split('.').pop()?.toLowerCase() || '';
+    const isRawVideo =
+      ['mp4', 'mov', 'webm'].includes(rawExt) || rawFile.type.startsWith('video/');
+    const file = !isRawVideo ? await compressImageForUpload(rawFile) : rawFile;
 
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const evType = evidenceMission?.evidenceType;
@@ -1647,7 +1648,13 @@ export const MissionsCenterPage: React.FC = () => {
                     <label className="block text-xs font-semibold text-tutu-light">
                       Arquivo de Evidência *
                     </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div
+                      className={`grid grid-cols-1 gap-2.5 ${
+                        evidenceMission.evidenceType === 'photo_or_video'
+                          ? 'sm:grid-cols-3'
+                          : 'sm:grid-cols-2'
+                      }`}
+                    >
                       <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-tutu-lime/60 bg-tutu-lime/10 hover:bg-tutu-lime/15 cursor-pointer transition-colors text-center">
                         <Camera className="w-6 h-6 text-tutu-lime" />
                         <span className="text-xs font-bold text-tutu-lime">
@@ -1668,6 +1675,25 @@ export const MissionsCenterPage: React.FC = () => {
                           className="hidden"
                         />
                       </label>
+
+                      {evidenceMission.evidenceType === 'photo_or_video' && (
+                        <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-tutu-lime/50 bg-tutu-lime/5 hover:bg-tutu-lime/15 cursor-pointer transition-colors text-center">
+                          <Film className="w-6 h-6 text-tutu-lime" />
+                          <span className="text-xs font-bold text-tutu-lime">
+                            Gravar Vídeo com Câmera
+                          </span>
+                          <span className="text-[11px] text-tutu-light/70">
+                            Abre a câmera em modo vídeo
+                          </span>
+                          <input
+                            type="file"
+                            accept="video/*"
+                            capture="environment"
+                            onChange={handleSelectEvidenceFile}
+                            className="hidden"
+                          />
+                        </label>
+                      )}
 
                       <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-tutu-lime/40 bg-tutu-dark/70 hover:border-tutu-lime cursor-pointer transition-colors text-center">
                         <Upload className="w-6 h-6 text-tutu-lime" />
