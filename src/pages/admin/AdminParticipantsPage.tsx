@@ -3,6 +3,7 @@ import {
   AlertCircle,
   Calendar,
   CheckCircle2,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../../hooks/useAppStore';
 import { Participant, ParticipantStatus } from '../../types';
+import { downloadCsv } from '../../utils/csvExport';
 import { formatBrazilianPhone, formatPoints } from '../../utils/formatters';
 
 export const AdminParticipantsPage: React.FC = () => {
@@ -127,16 +129,41 @@ export const AdminParticipantsPage: React.FC = () => {
 
   return (
     <div className="space-y-6 sm:space-y-8">
-      <div className="space-y-1.5">
-        <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
-          Base de Participantes • Seção 6.6
-        </span>
-        <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
-          Gestão de Participantes
-        </h1>
-        <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed">
-          Consulte participantes cadastrados, e-mails, pontuação, missões concluídas e gerencie o status de cada conta.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div className="space-y-1.5">
+          <span className="text-xs font-bold uppercase tracking-widest text-tutu-lime">
+            Base de Participantes • Seção 6.6
+          </span>
+          <h1 className="font-display font-bold text-2xl sm:text-3xl lg:text-4xl text-tutu-light">
+            Gestão de Participantes
+          </h1>
+          <p className="text-xs sm:text-sm text-tutu-light/80 leading-relaxed">
+            Consulte participantes cadastrados, e-mails, pontuação, missões concluídas e gerencie o status de cada conta.
+          </p>
+        </div>
+        <button
+          onClick={() =>
+            downloadCsv(
+              `participantes-${new Date().toISOString().slice(0, 10)}.csv`,
+              ['Posição', 'Nome', 'Apelido', 'E-mail', 'Telefone', 'Status', 'Pontos', 'Missões Concluídas', 'Data Cadastro'],
+              filtered.map((p) => [
+                p.rankingPosition,
+                p.name,
+                p.nickname,
+                p.email,
+                p.phone || '',
+                p.status,
+                p.points,
+                p.completedMissionsCount,
+                p.registeredAt,
+              ])
+            )
+          }
+          className="min-h-[44px] px-4 py-2.5 rounded-xl btn-tutu-outline text-xs flex items-center justify-center gap-2 self-start shrink-0"
+        >
+          <Download className="w-4 h-4 shrink-0" />
+          <span>Exportar Participantes CSV</span>
+        </button>
       </div>
 
       {/* Search & Filter Controls */}

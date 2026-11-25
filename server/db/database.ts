@@ -552,6 +552,11 @@ export function initializeDatabase(): void {
     ).run();
     db.prepare("UPDATE participants SET role = 'ADMIN' WHERE LOWER(role) = 'admin'").run();
 
+    const participantCols = db.prepare('PRAGMA table_info(participants)').all() as { name: string }[];
+    if (!participantCols.some((c) => c.name === 'startup_id')) {
+      db.exec('ALTER TABLE participants ADD COLUMN startup_id TEXT;');
+    }
+
     // Provisionamento opcional do primeiro ADMIN via variáveis de ambiente (sem credenciais fixas no código)
     const envAdminEmail = process.env.ADMIN_INITIAL_EMAIL?.trim().toLowerCase();
     const envAdminPassword = process.env.ADMIN_INITIAL_PASSWORD;
@@ -608,6 +613,31 @@ export function initializeDatabase(): void {
           console.log(`[RBAC] Primeira conta administrativa criada via ambiente: ${envAdminEmail}`);
         }
       }
+    }
+
+    // Garante usuário admin padrão "Global" caso ainda não exista no banco
+    const defaultGlobalAdminEmail = 'global@unne.cloud';
+    const existingGlobalAdmin = db
+      .prepare('SELECT id FROM participants WHERE LOWER(email) = ?')
+      .get(defaultGlobalAdminEmail) as { id: string } | undefined;
+    if (!existingGlobalAdmin) {
+      const globalAdminHash = hashPassword('Gl0b4l2026');
+      const nowStr = new Date().toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      db.prepare(`
+        INSERT INTO participants (
+          id, name, nickname, email, password_hash, role, avatar, points,
+          ranking_position, completed_missions_count, visited_startups_json,
+          registered_at, status,
+          show_nickname_in_public_ranking, allow_activity_notifications,
+          share_startup_interests, is_current_session
+        ) VALUES ('admin-global', 'Global', 'Global', ?, ?, 'ADMIN', 'GL', 0, 1, 0, '[]', ?, 'Ativo', 1, 1, 0, 0)
+      `).run(defaultGlobalAdminEmail, globalAdminHash, nowStr);
     }
 
     // 1. Event Settings
@@ -1036,7 +1066,8 @@ export function initializeDatabase(): void {
 
 export function mapParticipantRow(row: Record<string, unknown>): Participant {
   const rawRole = String(row.role || 'PARTICIPANT').toUpperCase();
-  const role: UserRole = rawRole === 'ADMIN' ? 'ADMIN' : 'PARTICIPANT';
+  const role: UserRole =
+    rawRole === 'ADMIN' ? 'ADMIN' : rawRole === 'STARTUP' ? 'STARTUP' : 'PARTICIPANT';
 
   return {
     id: String(row.id),
@@ -1045,6 +1076,7 @@ export function mapParticipantRow(row: Record<string, unknown>): Participant {
     email: String(row.email),
     phone: row.phone ? String(row.phone) : null,
     role,
+    startupId: row.startup_id ? String(row.startup_id) : null,
     avatar: String(row.avatar),
     points: Number(row.points),
     rankingPosition: Number(row.ranking_position),

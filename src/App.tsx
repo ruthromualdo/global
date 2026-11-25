@@ -30,6 +30,7 @@ import { AdminStartupsPage } from './pages/admin/AdminStartupsPage';
 import { AdminMissionsPage } from './pages/admin/AdminMissionsPage';
 import { AdminValidationPage } from './pages/admin/AdminValidationPage';
 import { AdminParticipantsPage } from './pages/admin/AdminParticipantsPage';
+import { AdminUsersPage } from './pages/admin/AdminUsersPage';
 import { AdminRankingPage } from './pages/admin/AdminRankingPage';
 import { AdminSettingsPage } from './pages/admin/AdminSettingsPage';
 import { AdminReportsPage } from './pages/admin/AdminReportsPage';
@@ -100,6 +101,7 @@ export const App: React.FC = () => {
             <Route path="missoes" element={<AdminMissionsPage />} />
             <Route path="validacao" element={<AdminValidationPage />} />
             <Route path="participantes" element={<AdminParticipantsPage />} />
+            <Route path="usuarios" element={<AdminUsersPage />} />
             <Route path="ranking" element={<AdminRankingPage />} />
             <Route path="configuracoes" element={<AdminSettingsPage />} />
             <Route path="relatorios" element={<AdminReportsPage />} />

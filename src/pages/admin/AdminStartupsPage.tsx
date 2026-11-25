@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  Download,
   Edit3,
   Plus,
   Power,
@@ -9,6 +10,7 @@ import {
 import { useAppStore } from '../../hooks/useAppStore';
 import { Startup } from '../../types';
 import { StartupAvatarBadge } from '../../assets/logos';
+import { downloadCsv } from '../../utils/csvExport';
 import { formatPoints } from '../../utils/formatters';
 
 export const AdminStartupsPage: React.FC = () => {
@@ -107,13 +109,38 @@ export const AdminStartupsPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={openCreate}
-          className="min-h-[44px] w-full sm:w-auto px-5 py-3 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-2 self-start shrink-0"
-        >
-          <Plus className="w-4 h-4 shrink-0" />
-          <span>Cadastrar Nova Startup</span>
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2.5 self-start shrink-0 w-full sm:w-auto">
+          <button
+            onClick={() =>
+              downloadCsv(
+                `startups-${new Date().toISOString().slice(0, 10)}.csv`,
+                ['ID', 'Nome', 'Nome Curto', 'Categoria', 'Estande', 'Pontos Disponíveis', 'Ativa', 'Website', 'Instagram'],
+                startups.map((s) => [
+                  s.id,
+                  s.name,
+                  s.shortName,
+                  s.category,
+                  s.boothNumber,
+                  s.availablePoints,
+                  s.active ? 'Sim' : 'Não',
+                  s.website || '',
+                  s.instagramUrl || '',
+                ])
+              )
+            }
+            className="min-h-[44px] px-4 py-3 rounded-xl btn-tutu-outline text-xs flex items-center justify-center gap-2"
+          >
+            <Download className="w-4 h-4 shrink-0" />
+            <span>Exportar CSV</span>
+          </button>
+          <button
+            onClick={openCreate}
+            className="min-h-[44px] px-5 py-3 rounded-xl btn-tutu-lime text-xs flex items-center justify-center gap-2"
+          >
+            <Plus className="w-4 h-4 shrink-0" />
+            <span>Cadastrar Nova Startup</span>
+          </button>
+        </div>
       </div>
 
       {/* Form Panel */}

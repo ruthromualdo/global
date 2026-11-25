@@ -1,10 +1,48 @@
 import { initialAdminMetrics, initialEventSettings } from '../mocks/mockData';
-import { AdminDashboardMetrics, EventSettings } from '../types';
+import { AdminDashboardMetrics, EventSettings, Participant, UserRole } from '../types';
+import { apiRequestWithStatus } from './apiClient';
+
+export interface AdminUserPayload {
+  name: string;
+  nickname?: string;
+  email: string;
+  phone?: string | null;
+  role: UserRole;
+  startupId?: string | null;
+  status: Participant['status'];
+  password?: string;
+}
 
 let eventSettingsStore: EventSettings = { ...initialEventSettings };
 let metricsStore: AdminDashboardMetrics = { ...initialAdminMetrics };
 
 export const adminService = {
+  async listUsers(role?: UserRole) {
+    const query = role ? `?role=${encodeURIComponent(role)}` : '';
+    return apiRequestWithStatus<Participant[]>(`/admin/users${query}`);
+  },
+
+  async createUser(payload: AdminUserPayload) {
+    return apiRequestWithStatus<Participant>('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateUser(id: string, payload: Partial<AdminUserPayload>) {
+    return apiRequestWithStatus<Participant>(`/admin/users/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteUser(id: string) {
+    return apiRequestWithStatus<{ deleted: boolean; id: string }>(
+      `/admin/users/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    );
+  },
+
   getDashboardMetrics(): AdminDashboardMetrics {
     return {
       ...metricsStore,

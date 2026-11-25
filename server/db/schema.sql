@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS participants (
   phone TEXT,
   password_hash TEXT DEFAULT '',
   role TEXT NOT NULL DEFAULT 'PARTICIPANT',
+  startup_id TEXT,
   avatar TEXT NOT NULL,
   points INTEGER NOT NULL DEFAULT 0,
   ranking_position INTEGER NOT NULL DEFAULT 1,

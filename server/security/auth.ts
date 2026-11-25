@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { db } from '../db/database';
 
-export type UserRole = 'PARTICIPANT' | 'ADMIN';
+export type UserRole = 'PARTICIPANT' | 'STARTUP' | 'ADMIN';
 
 export interface AuthenticatedSession {
   tokenHash: string;
@@ -119,8 +119,9 @@ export function resolveSessionFromRequest(req: Request): AuthenticatedSession | 
   }
   if (String(row.status) === 'Inativo') return null;
 
+  const rawRole = String(row.role || 'PARTICIPANT').toUpperCase();
   const normalizedRole: UserRole =
-    String(row.role).toUpperCase() === 'ADMIN' ? 'ADMIN' : 'PARTICIPANT';
+    rawRole === 'ADMIN' ? 'ADMIN' : rawRole === 'STARTUP' ? 'STARTUP' : 'PARTICIPANT';
 
   return {
     tokenHash: String(row.token_hash),
