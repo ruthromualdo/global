@@ -24,6 +24,7 @@ import {
   UserRole,
 } from '../../src/types';
 import { hashPassword } from '../security/auth';
+import { seedOfficialCatalog2026InDb } from '../scripts/seedOfficialCatalog2026';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -995,11 +996,35 @@ export function initializeDatabase(): void {
     recalculateRankingsInDb();
 
     db.exec('COMMIT;');
+
+    // Auto-seed idempotente do Catálogo Oficial 2026 (3 startups + 14 missões em 4 trilhas)
+    // em bancos novos ou que ainda só possuem o catálogo legado (track_id IS NULL).
+    const officialTracksCount = Number(
+      (
+        db
+          .prepare('SELECT COUNT(*) as total FROM missions WHERE track_id IS NOT NULL')
+          .get() as { total: number }
+      )?.total || 0
+    );
+    if (officialTracksCount === 0) {
+      seedOfficialCatalog2026InDb(db);
+      db.prepare(
+        "UPDATE missions SET required_evidence_count = 3 WHERE id = 'ms-2026-bonus-05'"
+      ).run();
+      console.log(
+        '[SQLite] Catálogo Oficial 2026 (3 startups e 14 missões em 4 trilhas) aplicado automaticamente.'
+      );
+    }
+
     ensureDailyRankingSchema(db);
     ensureDailyRankingsClosedUpTo(db);
     ensureEvidenceStorageDir();
   } catch (err) {
-    db.exec('ROLLBACK;');
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // transação já finalizada ou revertida
+    }
     console.error('[SQLite] Erro ao verificar inicialização do banco:', err);
     throw err;
   }

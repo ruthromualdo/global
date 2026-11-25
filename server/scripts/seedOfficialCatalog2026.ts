@@ -552,9 +552,13 @@ export function seedOfficialCatalog2026InDb(database: DatabaseSync) {
   }
 }
 
-// Execução direta via CLI (com trava de segurança contra execução acidental em produção)
+// Execução direta via CLI (com trava de segurança contra execução acidental em produção ou bundle server.js)
 const __filename = fileURLToPath(import.meta.url);
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
+if (
+  process.argv[1] &&
+  path.basename(process.argv[1]).toLowerCase() === 'seedofficialcatalog2026.ts' &&
+  path.resolve(process.argv[1]) === path.resolve(__filename)
+) {
   const defaultProdDb = path.resolve(path.dirname(__filename), '../db/desafio_global.sqlite');
   const targetDbPath = process.env.DESAFIO_DB_PATH
     ? path.resolve(process.env.DESAFIO_DB_PATH)

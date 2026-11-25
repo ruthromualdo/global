@@ -25,7 +25,7 @@ import express from "express";
 import cors from "cors";
 import crypto3 from "node:crypto";
 import fs4 from "node:fs";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // src/utils/formatters.ts
 var VALID_BRAZILIAN_DDDS = /* @__PURE__ */ new Set([
@@ -99,10 +99,10 @@ var VALID_BRAZILIAN_DDDS = /* @__PURE__ */ new Set([
 ]);
 
 // server/db/database.ts
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 import fs3 from "node:fs";
-import path3 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import path4 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/mocks/mockData.ts
 var initialEventSettings = {
@@ -575,6 +575,11 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// server/scripts/seedOfficialCatalog2026.ts
+import path2 from "node:path";
+import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+
 // server/db/circuitScoring.ts
 var TOTAL_CIRCUIT_POINTS = 1e3;
 var TOTAL_UNLOCK_POINTS = 80;
@@ -796,6 +801,478 @@ function recalculateCircuitMissionPointsInDb(database) {
     database.exec(`ROLLBACK TO ${savepointName};`);
     database.exec(`RELEASE ${savepointName};`);
     throw err;
+  }
+}
+
+// server/scripts/seedOfficialCatalog2026.ts
+var OFFICIAL_STARTUPS_2026 = [
+  {
+    id: "st-ex-devedor-2026",
+    name: "Ex Devedor",
+    shortName: "Ex Devedor",
+    tagline: "Educa\xE7\xE3o financeira, tecnologia e autonomia com o assistente inteligente Tutu.",
+    description: "A Ex Devedor \xE9 uma escola de educa\xE7\xE3o financeira que transforma a rela\xE7\xE3o das pessoas com o dinheiro por meio da educa\xE7\xE3o, tecnologia e mudan\xE7a de comportamento.\n\nCriamos o Tutu, nosso assistente financeiro inteligente, que ajuda a organizar o or\xE7amento, acompanhar metas e tomar decis\xF5es mais conscientes. Nosso objetivo vai al\xE9m de sair das d\xEDvidas: \xE9 conquistar autonomia financeira e evitar novas reca\xEDdas.",
+    category: "Educa\xE7\xE3o Financeira & IA",
+    solutionPresentation: "Conhe\xE7a o Tutu, assistente financeiro inteligente para organiza\xE7\xE3o do or\xE7amento, acompanhamento de metas e decis\xF5es financeiras conscientes.",
+    boothNumber: "Espa\xE7o Ex Devedor \u2022 Global Summit 2026",
+    logoText: "EXDEV",
+    website: "https://tutu.exdevedor.com/login",
+    instagramUrl: "https://www.instagram.com/exdevedor/",
+    logoPath: "/images/startups/ex-devedor.png"
+  },
+  {
+    id: "st-sign-2026",
+    name: "Sign",
+    shortName: "Sign",
+    tagline: "Aprendizagem interativa de Libras com reconhecimento de movimentos no dispositivo.",
+    description: "A Sign \xE9 uma plataforma de aprendizagem de Libras que torna o ensino mais interativo, como em um aplicativo de idiomas. Utiliza a c\xE2mera do dispositivo para acompanhar 21 pontos de cada m\xE3o e comparar os movimentos com os de pessoas fluentes em Libras. O reconhecimento acontece no pr\xF3prio dispositivo, sem que o v\xEDdeo precise sair dele.",
+    category: "Acessibilidade & EdTech",
+    solutionPresentation: "Plataforma interativa de Libras com acompanhamento de 21 pontos em cada m\xE3o diretamente no dispositivo, com total privacidade.",
+    boothNumber: "Espa\xE7o Sign \u2022 Global Summit 2026",
+    logoText: "SIGN",
+    instagramUrl: "https://www.instagram.com/signedu/",
+    logoPath: "/images/startups/sign.png"
+  },
+  {
+    id: "st-editora-escreva-2026",
+    name: "Editora Escreva",
+    shortName: "Editora Escreva",
+    tagline: "Toda grande hist\xF3ria come\xE7a com uma ideia. E a pr\xF3xima pode ser sua!",
+    description: "A Editora Escreva acredita no poder das hist\xF3rias e da escrita para transformar ideias em conhecimento e experi\xEAncias. Incentiva novos autores e conecta escritores ao universo da publica\xE7\xE3o de livros, oferecendo caminhos para que suas hist\xF3rias cheguem aos leitores.\n\nToda grande hist\xF3ria come\xE7a com uma ideia. E a pr\xF3xima pode ser sua!",
+    category: "Publica\xE7\xE3o & Cultura",
+    solutionPresentation: "Incentivo a novos autores e caminhos completos para transformar ideias em livros publicados que chegam aos leitores.",
+    boothNumber: "Espa\xE7o Editora Escreva \u2022 Global Summit 2026",
+    logoText: "ESCREVA",
+    instagramUrl: "https://www.instagram.com/editoraescreva/",
+    logoPath: "/images/startups/editora-escreva.png"
+  }
+];
+var OFFICIAL_MISSIONS_2026 = [
+  // ==================== TRILHA 1: EX DEVEDOR ====================
+  {
+    id: "ms-2026-exdev-01",
+    trackId: "ex_devedor",
+    sequenceOrder: 1,
+    title: "Ca\xE7ador de oportunidades",
+    description: "Encontre o espa\xE7o da Ex Devedor no Global Summit e registre sua visita com uma foto.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: foto da visita ao espa\xE7o da Ex Devedor.",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Ex Devedor",
+    category: "Visita\xE7\xE3o",
+    relativeWeight: 10,
+    timerMinutes: 2,
+    estimatedTime: "2 min",
+    requiresEvidence: true,
+    evidenceType: "photo",
+    active: true
+  },
+  {
+    id: "ms-2026-exdev-02",
+    trackId: "ex_devedor",
+    sequenceOrder: 2,
+    title: "Experimente o Tutu",
+    description: "Conhe\xE7a nosso assistente financeiro inteligente. Acesse a plataforma, fa\xE7a seu cadastro e descubra como o Tutu pode ajudar na sua organiza\xE7\xE3o financeira.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: print da confirma\xE7\xE3o do cadastro. Restri\xE7\xE3o: n\xE3o envie prints que exponham dados financeiros ou informa\xE7\xF5es pessoais sens\xEDveis.",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Ex Devedor",
+    category: "Experimenta\xE7\xE3o",
+    relativeWeight: 30,
+    timerMinutes: 7,
+    estimatedTime: "7 min",
+    requiresEvidence: true,
+    evidenceType: "print",
+    externalLink: "https://tutu.exdevedor.com/login",
+    active: true
+  },
+  {
+    id: "ms-2026-exdev-03",
+    trackId: "ex_devedor",
+    sequenceOrder: 3,
+    title: "Tutu na pr\xE1tica",
+    description: "Fa\xE7a uma pergunta ao Tutu sobre organiza\xE7\xE3o financeira. Depois, conte qual foi sua pergunta e o que aprendeu com a resposta.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: resposta em texto relatando sua pergunta ao Tutu e o que aprendeu.",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Ex Devedor",
+    category: "Experimenta\xE7\xE3o",
+    relativeWeight: 20,
+    timerMinutes: 4,
+    estimatedTime: "4 min",
+    requiresEvidence: true,
+    evidenceType: "text",
+    active: true
+  },
+  // ==================== TRILHA 2: SIGN ====================
+  {
+    id: "ms-2026-sign-01",
+    trackId: "sign",
+    sequenceOrder: 1,
+    title: "Conex\xE3o que transforma",
+    description: "Encontre o espa\xE7o da Sign, conhe\xE7a a solu\xE7\xE3o e registre sua visita com uma foto.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: foto da visita ao espa\xE7o da Sign.",
+    startupId: "st-sign-2026",
+    startupName: "Sign",
+    category: "Visita\xE7\xE3o",
+    relativeWeight: 10,
+    timerMinutes: 2,
+    estimatedTime: "2 min",
+    requiresEvidence: true,
+    evidenceType: "photo",
+    active: true
+  },
+  {
+    id: "ms-2026-sign-02",
+    trackId: "sign",
+    sequenceOrder: 2,
+    title: "Meu nome em Libras",
+    description: "Com a ajuda da equipe da Sign, aprenda a representar seu nome em Libras e demonstre o que aprendeu.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: foto ou v\xEDdeo demonstrando a representa\xE7\xE3o do seu nome em Libras.",
+    startupId: "st-sign-2026",
+    startupName: "Sign",
+    category: "Experimenta\xE7\xE3o",
+    relativeWeight: 30,
+    timerMinutes: 5,
+    estimatedTime: "5 min",
+    requiresEvidence: true,
+    evidenceType: "photo_or_video",
+    active: true
+  },
+  {
+    id: "ms-2026-sign-03",
+    trackId: "sign",
+    sequenceOrder: 3,
+    title: "Desafio das m\xE3os",
+    description: "Aprenda uma nova palavra em Libras com a equipe da Sign e desafie outra pessoa a reproduzi-la!\n\nGrave um v\xEDdeo mostrando voc\xEA apresentando e ensinando o sinal aprendido, enquanto a outra pessoa tenta reproduzi-lo.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: v\xEDdeo de at\xE9 60 segundos (MP4, MOV ou WEBM). N\xE3o \xE9 permitida substitui\xE7\xE3o por foto ou texto.",
+    startupId: "st-sign-2026",
+    startupName: "Sign",
+    category: "Experimenta\xE7\xE3o",
+    relativeWeight: 25,
+    timerMinutes: 5,
+    estimatedTime: "5 min",
+    requiresEvidence: true,
+    evidenceType: "video",
+    maxVideoSeconds: 60,
+    active: true
+  },
+  // ==================== TRILHA 3: EDITORA ESCREVA ====================
+  {
+    id: "ms-2026-escreva-01",
+    trackId: "editora_escreva",
+    sequenceOrder: 1,
+    title: "Uma hist\xF3ria come\xE7a aqui",
+    description: "Encontre o espa\xE7o da Editora Escreva, conhe\xE7a a startup e registre sua visita com uma foto.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: foto da visita ao espa\xE7o da Editora Escreva.",
+    startupId: "st-editora-escreva-2026",
+    startupName: "Editora Escreva",
+    category: "Visita\xE7\xE3o",
+    relativeWeight: 10,
+    timerMinutes: 2,
+    estimatedTime: "2 min",
+    requiresEvidence: true,
+    evidenceType: "photo",
+    active: true
+  },
+  {
+    id: "ms-2026-escreva-02",
+    trackId: "editora_escreva",
+    sequenceOrder: 2,
+    title: "Autor por um minuto",
+    description: "Imagine que voc\xEA vai publicar seu pr\xF3prio livro. Qual seria o t\xEDtulo e sobre o que ele falaria?",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: resposta em texto informando o t\xEDtulo e a sinopse do seu livro.",
+    startupId: "st-editora-escreva-2026",
+    startupName: "Editora Escreva",
+    category: "Experimenta\xE7\xE3o",
+    relativeWeight: 25,
+    timerMinutes: 4,
+    estimatedTime: "4 min",
+    requiresEvidence: true,
+    evidenceType: "text",
+    active: true
+  },
+  {
+    id: "ms-2026-escreva-03",
+    trackId: "editora_escreva",
+    sequenceOrder: 3,
+    title: "Desperte o escritor",
+    description: "Crie uma frase que poderia abrir o primeiro cap\xEDtulo do livro que voc\xEA gostaria de escrever.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: resposta em texto com a frase de abertura do primeiro cap\xEDtulo.",
+    startupId: "st-editora-escreva-2026",
+    startupName: "Editora Escreva",
+    category: "Experimenta\xE7\xE3o",
+    relativeWeight: 25,
+    timerMinutes: 4,
+    estimatedTime: "4 min",
+    requiresEvidence: true,
+    evidenceType: "text",
+    active: true
+  },
+  // ==================== TRILHA 4: MISSÕES BÔNUS ====================
+  {
+    id: "ms-2026-bonus-01",
+    trackId: "bonus",
+    sequenceOrder: 1,
+    title: "Networking que rende",
+    description: "Conhe\xE7a algu\xE9m no evento que ainda n\xE3o fa\xE7a parte do seu c\xEDrculo de contatos. Convide essa pessoa para conhecer uma das tr\xEAs startups e tirem uma foto juntos no espa\xE7o da startup escolhida.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: foto dos dois participantes juntos no espa\xE7o de uma das tr\xEAs startups.",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Miss\xF5es B\xF4nus",
+    category: "B\xF4nus",
+    relativeWeight: 40,
+    timerMinutes: 5,
+    estimatedTime: "5 min",
+    requiresEvidence: true,
+    evidenceType: "photo",
+    active: true
+  },
+  {
+    id: "ms-2026-bonus-02",
+    trackId: "bonus",
+    sequenceOrder: 2,
+    title: "Influenciador por um dia",
+    description: "Grave um v\xEDdeo de at\xE9 15 segundos contando qual solu\xE7\xE3o mais chamou sua aten\xE7\xE3o durante a din\xE2mica. Publique nos Stories do Instagram e marque os tr\xEAs perfis das startups (@exdevedor, @signedu e @editoraescreva).",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: print do Story publicado marcando @exdevedor, @signedu e @editoraescreva (ou o pr\xF3prio v\xEDdeo publicado de at\xE9 15 segundos).",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Miss\xF5es B\xF4nus",
+    category: "Compartilhamento",
+    relativeWeight: 35,
+    timerMinutes: 10,
+    estimatedTime: "10 min",
+    requiresEvidence: true,
+    evidenceType: "photo_or_video",
+    maxVideoSeconds: 15,
+    active: true
+  },
+  {
+    id: "ms-2026-bonus-03",
+    trackId: "bonus",
+    sequenceOrder: 3,
+    title: "Trio de inova\xE7\xE3o",
+    description: "Encontre os tr\xEAs representantes das startups e tire uma foto com todos juntos em um \xFAnico registro.\n\nAten\xE7\xE3o: \xE9 necess\xE1rio que os tr\xEAs representantes estejam juntos na mesma foto. N\xE3o vale tirar fotos separadas com um representante de cada startup.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: uma foto in\xE9dita feita especificamente para esta miss\xE3o com os tr\xEAs representantes juntos.",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Miss\xF5es B\xF4nus",
+    category: "B\xF4nus",
+    relativeWeight: 40,
+    timerMinutes: 7,
+    estimatedTime: "7 min",
+    requiresEvidence: true,
+    evidenceType: "photo",
+    allowSharedEvidence: true,
+    active: true
+  },
+  {
+    id: "ms-2026-bonus-04",
+    trackId: "bonus",
+    sequenceOrder: 4,
+    title: "Espalhe a novidade",
+    description: "Publique um Story mostrando sua participa\xE7\xE3o no Global Summit e na din\xE2mica das startups. Marque os tr\xEAs perfis oficiais (@exdevedor, @signedu e @editoraescreva).",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: print do Story publicado marcando @exdevedor, @signedu e @editoraescreva.",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Miss\xF5es B\xF4nus",
+    category: "Compartilhamento",
+    relativeWeight: 25,
+    timerMinutes: 7,
+    estimatedTime: "7 min",
+    requiresEvidence: true,
+    evidenceType: "print",
+    active: true
+  },
+  {
+    id: "ms-2026-bonus-05",
+    trackId: "bonus",
+    sequenceOrder: 5,
+    title: "Conecte-se com as startups",
+    description: "Siga os tr\xEAs perfis oficiais no Instagram (@exdevedor, @signedu e @editoraescreva) e envie um print que demonstre que est\xE1 seguindo todos eles.",
+    completionCriteria: "Evid\xEAncia obrigat\xF3ria: um print mostrando os tr\xEAs perfis oficiais seguidos no Instagram.",
+    startupId: "st-ex-devedor-2026",
+    startupName: "Miss\xF5es B\xF4nus",
+    category: "Compartilhamento",
+    relativeWeight: 30,
+    timerMinutes: 5,
+    estimatedTime: "5 min",
+    requiresEvidence: true,
+    evidenceType: "print",
+    active: true
+  }
+];
+function ensureCatalogColumns(database) {
+  const ensureCol = (table, col, def) => {
+    const cols = database.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name.toLowerCase() === col.toLowerCase())) {
+      database.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def};`);
+    }
+  };
+  ensureCol("startups", "instagram_url", "TEXT");
+  ensureCol("startups", "logo_path", "TEXT");
+  ensureCol("missions", "unlock_points", "INTEGER NOT NULL DEFAULT 20");
+  ensureCol("missions", "completion_points", "INTEGER NOT NULL DEFAULT 180");
+  ensureCol("missions", "max_speed_bonus", "INTEGER NOT NULL DEFAULT 50");
+  ensureCol("missions", "sequence_order", "INTEGER");
+  ensureCol("missions", "timer_minutes", "INTEGER");
+  ensureCol("missions", "requires_evidence", "INTEGER NOT NULL DEFAULT 0");
+  ensureCol("missions", "evidence_type", "TEXT");
+  ensureCol("missions", "track_id", "TEXT");
+  ensureCol("missions", "relative_weight", "INTEGER NOT NULL DEFAULT 10");
+  ensureCol("missions", "max_video_seconds", "INTEGER");
+  ensureCol("missions", "allow_shared_evidence", "INTEGER NOT NULL DEFAULT 0");
+  ensureCol("missions", "is_surprise", "INTEGER NOT NULL DEFAULT 0");
+  ensureCol("missions", "external_link", "TEXT");
+  ensureCol("participant_missions", "submitted_at_ms", "INTEGER");
+  ensureCol("mission_completions", "rejection_reason", "TEXT");
+  ensureCol("mission_completions", "evidence_duration_seconds", "INTEGER");
+  ensureCol("participants", "image_publicity_consent_version", "TEXT");
+}
+function seedOfficialCatalog2026InDb(database) {
+  ensureCatalogColumns(database);
+  database.exec("BEGIN IMMEDIATE TRANSACTION;");
+  try {
+    const officialStartupIds = OFFICIAL_STARTUPS_2026.map((s) => s.id);
+    const startupPlaceholders = officialStartupIds.map(() => "?").join(", ");
+    database.prepare(`UPDATE startups SET active = 0 WHERE id NOT IN (${startupPlaceholders})`).run(...officialStartupIds);
+    const upsertStartup = database.prepare(`
+      INSERT INTO startups (
+        id, name, short_name, tagline, description, category,
+        solution_presentation, booth_number, logo_text, available_points,
+        active, is_configurable_guest, website, instagram_url, logo_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        short_name = excluded.short_name,
+        tagline = excluded.tagline,
+        description = excluded.description,
+        category = excluded.category,
+        solution_presentation = excluded.solution_presentation,
+        booth_number = excluded.booth_number,
+        logo_text = excluded.logo_text,
+        active = 1,
+        is_configurable_guest = 0,
+        website = excluded.website,
+        instagram_url = excluded.instagram_url,
+        logo_path = excluded.logo_path
+    `);
+    for (const st of OFFICIAL_STARTUPS_2026) {
+      upsertStartup.run(
+        st.id,
+        st.name,
+        st.shortName,
+        st.tagline,
+        st.description,
+        st.category,
+        st.solutionPresentation,
+        st.boothNumber,
+        st.logoText,
+        st.website || null,
+        st.instagramUrl,
+        st.logoPath
+      );
+    }
+    const officialMissionIds = OFFICIAL_MISSIONS_2026.map((m) => m.id);
+    const missionPlaceholders = officialMissionIds.map(() => "?").join(", ");
+    database.prepare(
+      `UPDATE missions SET active = 0, sequence_order = NULL WHERE id NOT IN (${missionPlaceholders})`
+    ).run(...officialMissionIds);
+    const upsertMission = database.prepare(`
+      INSERT INTO missions (
+        id, title, description, startup_id, startup_name, category,
+        points, unlock_points, completion_points, max_speed_bonus,
+        sequence_order, track_id, relative_weight, estimated_time,
+        status, period, completion_criteria, active,
+        qr_code_required, quiz_questions_json, timer_minutes,
+        requires_evidence, evidence_type, max_video_seconds,
+        allow_shared_evidence, external_link
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, '24 a 26/11/2026', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        description = excluded.description,
+        startup_id = excluded.startup_id,
+        startup_name = excluded.startup_name,
+        category = excluded.category,
+        sequence_order = excluded.sequence_order,
+        track_id = excluded.track_id,
+        relative_weight = excluded.relative_weight,
+        estimated_time = excluded.estimated_time,
+        status = excluded.status,
+        completion_criteria = excluded.completion_criteria,
+        active = excluded.active,
+        timer_minutes = excluded.timer_minutes,
+        requires_evidence = excluded.requires_evidence,
+        evidence_type = excluded.evidence_type,
+        max_video_seconds = excluded.max_video_seconds,
+        allow_shared_evidence = excluded.allow_shared_evidence,
+        external_link = excluded.external_link
+    `);
+    for (const m of OFFICIAL_MISSIONS_2026) {
+      upsertMission.run(
+        m.id,
+        m.title,
+        m.description,
+        m.startupId,
+        m.startupName,
+        m.category,
+        m.sequenceOrder,
+        m.trackId,
+        m.relativeWeight,
+        m.estimatedTime,
+        m.sequenceOrder === 1 ? "Dispon\xEDvel" : "Bloqueada",
+        m.completionCriteria,
+        m.active ? 1 : 0,
+        m.timerMinutes,
+        m.requiresEvidence ? 1 : 0,
+        m.evidenceType,
+        m.maxVideoSeconds ?? null,
+        m.allowSharedEvidence ? 1 : 0,
+        m.externalLink ?? null
+      );
+    }
+    const scoringResult = recalculateCircuitMissionPointsInDb(database);
+    const trackToStartup = {
+      ex_devedor: "st-ex-devedor-2026",
+      sign: "st-sign-2026",
+      editora_escreva: "st-editora-escreva-2026"
+    };
+    for (const [trackId, startupId] of Object.entries(trackToStartup)) {
+      const sumRow = database.prepare(
+        `SELECT COALESCE(SUM(unlock_points + completion_points + max_speed_bonus), 0) AS total
+           FROM missions
+           WHERE track_id = ? AND active = 1`
+      ).get(trackId);
+      database.prepare("UPDATE startups SET available_points = ? WHERE id = ?").run(Number(sumRow.total || 0), startupId);
+    }
+    database.exec("COMMIT;");
+    return {
+      ok: true,
+      startupsCount: OFFICIAL_STARTUPS_2026.length,
+      missionsCount: OFFICIAL_MISSIONS_2026.length,
+      activeMissionsCount: scoringResult.missionCount,
+      scoringSummary: scoringResult.summary,
+      updatedMissions: scoringResult.updatedMissions
+    };
+  } catch (err) {
+    try {
+      database.exec("ROLLBACK;");
+    } catch {
+    }
+    throw err;
+  }
+}
+var __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] && path2.basename(process.argv[1]).toLowerCase() === "seedofficialcatalog2026.ts" && path2.resolve(process.argv[1]) === path2.resolve(__filename)) {
+  const defaultProdDb = path2.resolve(path2.dirname(__filename), "../db/desafio_global.sqlite");
+  const targetDbPath = process.env.DESAFIO_DB_PATH ? path2.resolve(process.env.DESAFIO_DB_PATH) : defaultProdDb;
+  const isProdTarget = targetDbPath.toLowerCase() === defaultProdDb.toLowerCase();
+  const hasExplicitConfirm = process.argv.includes("--confirm-production");
+  if (isProdTarget && !hasExplicitConfirm) {
+    console.error(
+      "[BLOQUEADO] Para proteger o banco de produ\xE7\xE3o, execute primeiro em uma c\xF3pia via DESAFIO_DB_PATH=... ou passe --confirm-production ap\xF3s autoriza\xE7\xE3o expressa."
+    );
+    process.exit(1);
+  }
+  const db2 = new DatabaseSync(targetDbPath);
+  try {
+    const result = seedOfficialCatalog2026InDb(db2);
+    console.log(JSON.stringify(result, null, 2));
+  } finally {
+    db2.close();
   }
 }
 
@@ -1124,12 +1601,12 @@ function getDailyRankingsFromDb(targetDb, options) {
 // server/db/evidenceStorage.ts
 import crypto2 from "node:crypto";
 import fs2 from "node:fs";
-import path2 from "node:path";
-import { fileURLToPath } from "node:url";
-var __filename = fileURLToPath(import.meta.url);
-var __dirname = path2.dirname(__filename);
-var DEFAULT_EVIDENCE_DIR = fs2.existsSync(path2.join(__dirname, "schema.sql")) ? path2.resolve(__dirname, "../storage/evidences") : path2.resolve(process.cwd(), "server/storage/evidences");
-var EVIDENCE_STORAGE_DIR = process.env.DESAFIO_EVIDENCE_DIR ? path2.resolve(process.env.DESAFIO_EVIDENCE_DIR) : DEFAULT_EVIDENCE_DIR;
+import path3 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var __filename2 = fileURLToPath2(import.meta.url);
+var __dirname = path3.dirname(__filename2);
+var DEFAULT_EVIDENCE_DIR = fs2.existsSync(path3.join(__dirname, "schema.sql")) ? path3.resolve(__dirname, "../storage/evidences") : path3.resolve(process.cwd(), "server/storage/evidences");
+var EVIDENCE_STORAGE_DIR = process.env.DESAFIO_EVIDENCE_DIR ? path3.resolve(process.env.DESAFIO_EVIDENCE_DIR) : DEFAULT_EVIDENCE_DIR;
 var MAX_EVIDENCE_SIZE_BYTES = 5 * 1024 * 1024;
 var MAX_VIDEO_EVIDENCE_SIZE_BYTES = Number(
   process.env.MAX_VIDEO_EVIDENCE_BYTES || 25 * 1024 * 1024
@@ -1322,7 +1799,7 @@ function extractVideoDurationSeconds(buf, canonicalExt) {
   return extractMp4DurationSeconds(buf);
 }
 function sanitizeDisplayFileName(rawName) {
-  const base = path2.basename(String(rawName || "evidencia")).replace(/[\x00-\x1f\x7f<>:"/\\|?*]+/g, "_").trim();
+  const base = path3.basename(String(rawName || "evidencia")).replace(/[\x00-\x1f\x7f<>:"/\\|?*]+/g, "_").trim();
   return base.slice(0, 120) || "evidencia";
 }
 function missionAcceptsVideo(requiredType) {
@@ -1339,7 +1816,7 @@ function validateAndDetectEvidenceFile(params) {
     };
   }
   const safeDisplayName = sanitizeDisplayFileName(originalName);
-  const ext = path2.extname(safeDisplayName).toLowerCase();
+  const ext = path3.extname(safeDisplayName).toLowerCase();
   const normMime = String(declaredMimeType || "").split(";")[0].trim().toLowerCase();
   const formatByExt = ALLOWED_FORMATS.find((f) => f.extensions.includes(ext));
   if (!formatByExt) {
@@ -1474,22 +1951,22 @@ function resolveSafeEvidenceFilePath(storedName, storageDir = EVIDENCE_STORAGE_D
   if (!/^[a-f0-9-]{36}\.(jpg|png|webp|pdf|mp4|mov|webm)$/i.test(storedName)) {
     throw new Error("INVALID_STORED_EVIDENCE_NAME");
   }
-  const resolvedDir = path2.resolve(storageDir);
-  const fullPath = path2.resolve(resolvedDir, storedName);
-  if (!fullPath.startsWith(resolvedDir + path2.sep)) {
+  const resolvedDir = path3.resolve(storageDir);
+  const fullPath = path3.resolve(resolvedDir, storedName);
+  if (!fullPath.startsWith(resolvedDir + path3.sep)) {
     throw new Error("PATH_TRAVERSAL_BLOCKED");
   }
   return fullPath;
 }
 
 // server/db/database.ts
-var __filename2 = fileURLToPath2(import.meta.url);
-var __dirname2 = path3.dirname(__filename2);
-var DB_DIR = fs3.existsSync(path3.join(__dirname2, "schema.sql")) ? __dirname2 : path3.resolve(process.cwd(), "server/db");
-var DB_FILE_PATH = process.env.DESAFIO_DB_PATH ? path3.resolve(process.env.DESAFIO_DB_PATH) : path3.join(DB_DIR, "desafio_global.sqlite");
-var SCHEMA_FILE_PATH = path3.join(DB_DIR, "schema.sql");
-fs3.mkdirSync(path3.dirname(DB_FILE_PATH), { recursive: true });
-var db = new DatabaseSync(DB_FILE_PATH);
+var __filename3 = fileURLToPath3(import.meta.url);
+var __dirname2 = path4.dirname(__filename3);
+var DB_DIR = fs3.existsSync(path4.join(__dirname2, "schema.sql")) ? __dirname2 : path4.resolve(process.cwd(), "server/db");
+var DB_FILE_PATH = process.env.DESAFIO_DB_PATH ? path4.resolve(process.env.DESAFIO_DB_PATH) : path4.join(DB_DIR, "desafio_global.sqlite");
+var SCHEMA_FILE_PATH = path4.join(DB_DIR, "schema.sql");
+fs3.mkdirSync(path4.dirname(DB_FILE_PATH), { recursive: true });
+var db = new DatabaseSync2(DB_FILE_PATH);
 var isDatabaseClosed = false;
 function closeDatabaseGracefully() {
   if (isDatabaseClosed) {
@@ -2165,11 +2642,26 @@ function initializeDatabase() {
     reconcileLegacyFirstMissionUnlockPointsInDb();
     recalculateRankingsInDb();
     db.exec("COMMIT;");
+    const officialTracksCount = Number(
+      db.prepare("SELECT COUNT(*) as total FROM missions WHERE track_id IS NOT NULL").get()?.total || 0
+    );
+    if (officialTracksCount === 0) {
+      seedOfficialCatalog2026InDb(db);
+      db.prepare(
+        "UPDATE missions SET required_evidence_count = 3 WHERE id = 'ms-2026-bonus-05'"
+      ).run();
+      console.log(
+        "[SQLite] Cat\xE1logo Oficial 2026 (3 startups e 14 miss\xF5es em 4 trilhas) aplicado automaticamente."
+      );
+    }
     ensureDailyRankingSchema(db);
     ensureDailyRankingsClosedUpTo(db);
     ensureEvidenceStorageDir();
   } catch (err) {
-    db.exec("ROLLBACK;");
+    try {
+      db.exec("ROLLBACK;");
+    } catch {
+    }
     console.error("[SQLite] Erro ao verificar inicializa\xE7\xE3o do banco:", err);
     throw err;
   }
@@ -7291,8 +7783,8 @@ app.put("/api/admin/governance/:id", requireAdmin, (req, res) => {
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "Endpoint da API n\xE3o encontrado.", code: "API_NOT_FOUND" });
 });
-var DIST_DIR = path4.resolve(process.cwd(), "dist");
-var DIST_INDEX_FILE = path4.join(DIST_DIR, "index.html");
+var DIST_DIR = path5.resolve(process.cwd(), "dist");
+var DIST_INDEX_FILE = path5.join(DIST_DIR, "index.html");
 if (fs4.existsSync(DIST_INDEX_FILE)) {
   app.use(express.static(DIST_DIR, { index: "index.html" }));
   app.get("*", (req, res, next) => {
