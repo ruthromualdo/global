@@ -14,14 +14,42 @@ let inMemoryToken: string | null = null;
 export function getAuthToken(): string | null {
   if (inMemoryToken) return inMemoryToken;
   try {
-    return window.sessionStorage.getItem(SESSION_TOKEN_KEY);
+    const persistent = window.localStorage.getItem(SESSION_TOKEN_KEY);
+    if (persistent) {
+      inMemoryToken = persistent;
+      return persistent;
+    }
   } catch {
-    return null;
+    // Ignorar caso localStorage esteja indisponível
   }
+  try {
+    const sessionVal = window.sessionStorage.getItem(SESSION_TOKEN_KEY);
+    if (sessionVal) {
+      inMemoryToken = sessionVal;
+      try {
+        window.localStorage.setItem(SESSION_TOKEN_KEY, sessionVal);
+      } catch {
+        // Ignorar
+      }
+      return sessionVal;
+    }
+  } catch {
+    // Ignorar caso sessionStorage esteja indisponível
+  }
+  return null;
 }
 
 export function setAuthToken(token: string | null): void {
   inMemoryToken = token;
+  try {
+    if (token) {
+      window.localStorage.setItem(SESSION_TOKEN_KEY, token);
+    } else {
+      window.localStorage.removeItem(SESSION_TOKEN_KEY);
+    }
+  } catch {
+    // Ignorar caso localStorage esteja indisponível
+  }
   try {
     if (token) {
       window.sessionStorage.setItem(SESSION_TOKEN_KEY, token);
