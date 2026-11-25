@@ -31,6 +31,7 @@ import { EvidenceFileItem, EvidenceRequirementType, Mission, MissionCompletion }
 import { CategoryPill, MissionStatusBadge } from '../components/UI';
 import { MissionTimer } from '../components/MissionTimer';
 import { formatPoints } from '../utils/formatters';
+import { compressImageForUpload } from '../utils/imageCompressor';
 import { fetchAuthenticatedEvidenceBlob } from '../services/apiClient';
 
 const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
@@ -197,7 +198,7 @@ export const MissionsCenterPage: React.FC = () => {
     return null;
   };
 
-  const handleSelectBatchEvidenceFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSelectBatchEvidenceFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const incoming = Array.from(e.target.files || []);
     e.target.value = '';
     if (incoming.length === 0) return;
@@ -212,7 +213,11 @@ export const MissionsCenterPage: React.FC = () => {
       return;
     }
 
-    for (const file of incoming) {
+    const optimizedIncoming = await Promise.all(
+      incoming.map((file) => compressImageForUpload(file))
+    );
+
+    for (const file of optimizedIncoming) {
       const err = validateImageForBatch(file);
       if (err) {
         setUploadError(err);
@@ -220,7 +225,7 @@ export const MissionsCenterPage: React.FC = () => {
       }
     }
 
-    const added = incoming.map((file) => ({
+    const added = optimizedIncoming.map((file) => ({
       file,
       previewUrl: URL.createObjectURL(file),
     }));
@@ -236,11 +241,12 @@ export const MissionsCenterPage: React.FC = () => {
     });
   };
 
-  const handleReplaceBatchFile = (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] || null;
+  const handleReplaceBatchFile = async (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawFile = e.target.files?.[0] || null;
     e.target.value = '';
-    if (!file) return;
+    if (!rawFile) return;
 
+    const file = await compressImageForUpload(rawFile);
     const err = validateImageForBatch(file);
     if (err) {
       setUploadError(err);
@@ -258,18 +264,23 @@ export const MissionsCenterPage: React.FC = () => {
     );
   };
 
-  const handleSelectEvidenceFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] || null;
+  const handleSelectEvidenceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawFile = e.target.files?.[0] || null;
+    e.target.value = '';
     if (filePreviewUrl) {
       URL.revokeObjectURL(filePreviewUrl);
       setFilePreviewUrl(null);
     }
     setUploadError(null);
 
-    if (!file) {
+    if (!rawFile) {
       setSelectedFile(null);
       return;
     }
+
+    const file = rawFile.type.startsWith('image/')
+      ? await compressImageForUpload(rawFile)
+      : rawFile;
 
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const evType = evidenceMission?.evidenceType;
@@ -1517,24 +1528,43 @@ export const MissionsCenterPage: React.FC = () => {
                         </div>
 
                         {selectedBatchFiles.length < requiredCount && (
-                          <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-tutu-lime/40 bg-tutu-dark/70 hover:border-tutu-lime cursor-pointer transition-colors text-center">
-                            <Upload className="w-5 h-5 text-tutu-lime" />
-                            <span className="text-xs font-semibold text-tutu-light">
-                              {selectedBatchFiles.length === 0
-                                ? `Selecionar até ${requiredCount} imagens`
-                                : `Adicionar mais ${requiredCount - selectedBatchFiles.length} imagem(ns)`}
-                            </span>
-                            <span className="text-[11px] text-tutu-light/65">
-                              JPG, JPEG, PNG ou WEBP • máx. 5 MB por imagem
-                            </span>
-                            <input
-                              type="file"
-                              multiple
-                              accept="image/jpeg,image/png,image/webp"
-                              onChange={handleSelectBatchEvidenceFiles}
-                              className="hidden"
-                            />
-                          </label>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-tutu-lime/60 bg-tutu-lime/10 hover:bg-tutu-lime/15 cursor-pointer transition-colors text-center">
+                              <Camera className="w-5 h-5 text-tutu-lime" />
+                              <span className="text-xs font-bold text-tutu-lime">
+                                Tirar Foto com Câmera
+                              </span>
+                              <span className="text-[11px] text-tutu-light/70">
+                                Abre a câmera do celular
+                              </span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                onChange={handleSelectBatchEvidenceFiles}
+                                className="hidden"
+                              />
+                            </label>
+
+                            <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-tutu-lime/40 bg-tutu-dark/70 hover:border-tutu-lime cursor-pointer transition-colors text-center">
+                              <Upload className="w-5 h-5 text-tutu-lime" />
+                              <span className="text-xs font-semibold text-tutu-light">
+                                {selectedBatchFiles.length === 0
+                                  ? `Escolher da Galeria (até ${requiredCount})`
+                                  : `Adicionar da Galeria (+${requiredCount - selectedBatchFiles.length})`}
+                              </span>
+                              <span className="text-[11px] text-tutu-light/65">
+                                JPG, JPEG, PNG ou WEBP
+                              </span>
+                              <input
+                                type="file"
+                                multiple
+                                accept="image/jpeg,image/png,image/webp"
+                                onChange={handleSelectBatchEvidenceFiles}
+                                className="hidden"
+                              />
+                            </label>
+                          </div>
                         )}
 
                         {selectedBatchFiles.length > 0 && (
@@ -1617,28 +1647,51 @@ export const MissionsCenterPage: React.FC = () => {
                     <label className="block text-xs font-semibold text-tutu-light">
                       Arquivo de Evidência *
                     </label>
-                    <label className="flex flex-col items-center justify-center gap-2 p-5 rounded-xl border-2 border-dashed border-tutu-lime/40 bg-tutu-dark/70 hover:border-tutu-lime cursor-pointer transition-colors text-center">
-                      <Upload className="w-6 h-6 text-tutu-lime" />
-                      <span className="text-xs font-semibold text-tutu-light">
-                        {selectedFile
-                          ? 'Clique para trocar o arquivo selecionado'
-                          : evidenceMission.evidenceType === 'video'
-                          ? 'Clique para selecionar ou gravar o vídeo'
-                          : 'Clique para selecionar ou registrar sua evidência'}
-                      </span>
-                      <span className="text-[11px] text-tutu-light/65">
-                        {getEvidenceRequirementsLabel(
-                          evidenceMission.evidenceType,
-                          evidenceMission.maxVideoSeconds
-                        )}
-                      </span>
-                      <input
-                        type="file"
-                        accept={getEvidenceAcceptAttr(evidenceMission.evidenceType)}
-                        onChange={handleSelectEvidenceFile}
-                        className="hidden"
-                      />
-                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-tutu-lime/60 bg-tutu-lime/10 hover:bg-tutu-lime/15 cursor-pointer transition-colors text-center">
+                        <Camera className="w-6 h-6 text-tutu-lime" />
+                        <span className="text-xs font-bold text-tutu-lime">
+                          {evidenceMission.evidenceType === 'video'
+                            ? 'Gravar Vídeo com Câmera'
+                            : 'Tirar Foto com Câmera'}
+                        </span>
+                        <span className="text-[11px] text-tutu-light/70">
+                          Abre direto a câmera do celular
+                        </span>
+                        <input
+                          type="file"
+                          accept={
+                            evidenceMission.evidenceType === 'video' ? 'video/*' : 'image/*'
+                          }
+                          capture="environment"
+                          onChange={handleSelectEvidenceFile}
+                          className="hidden"
+                        />
+                      </label>
+
+                      <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-tutu-lime/40 bg-tutu-dark/70 hover:border-tutu-lime cursor-pointer transition-colors text-center">
+                        <Upload className="w-6 h-6 text-tutu-lime" />
+                        <span className="text-xs font-semibold text-tutu-light">
+                          {selectedFile
+                            ? 'Trocar Arquivo da Galeria'
+                            : evidenceMission.evidenceType === 'video'
+                            ? 'Escolher Vídeo da Galeria'
+                            : 'Escolher da Galeria / Arquivo'}
+                        </span>
+                        <span className="text-[11px] text-tutu-light/65">
+                          {getEvidenceRequirementsLabel(
+                            evidenceMission.evidenceType,
+                            evidenceMission.maxVideoSeconds
+                          )}
+                        </span>
+                        <input
+                          type="file"
+                          accept={getEvidenceAcceptAttr(evidenceMission.evidenceType)}
+                          onChange={handleSelectEvidenceFile}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
 
                     {selectedFile && (
                       <div className="p-3 rounded-xl bg-tutu-secondary/20 border border-tutu-secondary/40 space-y-2.5">
