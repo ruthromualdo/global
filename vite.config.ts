@@ -16,11 +16,9 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        format: 'iife',
-        name: 'DesafioGlobalApp',
-        inlineDynamicImports: true,
-        entryFileNames: 'assets/app.js',
-        assetFileNames: 'assets/app.[ext]',
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash].[ext]',
       },
     },
   },

@@ -1,3 +1,5 @@
+import { compressImageForUpload } from '../utils/imageCompressor';
+
 const rawApiBase = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
   ?.VITE_API_BASE_URL;
 
@@ -107,12 +109,13 @@ export async function uploadEvidenceFileRequest(params: {
 }): Promise<{ ok: boolean; status: number; data: any; error?: string }> {
   try {
     const token = getAuthToken();
-    const buffer = await params.file.arrayBuffer();
+    const optimizedFile = await compressImageForUpload(params.file);
+    const buffer = await optimizedFile.arrayBuffer();
     const headers: Record<string, string> = {
       'Content-Type': 'application/octet-stream',
       'X-Mission-Id': params.missionId,
-      'X-File-Name': encodeURIComponent(params.file.name),
-      'X-File-Mime': params.file.type || 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(optimizedFile.name),
+      'X-File-Mime': optimizedFile.type || 'application/octet-stream',
       'X-Evidence-Description': encodeURIComponent(params.description || ''),
     };
     if (token) {
@@ -151,12 +154,15 @@ export async function uploadEvidenceBatchRequest(params: {
 }): Promise<{ ok: boolean; status: number; data: any; error?: string }> {
   try {
     const token = getAuthToken();
+    const optimizedFiles = await Promise.all(
+      params.files.map((file) => compressImageForUpload(file))
+    );
     const formData = new FormData();
     formData.append('missionId', params.missionId);
     if (params.description) {
       formData.append('description', params.description);
     }
-    for (const file of params.files) {
+    for (const file of optimizedFiles) {
       formData.append('files', file, file.name);
     }
 

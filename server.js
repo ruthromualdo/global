@@ -26,6 +26,7 @@ import cors from "cors";
 import crypto3 from "node:crypto";
 import fs4 from "node:fs";
 import path5 from "node:path";
+import zlib from "node:zlib";
 
 // src/utils/formatters.ts
 var VALID_BRAZILIAN_DDDS = /* @__PURE__ */ new Set([
@@ -3385,6 +3386,30 @@ var isShuttingDown = false;
 if (process.env.TRUST_PROXY === "true" || process.env.TRUST_PROXY === "1") {
   app.set("trust proxy", 1);
 }
+app.use((req, res, next) => {
+  const acceptEncoding = String(req.headers["accept-encoding"] || "");
+  if (!acceptEncoding.includes("gzip")) {
+    next();
+    return;
+  }
+  const originalJson = res.json.bind(res);
+  res.json = ((body) => {
+    try {
+      const jsonStr = JSON.stringify(body);
+      if (jsonStr && jsonStr.length >= 1024 && !res.headersSent) {
+        const compressed = zlib.gzipSync(Buffer.from(jsonStr, "utf8"));
+        res.setHeader("Content-Encoding", "gzip");
+        res.setHeader("Vary", "Accept-Encoding");
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Content-Length", String(compressed.length));
+        return res.end(compressed);
+      }
+    } catch {
+    }
+    return originalJson(body);
+  });
+  next();
+});
 app.use((_req, res, next) => {
   if (isShuttingDown) {
     res.setHeader("Connection", "close");
@@ -4267,7 +4292,6 @@ app.get("/api/health", (_req, res) => {
   });
 });
 app.get("/api/bootstrap", (req, res) => {
-  recalculateRankingsInDb();
   const session = resolveSessionFromRequest(req);
   const isAdmin = session?.role === "ADMIN";
   const isParticipantSession = session?.role === "PARTICIPANT";
@@ -4288,7 +4312,6 @@ app.get("/api/bootstrap", (req, res) => {
     if (refreshed) {
       authenticatedParticipant = mapParticipantRow(refreshed);
     }
-    recalculateRankingsInDb();
   }
   const guestParticipant = {
     id: "",
@@ -7867,12 +7890,86 @@ app.use("/api", (_req, res) => {
 var DIST_DIR = path5.resolve(process.cwd(), "dist");
 var DIST_INDEX_FILE = path5.join(DIST_DIR, "index.html");
 if (fs4.existsSync(DIST_INDEX_FILE)) {
-  app.use(express.static(DIST_DIR, { index: "index.html" }));
+  const staticGzipCache = /* @__PURE__ */ new Map();
+  app.use((req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      next();
+      return;
+    }
+    if (req.path.startsWith("/api")) {
+      next();
+      return;
+    }
+    const acceptEncoding = String(req.headers["accept-encoding"] || "");
+    if (!acceptEncoding.includes("gzip")) {
+      next();
+      return;
+    }
+    if (!/\.(js|css|svg|html|json)$/i.test(req.path)) {
+      next();
+      return;
+    }
+    const normalizedRel = req.path.replace(/^\/+/, "");
+    const fullPath = path5.resolve(DIST_DIR, normalizedRel);
+    if (!fullPath.startsWith(DIST_DIR) || !fs4.existsSync(fullPath)) {
+      next();
+      return;
+    }
+    try {
+      const stat = fs4.statSync(fullPath);
+      if (!stat.isFile() || stat.size < 1024) {
+        next();
+        return;
+      }
+      let entry = staticGzipCache.get(fullPath);
+      if (!entry || entry.mtimeMs !== stat.mtimeMs) {
+        const ext = path5.extname(fullPath).toLowerCase();
+        const contentType = ext === ".js" ? "application/javascript; charset=utf-8" : ext === ".css" ? "text/css; charset=utf-8" : ext === ".svg" ? "image/svg+xml" : ext === ".json" ? "application/json; charset=utf-8" : "text/html; charset=utf-8";
+        const compressed = zlib.gzipSync(fs4.readFileSync(fullPath));
+        entry = { mtimeMs: stat.mtimeMs, contentType, compressed };
+        if (staticGzipCache.size < 100) {
+          staticGzipCache.set(fullPath, entry);
+        }
+      }
+      res.setHeader("Content-Type", entry.contentType);
+      res.setHeader("Content-Encoding", "gzip");
+      res.setHeader("Vary", "Accept-Encoding");
+      res.setHeader("Content-Length", String(entry.compressed.length));
+      if (req.path.startsWith("/assets/")) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+      if (req.method === "HEAD") {
+        res.end();
+      } else {
+        res.end(entry.compressed);
+      }
+      return;
+    } catch {
+      next();
+    }
+  });
+  app.use(
+    express.static(DIST_DIR, {
+      index: "index.html",
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path5.sep}assets${path5.sep}`)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else if (filePath.endsWith("index.html")) {
+          res.setHeader("Cache-Control", "no-cache");
+        } else {
+          res.setHeader("Cache-Control", "public, max-age=86400");
+        }
+      }
+    })
+  );
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) {
       next();
       return;
     }
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(DIST_INDEX_FILE);
   });
 }

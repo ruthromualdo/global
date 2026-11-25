@@ -1,15 +1,6 @@
 /* ==========================================================================
    TIPOGRAFIA OFICIAL — DESAFIO GLOBAL SUMMIT 2026 (DARK PREMIUM TECH)
    ==========================================================================
-   Tipografia principal: DM Sans (Regular, Medium, SemiBold, Bold, ExtraBold)
-   Aproveitamento dos arquivos locais existentes no projeto e Google Fonts.
+   Tipografia principal: DM Sans (carregada via Google Fonts em index.html
+   com font-display=swap, evitando requisições 404 de arquivos locais inexistentes).
    ========================================================================== */
-
-@font-face {
-  font-family: 'DM Sans';
-  src: local('DM Sans'),
-       url('/fonts/dm-sans/DMSans-VariableFont_opsz,wght.ttf') format('truetype');
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppStoreProvider } from './hooks/useAppStore';
 import { ToastContainer } from './components/UI';
@@ -7,7 +7,6 @@ import { RequireParticipantRoute } from './components/RequireParticipantRoute';
 
 import { PublicLayout } from './layouts/PublicLayout';
 import { ParticipantLayout } from './layouts/ParticipantLayout';
-import { AdminLayout } from './layouts/AdminLayout';
 
 import { LandingPage } from './pages/LandingPage';
 import {
@@ -24,22 +23,53 @@ import { StartupsPage } from './pages/StartupsPage';
 import { RankingPage } from './pages/RankingPage';
 import { ProfilePage } from './pages/ProfilePage';
 
-import { AdminLoginPage } from './pages/admin/AdminLoginPage';
-import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
-import { AdminStartupsPage } from './pages/admin/AdminStartupsPage';
-import { AdminMissionsPage } from './pages/admin/AdminMissionsPage';
-import { AdminValidationPage } from './pages/admin/AdminValidationPage';
-import { AdminParticipantsPage } from './pages/admin/AdminParticipantsPage';
-import { AdminRankingPage } from './pages/admin/AdminRankingPage';
-import { AdminSettingsPage } from './pages/admin/AdminSettingsPage';
-import { AdminReportsPage } from './pages/admin/AdminReportsPage';
-import { AdminGovernancePage } from './pages/admin/AdminGovernancePage';
+// Carregamento sob demanda das páginas administrativas para reduzir o bundle inicial no celular
+const AdminLayout = lazy(() =>
+  import('./layouts/AdminLayout').then((m) => ({ default: m.AdminLayout }))
+);
+const AdminLoginPage = lazy(() =>
+  import('./pages/admin/AdminLoginPage').then((m) => ({ default: m.AdminLoginPage }))
+);
+const AdminDashboardPage = lazy(() =>
+  import('./pages/admin/AdminDashboardPage').then((m) => ({ default: m.AdminDashboardPage }))
+);
+const AdminStartupsPage = lazy(() =>
+  import('./pages/admin/AdminStartupsPage').then((m) => ({ default: m.AdminStartupsPage }))
+);
+const AdminMissionsPage = lazy(() =>
+  import('./pages/admin/AdminMissionsPage').then((m) => ({ default: m.AdminMissionsPage }))
+);
+const AdminValidationPage = lazy(() =>
+  import('./pages/admin/AdminValidationPage').then((m) => ({ default: m.AdminValidationPage }))
+);
+const AdminParticipantsPage = lazy(() =>
+  import('./pages/admin/AdminParticipantsPage').then((m) => ({ default: m.AdminParticipantsPage }))
+);
+const AdminRankingPage = lazy(() =>
+  import('./pages/admin/AdminRankingPage').then((m) => ({ default: m.AdminRankingPage }))
+);
+const AdminSettingsPage = lazy(() =>
+  import('./pages/admin/AdminSettingsPage').then((m) => ({ default: m.AdminSettingsPage }))
+);
+const AdminReportsPage = lazy(() =>
+  import('./pages/admin/AdminReportsPage').then((m) => ({ default: m.AdminReportsPage }))
+);
+const AdminGovernancePage = lazy(() =>
+  import('./pages/admin/AdminGovernancePage').then((m) => ({ default: m.AdminGovernancePage }))
+);
+
+const RouteLoadingFallback: React.FC = () => (
+  <div className="min-h-screen bg-[#071812] text-tutu-light flex items-center justify-center p-6">
+    <div className="text-xs font-medium text-tutu-light/70 animate-pulse">Carregando...</div>
+  </div>
+);
 
 export const App: React.FC = () => {
   return (
     <AppStoreProvider>
       <HashRouter>
         <ToastContainer />
+        <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
           {/* Public Routes */}
           <Route element={<PublicLayout />}>
@@ -109,6 +139,7 @@ export const App: React.FC = () => {
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
       </HashRouter>
     </AppStoreProvider>
   );

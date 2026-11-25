@@ -13,19 +13,5 @@
 
     <!-- Entrada padrão para o servidor de desenvolvimento Vite (npm run dev) -->
     <script type="module" src="/src/main.tsx"></script>
-
-    <!-- Fallback automático caso o usuário abra o index.html direto (file:// ou Live Server sem Vite) -->
-    <script>
-      window.addEventListener('DOMContentLoaded', function () {
-        setTimeout(function () {
-          var root = document.getElementById('root');
-          if (root && root.children.length === 0) {
-            var script = document.createElement('script');
-            script.src = './dist/assets/app.js';
-            document.body.appendChild(script);
-          }
-        }, 80);
-      });
-    </script>
   </body>
 </html>
