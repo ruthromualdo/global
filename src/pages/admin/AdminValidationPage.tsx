@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   Ban,
+  Calendar,
   CheckCircle2,
   Clock,
   Crown,
@@ -35,12 +36,88 @@ const TRACK_OPTIONS = [
   { id: 'bonus', label: 'Missões Bônus' },
 ] as const;
 
+export const OFFICIAL_EVENT_DAYS = [
+  { dateKey: '2026-11-24', label: '24/11/2026 — Dia 1' },
+  { dateKey: '2026-11-25', label: '25/11/2026 — Dia 2' },
+  { dateKey: '2026-11-26', label: '26/11/2026 — Dia 3' },
+] as const;
+
 function formatEvidenceSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return '0 KB';
   if (bytes >= 1024 * 1024) {
     return `${(bytes / (1024 * 1024)).toFixed(2).replace('.', ',')} MB`;
   }
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+const BRASILIA_DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function getBrasiliaDateKey(date: Date = new Date()): string {
+  return BRASILIA_DATE_KEY_FORMATTER.format(date);
+}
+
+export function shiftDateKeyDays(dateKey: string, deltaDays: number): string {
+  const match = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return dateKey;
+  const [, y, m, d] = match;
+  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d) + deltaDays, 12, 0, 0));
+  const yy = String(dt.getUTCFullYear()).padStart(4, '0');
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+export function formatDateKeyPtBr(dateKey: string): string {
+  const match = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return dateKey;
+  const [, yyyy, mm, dd] = match;
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+/**
+ * Resolve a data de submissão da evidência (YYYY-MM-DD em America/Sao_Paulo).
+ * Utiliza exclusivamente a data de envio pelo participante (submittedDate / submittedAt / id),
+ * nunca a data de revisão administrativa (reviewedAt).
+ */
+export function resolveValidationSubmissionDateKey(item: Pick<MissionCompletion, 'id' | 'submittedAt' | 'submittedDate'>): string | null {
+  if (item.submittedDate && /^\d{4}-\d{2}-\d{2}$/.test(item.submittedDate)) {
+    return item.submittedDate;
+  }
+
+  const text = String(item.submittedAt || '').trim();
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})\b/);
+  if (brMatch) {
+    const [, dd, mm, yyyy] = brMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+    const parsedMs = Date.parse(text);
+    if (!Number.isNaN(parsedMs)) {
+      return getBrasiliaDateKey(new Date(parsedMs));
+    }
+  }
+
+  const isoDateMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})\b/);
+  if (isoDateMatch) {
+    const [, yyyy, mm, dd] = isoDateMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  const idMatch = String(item.id || '').match(/^val-(\d{12,14})-/);
+  if (idMatch) {
+    const ms = Number(idMatch[1]);
+    if (Number.isFinite(ms) && ms > 0) {
+      return getBrasiliaDateKey(new Date(ms));
+    }
+  }
+
+  return null;
 }
 
 function formatIsoBrasilia(iso?: string | null): string {
@@ -73,6 +150,9 @@ export const AdminValidationPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryParticipantId = searchParams.get('participant') || 'all';
 
+  const todayDateKey = useMemo(() => getBrasiliaDateKey(new Date()), []);
+
+  const [selectedDate, setSelectedDate] = useState<string>(() => getBrasiliaDateKey(new Date()));
   const [statusFilter, setStatusFilter] = useState<'Todos' | 'Pendente' | 'Aprovada' | 'Rejeitada'>(
     'Todos'
   );
@@ -280,7 +360,51 @@ export const AdminValidationPage: React.FC = () => {
     }
   };
 
-  const filtered = validationQueue.filter((item) => {
+  const extraRecordedDates = useMemo(() => {
+    const officialSet = new Set<string>(OFFICIAL_EVENT_DAYS.map((d) => d.dateKey));
+    const dates = new Set<string>();
+    for (const item of validationQueue) {
+      const key = resolveValidationSubmissionDateKey(item);
+      if (key && !officialSet.has(key)) dates.add(key);
+    }
+    return Array.from(dates).sort((a, b) => b.localeCompare(a));
+  }, [validationQueue]);
+
+  const dateScopedItems = useMemo(() => {
+    if (selectedDate === 'all') return validationQueue;
+    return validationQueue.filter(
+      (item) => resolveValidationSubmissionDateKey(item) === selectedDate
+    );
+  }, [validationQueue, selectedDate]);
+
+  const dateCounters = useMemo(() => {
+    let pending = 0;
+    let approved = 0;
+    let rejected = 0;
+    for (const item of dateScopedItems) {
+      if (item.status === 'Pendente') pending += 1;
+      else if (item.status === 'Aprovada') approved += 1;
+      else if (item.status === 'Rejeitada') rejected += 1;
+    }
+    return {
+      total: dateScopedItems.length,
+      pending,
+      approved,
+      rejected,
+    };
+  }, [dateScopedItems]);
+
+  const selectedDateDisplayLabel = useMemo(() => {
+    if (selectedDate === 'all') return 'Todas as datas';
+    const officialDay = OFFICIAL_EVENT_DAYS.find((d) => d.dateKey === selectedDate);
+    if (officialDay) {
+      return selectedDate === todayDateKey ? `${officialDay.label} (Hoje)` : officialDay.label;
+    }
+    const formatted = formatDateKeyPtBr(selectedDate);
+    return selectedDate === todayDateKey ? `${formatted} (Hoje)` : formatted;
+  }, [selectedDate, todayDateKey]);
+
+  const filtered = dateScopedItems.filter((item) => {
     if (statusFilter !== 'Todos' && item.status !== statusFilter) return false;
     if (participantFilter !== 'all' && item.participantId !== participantFilter) return false;
     if (missionFilter !== 'all' && item.missionId !== missionFilter) return false;
@@ -364,29 +488,181 @@ export const AdminValidationPage: React.FC = () => {
         </div>
       )}
 
+      {/* Filtro por Data de Submissão (Horário de Brasília) e Contadores do Dia */}
+      <div className="tutu-card p-4 sm:p-5 space-y-4 border border-tutu-lime/35">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-tutu-lime flex items-center gap-1.5">
+                <Calendar className="w-4 h-4 shrink-0" />
+                <span>Data das Submissões (Horário de Brasília)</span>
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full bg-tutu-lime/15 border border-tutu-lime/40 text-xs font-bold text-tutu-lime">
+                {selectedDateDisplayLabel}
+              </span>
+            </div>
+            <p className="text-[11px] text-tutu-light/65">
+              Filtra exclusivamente pela data em que o participante enviou a evidência (não pela data da conferência).
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {OFFICIAL_EVENT_DAYS.map((day) => {
+              const isSelected = selectedDate === day.dateKey;
+              const isToday = day.dateKey === todayDateKey;
+              return (
+                <button
+                  key={day.dateKey}
+                  type="button"
+                  onClick={() => setSelectedDate(day.dateKey)}
+                  className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                    isSelected
+                      ? 'bg-tutu-lime text-tutu-dark'
+                      : 'bg-tutu-secondary/25 text-tutu-light/85 hover:text-tutu-light border border-tutu-secondary/40'
+                  }`}
+                >
+                  {day.label}
+                  {isToday ? ' (Hoje)' : ''}
+                </button>
+              );
+            })}
+
+            <input
+              type="date"
+              aria-label="Selecionar data das submissões"
+              value={selectedDate === 'all' ? '' : selectedDate}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedDate(val || todayDateKey);
+              }}
+              className="input-tutu text-xs min-h-[36px] py-1.5 px-3 w-auto"
+            />
+
+            <button
+              type="button"
+              onClick={() => setSelectedDate('all')}
+              className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                selectedDate === 'all'
+                  ? 'bg-tutu-lime text-tutu-dark'
+                  : 'bg-tutu-dark/70 text-tutu-light/75 hover:text-tutu-light border border-tutu-secondary/40'
+              }`}
+            >
+              Todas as datas
+            </button>
+          </div>
+        </div>
+
+        {extraRecordedDates.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-tutu-light/65">
+            <span>Outras datas com registros:</span>
+            {extraRecordedDates.map((dKey) => (
+              <button
+                key={dKey}
+                type="button"
+                onClick={() => setSelectedDate(dKey)}
+                className={`px-2 py-0.5 rounded-lg font-mono transition-colors ${
+                  selectedDate === dKey
+                    ? 'bg-tutu-lime/25 text-tutu-lime border border-tutu-lime/50 font-bold'
+                    : 'bg-tutu-dark/60 text-tutu-light/75 hover:text-tutu-light border border-tutu-secondary/40'
+                }`}
+              >
+                {formatDateKeyPtBr(dKey)}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Contadores exclusivos da data selecionada */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Todos')}
+            className={`p-3 rounded-xl border text-left transition-colors ${
+              statusFilter === 'Todos'
+                ? 'bg-tutu-lime/15 border-tutu-lime/60'
+                : 'bg-tutu-dark/60 border-tutu-secondary/40 hover:border-tutu-lime/40'
+            }`}
+          >
+            <div className="text-[11px] text-tutu-light/70">Total na data</div>
+            <div className="font-display font-bold text-xl text-tutu-light">{dateCounters.total}</div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Pendente')}
+            className={`p-3 rounded-xl border text-left transition-colors ${
+              statusFilter === 'Pendente'
+                ? 'bg-amber-500/20 border-amber-400/60'
+                : 'bg-tutu-dark/60 border-tutu-secondary/40 hover:border-amber-400/40'
+            }`}
+          >
+            <div className="text-[11px] text-amber-200/80">Pendentes</div>
+            <div className="font-display font-bold text-xl text-amber-300">{dateCounters.pending}</div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Aprovada')}
+            className={`p-3 rounded-xl border text-left transition-colors ${
+              statusFilter === 'Aprovada'
+                ? 'bg-tutu-lime/20 border-tutu-lime/60'
+                : 'bg-tutu-dark/60 border-tutu-secondary/40 hover:border-tutu-lime/40'
+            }`}
+          >
+            <div className="text-[11px] text-tutu-lime/80">Aprovadas</div>
+            <div className="font-display font-bold text-xl text-tutu-lime">{dateCounters.approved}</div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Rejeitada')}
+            className={`p-3 rounded-xl border text-left transition-colors ${
+              statusFilter === 'Rejeitada'
+                ? 'bg-red-500/20 border-red-400/60'
+                : 'bg-tutu-dark/60 border-tutu-secondary/40 hover:border-red-400/40'
+            }`}
+          >
+            <div className="text-[11px] text-red-200/80">Rejeitadas</div>
+            <div className="font-display font-bold text-xl text-red-300">{dateCounters.rejected}</div>
+          </button>
+        </div>
+      </div>
+
       {/* Barra de Filtros */}
       <div className="tutu-card p-4 sm:p-5 space-y-4 border border-tutu-secondary/40">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="text-xs font-bold uppercase tracking-wider text-tutu-light/80 flex items-center gap-1.5">
             <Filter className="w-3.5 h-3.5 text-tutu-lime" />
-            <span>Filtros de Auditoria ({filtered.length} registro(s))</span>
+            <span>
+              Filtros de Auditoria — {selectedDateDisplayLabel} ({filtered.length} registro(s))
+            </span>
           </span>
 
           <div className="flex flex-wrap gap-2">
-            {(['Todos', 'Pendente', 'Aprovada', 'Rejeitada'] as const).map((st) => (
-              <button
-                key={st}
-                type="button"
-                onClick={() => setStatusFilter(st)}
-                className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
-                  statusFilter === st
-                    ? 'bg-tutu-lime text-tutu-dark'
-                    : 'bg-tutu-secondary/25 text-tutu-light/80 hover:text-tutu-light'
-                }`}
-              >
-                {st === 'Pendente' ? 'Pendente de Conferência' : st}
-              </button>
-            ))}
+            {(['Todos', 'Pendente', 'Aprovada', 'Rejeitada'] as const).map((st) => {
+              const countForStatus =
+                st === 'Todos'
+                  ? dateCounters.total
+                  : st === 'Pendente'
+                  ? dateCounters.pending
+                  : st === 'Aprovada'
+                  ? dateCounters.approved
+                  : dateCounters.rejected;
+              return (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => setStatusFilter(st)}
+                  className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                    statusFilter === st
+                      ? 'bg-tutu-lime text-tutu-dark'
+                      : 'bg-tutu-secondary/25 text-tutu-light/80 hover:text-tutu-light'
+                  }`}
+                >
+                  {st === 'Pendente' ? 'Pendente de Conferência' : st} ({countForStatus})
+                </button>
+              );
+            })}
           </div>
         </div>
 

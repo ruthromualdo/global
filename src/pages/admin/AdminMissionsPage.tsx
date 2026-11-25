@@ -676,7 +676,7 @@ export const AdminMissionsPage: React.FC = () => {
                 Configuração de Cronômetros &amp; Bônus de Velocidade
               </h2>
               <p className="text-xs text-tutu-light/70">
-                Defina o tempo padrão do evento (1 a 30 min) e sobreposições individuais por missão.
+                Defina o tempo padrão do evento (1 a 30 min) e sobreposições individuais por missão. As alterações valem apenas para missões iniciadas após o ajuste, preservando cronômetros já iniciados e registros de dias anteriores.
               </p>
             </div>
           </div>

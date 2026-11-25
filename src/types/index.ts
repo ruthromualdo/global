@@ -144,6 +144,7 @@ export interface MissionCompletion {
   startupId: string;
   startupName: string;
   submittedAt: string;
+  submittedDate?: string | null;
   evidenceDescription: string;
   evidenceCode: string;
   evidenceFileName?: string;

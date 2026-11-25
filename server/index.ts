@@ -49,6 +49,10 @@ import {
   validateAndDetectEvidenceFile,
 } from './db/database';
 import {
+  hasActiveInProgressTimerForDefaultMissionsInDb,
+  hasActiveInProgressTimerForMissionInDb,
+} from './db/circuitScoring';
+import {
   createSessionInDb,
   extractBearerToken,
   hashPassword,
@@ -2786,20 +2790,40 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
           return;
         }
 
-        // Bloquear alteração de timer_minutes
-        if (
-          u.timerMinutes !== undefined &&
-          (u.timerMinutes === null
-            ? current.timerMinutes !== null
-            : Number(u.timerMinutes) !== current.timerMinutes)
-        ) {
-          db.exec('ROLLBACK;');
-          res.status(409).json({
-            error:
-              'O circuito oficial já foi iniciado por participantes. O tempo do cronômetro das missões oficiais está bloqueado.',
-            code: 'CIRCUIT_LOCKED',
-          });
-          return;
+        // Permitir ajuste de timer_minutes para missões ainda não iniciadas (novo dia),
+        // bloqueando apenas quando houver cronômetro ativo em andamento para esta missão
+        let nextOfficialTimerMinutes: number | null = current.timerMinutes ?? null;
+        if (u.timerMinutes !== undefined) {
+          const requestedTimerMinutes =
+            u.timerMinutes === null || u.timerMinutes === ''
+              ? null
+              : Math.trunc(Number(u.timerMinutes));
+
+          if (
+            requestedTimerMinutes !== null &&
+            (isNaN(requestedTimerMinutes) ||
+              requestedTimerMinutes < MIN_MISSION_TIMER_MINUTES ||
+              requestedTimerMinutes > MAX_MISSION_TIMER_MINUTES)
+          ) {
+            db.exec('ROLLBACK;');
+            res.status(400).json({
+              error: `O tempo do cronômetro deve ser um número inteiro entre ${MIN_MISSION_TIMER_MINUTES} e ${MAX_MISSION_TIMER_MINUTES} minutos (ou vazio para herdar o padrão global).`,
+            });
+            return;
+          }
+
+          if (requestedTimerMinutes !== (current.timerMinutes ?? null)) {
+            if (hasActiveInProgressTimerForMissionInDb(db, id)) {
+              db.exec('ROLLBACK;');
+              res.status(409).json({
+                error:
+                  'Há participante(s) com o cronômetro desta missão em andamento neste momento. Aguarde a conclusão ou expiração antes de alterar o tempo.',
+                code: 'MISSION_TIMER_IN_PROGRESS',
+              });
+              return;
+            }
+            nextOfficialTimerMinutes = requestedTimerMinutes;
+          }
         }
 
         // Bloquear alteração de critérios de conclusão
@@ -2843,14 +2867,16 @@ app.put('/api/missions/:id', requireAdmin, (req, res) => {
           return;
         }
 
-        // Operações permitidas em missão oficial: editar apenas título e descrição
+        // Operações permitidas em missão oficial após início do circuito:
+        // título, descrição e duração do cronômetro (somente para futuras execuções, preservando missões já iniciadas/concluídas)
         db.prepare(`
           UPDATE missions
-          SET title = ?, description = ?
+          SET title = ?, description = ?, timer_minutes = ?
           WHERE id = ?
         `).run(
           u.title ?? current.title,
           u.description ?? current.description,
+          nextOfficialTimerMinutes,
           id
         );
 
@@ -3741,6 +3767,7 @@ export function submitEvidenceUploadInDb(
   const evidenceCode = `EV-${Date.now().toString().slice(-6)}`;
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -4356,6 +4383,7 @@ export function submitEvidenceBatchInDb(
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const nowStr = new Date(nowMs).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -5176,6 +5204,7 @@ app.post('/api/validations', (req, res) => {
   const newId = `val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -6018,13 +6047,26 @@ app.put('/api/admin/settings', requireAdmin, (req: RequestWithAuth, res) => {
   const current = mapEventSettingsRow(row);
   const u = req.body;
 
+  const currentDefaultTimer = Number(row.default_mission_timer_minutes || 5);
   const defaultTimer =
     u.defaultMissionTimerMinutes !== undefined
       ? Math.max(
           MIN_MISSION_TIMER_MINUTES,
           Math.min(MAX_MISSION_TIMER_MINUTES, Math.trunc(Number(u.defaultMissionTimerMinutes)))
         )
-      : Number(row.default_mission_timer_minutes || 5);
+      : currentDefaultTimer;
+
+  if (
+    defaultTimer !== currentDefaultTimer &&
+    hasActiveInProgressTimerForDefaultMissionsInDb(db)
+  ) {
+    res.status(409).json({
+      error:
+        'Há participante(s) com cronômetro em andamento em missão oficial que utiliza o tempo padrão global. Aguarde a conclusão ou expiração antes de alterar o tempo padrão.',
+      code: 'MISSION_TIMER_IN_PROGRESS',
+    });
+    return;
+  }
 
   db.prepare(`
     UPDATE event_settings
@@ -6096,7 +6138,7 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
 
   db.exec('BEGIN IMMEDIATE TRANSACTION;');
   try {
-    const isStarted = hasOfficialCircuitStartedInDb(db);
+    const nowMs = Date.now();
 
     if (body.defaultTimerMinutes !== undefined) {
       const defMin = Math.trunc(Number(body.defaultTimerMinutes));
@@ -6108,27 +6150,18 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
         return;
       }
 
-      if (isStarted) {
-        const settingsRowCurrent = db
-          .prepare('SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1')
-          .get() as { default_mission_timer_minutes?: number } | undefined;
-        const currentDef = Number(settingsRowCurrent?.default_mission_timer_minutes || 5);
-        if (defMin !== currentDef) {
-          const hasOfficialUsingDefault = db
-            .prepare(
-              'SELECT COUNT(*) as count FROM missions WHERE active = 1 AND sequence_order IS NOT NULL AND timer_minutes IS NULL'
-            )
-            .get() as { count: number };
-          if (hasOfficialUsingDefault.count > 0) {
-            db.exec('ROLLBACK;');
-            res.status(409).json({
-              error:
-                'O circuito oficial já foi iniciado por participantes. A alteração do tempo padrão global que afeta missões oficiais está bloqueada.',
-              code: 'CIRCUIT_LOCKED',
-            });
-            return;
-          }
-        }
+      const settingsRowCurrent = db
+        .prepare('SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1')
+        .get() as { default_mission_timer_minutes?: number } | undefined;
+      const currentDef = Number(settingsRowCurrent?.default_mission_timer_minutes || 5);
+      if (defMin !== currentDef && hasActiveInProgressTimerForDefaultMissionsInDb(db, nowMs)) {
+        db.exec('ROLLBACK;');
+        res.status(409).json({
+          error:
+            'Há participante(s) com cronômetro em andamento em missão oficial que utiliza o tempo padrão global. Aguarde a conclusão ou expiração antes de alterar o tempo padrão.',
+          code: 'MISSION_TIMER_IN_PROGRESS',
+        });
+        return;
       }
 
       db.prepare(
@@ -6140,9 +6173,9 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
       const updateMissionTimer = db.prepare('UPDATE missions SET timer_minutes = ? WHERE id = ?');
       for (const [mId, val] of Object.entries(body.missionTimers)) {
         const mMission = db
-          .prepare('SELECT id, sequence_order, timer_minutes FROM missions WHERE id = ?')
+          .prepare('SELECT id, title, sequence_order, timer_minutes FROM missions WHERE id = ?')
           .get(mId) as
-          | { id: string; sequence_order: number | null; timer_minutes: number | null }
+          | { id: string; title: string; sequence_order: number | null; timer_minutes: number | null }
           | undefined;
         if (!mMission) continue;
 
@@ -6153,11 +6186,11 @@ app.put('/api/admin/timers', requireAdmin, (req, res) => {
             ? null
             : Math.trunc(Number(val));
 
-        if (isStarted && isOfficial && targetVal !== currentVal) {
+        if (isOfficial && targetVal !== currentVal && hasActiveInProgressTimerForMissionInDb(db, mId, nowMs)) {
           db.exec('ROLLBACK;');
           res.status(409).json({
-            error: `O circuito oficial já foi iniciado por participantes. A alteração do cronômetro da missão oficial "${mId}" está bloqueada.`,
-            code: 'CIRCUIT_LOCKED',
+            error: `Há participante(s) com o cronômetro da missão "${mMission.title}" em andamento neste momento. Aguarde a conclusão ou expiração antes de alterar este tempo.`,
+            code: 'MISSION_TIMER_IN_PROGRESS',
           });
           return;
         }

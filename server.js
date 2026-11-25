@@ -673,6 +673,33 @@ function getOfficialCircuitActivityCountInDb(database) {
 function hasOfficialCircuitStartedInDb(database) {
   return getOfficialCircuitActivityCountInDb(database) > 0;
 }
+function hasActiveInProgressTimerForMissionInDb(database, missionId, nowMs = Date.now()) {
+  const row = database.prepare(
+    `SELECT COUNT(*) AS count
+       FROM participant_missions pm
+       WHERE pm.mission_id = ?
+         AND pm.status = 'Em andamento'
+         AND pm.started_at_ms IS NOT NULL
+         AND pm.completed_at_ms IS NULL
+         AND (pm.target_end_at_ms IS NULL OR pm.target_end_at_ms > ?)`
+  ).get(missionId, nowMs);
+  return Number(row?.count || 0) > 0;
+}
+function hasActiveInProgressTimerForDefaultMissionsInDb(database, nowMs = Date.now()) {
+  const row = database.prepare(
+    `SELECT COUNT(*) AS count
+       FROM participant_missions pm
+       INNER JOIN missions m ON m.id = pm.mission_id
+       WHERE m.active = 1
+         AND m.sequence_order IS NOT NULL
+         AND m.timer_minutes IS NULL
+         AND pm.status = 'Em andamento'
+         AND pm.started_at_ms IS NOT NULL
+         AND pm.completed_at_ms IS NULL
+         AND (pm.target_end_at_ms IS NULL OR pm.target_end_at_ms > ?)`
+  ).get(nowMs);
+  return Number(row?.count || 0) > 0;
+}
 function compactCircuitSequencesInDb(database) {
   database.prepare("UPDATE missions SET sequence_order = NULL WHERE active = 0 AND sequence_order IS NOT NULL").run();
   const activeOfficial = database.prepare(`
@@ -2801,8 +2828,42 @@ function getEvidenceFilesForCompletions(completionIds, targetDb = db) {
   }
   return result;
 }
+var BRASILIA_DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Sao_Paulo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
+function resolveSubmissionDateKeyBrasilia(submittedAt, recordId) {
+  const text = String(submittedAt || "").trim();
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})\b/);
+  if (brMatch) {
+    const [, dd, mm, yyyy] = brMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+    const parsedMs = Date.parse(text);
+    if (!Number.isNaN(parsedMs)) {
+      return BRASILIA_DATE_KEY_FORMATTER.format(new Date(parsedMs));
+    }
+  }
+  const isoDateMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})\b/);
+  if (isoDateMatch) {
+    const [, yyyy, mm, dd] = isoDateMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  const idMatch = String(recordId || "").match(/^val-(\d{12,14})-/);
+  if (idMatch) {
+    const ms = Number(idMatch[1]);
+    if (Number.isFinite(ms) && ms > 0) {
+      return BRASILIA_DATE_KEY_FORMATTER.format(new Date(ms));
+    }
+  }
+  return null;
+}
 function mapValidationRow(row, evidenceFiles) {
   const files = evidenceFiles && evidenceFiles.length > 0 ? evidenceFiles : void 0;
+  const submittedAtStr = String(row.submitted_at);
   return {
     id: String(row.id),
     participantId: String(row.participant_id),
@@ -2811,7 +2872,8 @@ function mapValidationRow(row, evidenceFiles) {
     missionTitle: String(row.mission_title),
     startupId: String(row.startup_id),
     startupName: String(row.startup_name),
-    submittedAt: String(row.submitted_at),
+    submittedAt: submittedAtStr,
+    submittedDate: resolveSubmissionDateKeyBrasilia(submittedAtStr, String(row.id)),
     evidenceDescription: String(row.evidence_description),
     evidenceCode: String(row.evidence_code),
     evidenceFileName: row.evidence_file_name ? String(row.evidence_file_name) : void 0,
@@ -5217,13 +5279,27 @@ app.put("/api/missions/:id", requireAdmin, (req, res) => {
           });
           return;
         }
-        if (u.timerMinutes !== void 0 && (u.timerMinutes === null ? current.timerMinutes !== null : Number(u.timerMinutes) !== current.timerMinutes)) {
-          db.exec("ROLLBACK;");
-          res.status(409).json({
-            error: "O circuito oficial j\xE1 foi iniciado por participantes. O tempo do cron\xF4metro das miss\xF5es oficiais est\xE1 bloqueado.",
-            code: "CIRCUIT_LOCKED"
-          });
-          return;
+        let nextOfficialTimerMinutes = current.timerMinutes ?? null;
+        if (u.timerMinutes !== void 0) {
+          const requestedTimerMinutes = u.timerMinutes === null || u.timerMinutes === "" ? null : Math.trunc(Number(u.timerMinutes));
+          if (requestedTimerMinutes !== null && (isNaN(requestedTimerMinutes) || requestedTimerMinutes < MIN_MISSION_TIMER_MINUTES || requestedTimerMinutes > MAX_MISSION_TIMER_MINUTES)) {
+            db.exec("ROLLBACK;");
+            res.status(400).json({
+              error: `O tempo do cron\xF4metro deve ser um n\xFAmero inteiro entre ${MIN_MISSION_TIMER_MINUTES} e ${MAX_MISSION_TIMER_MINUTES} minutos (ou vazio para herdar o padr\xE3o global).`
+            });
+            return;
+          }
+          if (requestedTimerMinutes !== (current.timerMinutes ?? null)) {
+            if (hasActiveInProgressTimerForMissionInDb(db, id)) {
+              db.exec("ROLLBACK;");
+              res.status(409).json({
+                error: "H\xE1 participante(s) com o cron\xF4metro desta miss\xE3o em andamento neste momento. Aguarde a conclus\xE3o ou expira\xE7\xE3o antes de alterar o tempo.",
+                code: "MISSION_TIMER_IN_PROGRESS"
+              });
+              return;
+            }
+            nextOfficialTimerMinutes = requestedTimerMinutes;
+          }
         }
         if (u.completionCriteria !== void 0 && String(u.completionCriteria).trim() !== String(current.completionCriteria).trim()) {
           db.exec("ROLLBACK;");
@@ -5251,11 +5327,12 @@ app.put("/api/missions/:id", requireAdmin, (req, res) => {
         }
         db.prepare(`
           UPDATE missions
-          SET title = ?, description = ?
+          SET title = ?, description = ?, timer_minutes = ?
           WHERE id = ?
         `).run(
           u.title ?? current.title,
           u.description ?? current.description,
+          nextOfficialTimerMinutes,
           id
         );
         db.exec("COMMIT;");
@@ -5887,6 +5964,7 @@ function submitEvidenceUploadInDb(targetDb, params) {
   const evidenceCode = `EV-${Date.now().toString().slice(-6)}`;
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -6353,6 +6431,7 @@ function submitEvidenceBatchInDb(targetDb, params) {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const nowStr = new Date(nowMs).toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -6992,6 +7071,7 @@ app.post("/api/validations", (req, res) => {
   const newId = `val-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const nowMs = Date.now();
   const nowStr = new Date(nowMs).toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -7611,10 +7691,18 @@ app.put("/api/admin/settings", requireAdmin, (req, res) => {
   const row = db.prepare("SELECT * FROM event_settings WHERE id = 1").get();
   const current = mapEventSettingsRow(row);
   const u = req.body;
+  const currentDefaultTimer = Number(row.default_mission_timer_minutes || 5);
   const defaultTimer = u.defaultMissionTimerMinutes !== void 0 ? Math.max(
     MIN_MISSION_TIMER_MINUTES,
     Math.min(MAX_MISSION_TIMER_MINUTES, Math.trunc(Number(u.defaultMissionTimerMinutes)))
-  ) : Number(row.default_mission_timer_minutes || 5);
+  ) : currentDefaultTimer;
+  if (defaultTimer !== currentDefaultTimer && hasActiveInProgressTimerForDefaultMissionsInDb(db)) {
+    res.status(409).json({
+      error: "H\xE1 participante(s) com cron\xF4metro em andamento em miss\xE3o oficial que utiliza o tempo padr\xE3o global. Aguarde a conclus\xE3o ou expira\xE7\xE3o antes de alterar o tempo padr\xE3o.",
+      code: "MISSION_TIMER_IN_PROGRESS"
+    });
+    return;
+  }
   db.prepare(`
     UPDATE event_settings
     SET event_name = ?, dates = ?, location = ?, city = ?,
@@ -7662,7 +7750,7 @@ app.put("/api/admin/timers", requireAdmin, (req, res) => {
   const body = req.body;
   db.exec("BEGIN IMMEDIATE TRANSACTION;");
   try {
-    const isStarted = hasOfficialCircuitStartedInDb(db);
+    const nowMs = Date.now();
     if (body.defaultTimerMinutes !== void 0) {
       const defMin = Math.trunc(Number(body.defaultTimerMinutes));
       if (isNaN(defMin) || defMin < MIN_MISSION_TIMER_MINUTES || defMin > MAX_MISSION_TIMER_MINUTES) {
@@ -7672,22 +7760,15 @@ app.put("/api/admin/timers", requireAdmin, (req, res) => {
         });
         return;
       }
-      if (isStarted) {
-        const settingsRowCurrent = db.prepare("SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1").get();
-        const currentDef = Number(settingsRowCurrent?.default_mission_timer_minutes || 5);
-        if (defMin !== currentDef) {
-          const hasOfficialUsingDefault = db.prepare(
-            "SELECT COUNT(*) as count FROM missions WHERE active = 1 AND sequence_order IS NOT NULL AND timer_minutes IS NULL"
-          ).get();
-          if (hasOfficialUsingDefault.count > 0) {
-            db.exec("ROLLBACK;");
-            res.status(409).json({
-              error: "O circuito oficial j\xE1 foi iniciado por participantes. A altera\xE7\xE3o do tempo padr\xE3o global que afeta miss\xF5es oficiais est\xE1 bloqueada.",
-              code: "CIRCUIT_LOCKED"
-            });
-            return;
-          }
-        }
+      const settingsRowCurrent = db.prepare("SELECT default_mission_timer_minutes FROM event_settings WHERE id = 1 LIMIT 1").get();
+      const currentDef = Number(settingsRowCurrent?.default_mission_timer_minutes || 5);
+      if (defMin !== currentDef && hasActiveInProgressTimerForDefaultMissionsInDb(db, nowMs)) {
+        db.exec("ROLLBACK;");
+        res.status(409).json({
+          error: "H\xE1 participante(s) com cron\xF4metro em andamento em miss\xE3o oficial que utiliza o tempo padr\xE3o global. Aguarde a conclus\xE3o ou expira\xE7\xE3o antes de alterar o tempo padr\xE3o.",
+          code: "MISSION_TIMER_IN_PROGRESS"
+        });
+        return;
       }
       db.prepare(
         "UPDATE event_settings SET default_mission_timer_minutes = ? WHERE id = 1"
@@ -7696,16 +7777,16 @@ app.put("/api/admin/timers", requireAdmin, (req, res) => {
     if (body.missionTimers && typeof body.missionTimers === "object") {
       const updateMissionTimer = db.prepare("UPDATE missions SET timer_minutes = ? WHERE id = ?");
       for (const [mId, val] of Object.entries(body.missionTimers)) {
-        const mMission = db.prepare("SELECT id, sequence_order, timer_minutes FROM missions WHERE id = ?").get(mId);
+        const mMission = db.prepare("SELECT id, title, sequence_order, timer_minutes FROM missions WHERE id = ?").get(mId);
         if (!mMission) continue;
         const isOfficial = mMission.sequence_order !== null && mMission.sequence_order !== void 0;
         const currentVal = mMission.timer_minutes;
         const targetVal = val === null || val === void 0 || String(val) === "" ? null : Math.trunc(Number(val));
-        if (isStarted && isOfficial && targetVal !== currentVal) {
+        if (isOfficial && targetVal !== currentVal && hasActiveInProgressTimerForMissionInDb(db, mId, nowMs)) {
           db.exec("ROLLBACK;");
           res.status(409).json({
-            error: `O circuito oficial j\xE1 foi iniciado por participantes. A altera\xE7\xE3o do cron\xF4metro da miss\xE3o oficial "${mId}" est\xE1 bloqueada.`,
-            code: "CIRCUIT_LOCKED"
+            error: `H\xE1 participante(s) com o cron\xF4metro da miss\xE3o "${mMission.title}" em andamento neste momento. Aguarde a conclus\xE3o ou expira\xE7\xE3o antes de alterar este tempo.`,
+            code: "MISSION_TIMER_IN_PROGRESS"
           });
           return;
         }

@@ -1218,11 +1218,65 @@ export function getEvidenceFilesForCompletions(
   return result;
 }
 
+const BRASILIA_DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/**
+ * Extrai a data oficial de submissão no formato YYYY-MM-DD (America/Sao_Paulo)
+ * exclusivamente a partir do momento em que o participante enviou a evidência
+ * (submitted_at ou fallback pelo timestamp embutido no id val-<ms>-...),
+ * nunca utilizando reviewed_at.
+ */
+export function resolveSubmissionDateKeyBrasilia(
+  submittedAt?: string | null,
+  recordId?: string | null
+): string | null {
+  const text = String(submittedAt || '').trim();
+
+  // Formato pt-BR gravado no envio: "DD/MM/AAAA, HH:MM" ou "DD/MM/AAAA HH:MM"
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})\b/);
+  if (brMatch) {
+    const [, dd, mm, yyyy] = brMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Formato ISO com timezone explícito (converte para America/Sao_Paulo)
+  if (/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+    const parsedMs = Date.parse(text);
+    if (!Number.isNaN(parsedMs)) {
+      return BRASILIA_DATE_KEY_FORMATTER.format(new Date(parsedMs));
+    }
+  }
+
+  // Formato YYYY-MM-DD (naive, já assumido em America/Sao_Paulo)
+  const isoDateMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})\b/);
+  if (isoDateMatch) {
+    const [, yyyy, mm, dd] = isoDateMatch;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Fallback seguro: timestamp Unix em ms embutido no ID "val-<ms>-..."
+  const idMatch = String(recordId || '').match(/^val-(\d{12,14})-/);
+  if (idMatch) {
+    const ms = Number(idMatch[1]);
+    if (Number.isFinite(ms) && ms > 0) {
+      return BRASILIA_DATE_KEY_FORMATTER.format(new Date(ms));
+    }
+  }
+
+  return null;
+}
+
 export function mapValidationRow(
   row: Record<string, unknown>,
   evidenceFiles?: EvidenceFileItem[]
 ): MissionCompletion {
   const files = evidenceFiles && evidenceFiles.length > 0 ? evidenceFiles : undefined;
+  const submittedAtStr = String(row.submitted_at);
   return {
     id: String(row.id),
     participantId: String(row.participant_id),
@@ -1231,7 +1285,8 @@ export function mapValidationRow(
     missionTitle: String(row.mission_title),
     startupId: String(row.startup_id),
     startupName: String(row.startup_name),
-    submittedAt: String(row.submitted_at),
+    submittedAt: submittedAtStr,
+    submittedDate: resolveSubmissionDateKeyBrasilia(submittedAtStr, String(row.id)),
     evidenceDescription: String(row.evidence_description),
     evidenceCode: String(row.evidence_code),
     evidenceFileName: row.evidence_file_name ? String(row.evidence_file_name) : undefined,

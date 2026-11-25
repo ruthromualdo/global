@@ -186,6 +186,59 @@ export function hasOfficialCircuitStartedInDb(database: DatabaseSync): boolean {
 }
 
 /**
+ * Retorna true se existir pelo menos um participante com cronômetro ATIVO EM ANDAMENTO
+ * (status = 'Em andamento', iniciado, não concluído e ainda não expirado) para a missão informada.
+ *
+ * Missões já concluídas (de hoje ou de dias anteriores) ou cronômetros já expirados
+ * NÃO bloqueiam a atualização da duração para futuras execuções.
+ */
+export function hasActiveInProgressTimerForMissionInDb(
+  database: DatabaseSync,
+  missionId: string,
+  nowMs: number = Date.now()
+): boolean {
+  const row = database
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM participant_missions pm
+       WHERE pm.mission_id = ?
+         AND pm.status = 'Em andamento'
+         AND pm.started_at_ms IS NOT NULL
+         AND pm.completed_at_ms IS NULL
+         AND (pm.target_end_at_ms IS NULL OR pm.target_end_at_ms > ?)`
+    )
+    .get(missionId, nowMs) as { count?: number } | undefined;
+
+  return Number(row?.count || 0) > 0;
+}
+
+/**
+ * Retorna true se existir pelo menos um participante com cronômetro ATIVO EM ANDAMENTO
+ * em qualquer missão oficial ativa que herda o tempo padrão global (timer_minutes IS NULL).
+ */
+export function hasActiveInProgressTimerForDefaultMissionsInDb(
+  database: DatabaseSync,
+  nowMs: number = Date.now()
+): boolean {
+  const row = database
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM participant_missions pm
+       INNER JOIN missions m ON m.id = pm.mission_id
+       WHERE m.active = 1
+         AND m.sequence_order IS NOT NULL
+         AND m.timer_minutes IS NULL
+         AND pm.status = 'Em andamento'
+         AND pm.started_at_ms IS NOT NULL
+         AND pm.completed_at_ms IS NULL
+         AND (pm.target_end_at_ms IS NULL OR pm.target_end_at_ms > ?)`
+    )
+    .get(nowMs) as { count?: number } | undefined;
+
+  return Number(row?.count || 0) > 0;
+}
+
+/**
  * Compacta a numeração sequencial de todas as missões oficiais ativas (active = 1 AND sequence_order IS NOT NULL).
  * Garante que a numeração seja contígua de 1 até N (1, 2, ..., N), eliminando lacunas deixadas
  * por exclusões, desativações ou reordenações antes do início do evento.
