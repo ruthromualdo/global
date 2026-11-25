@@ -8,6 +8,8 @@ const __dirname = path.dirname(__filename);
 
 const DEFAULT_EVIDENCE_DIR = fs.existsSync(path.join(__dirname, 'schema.sql'))
   ? path.resolve(__dirname, '../storage/evidences')
+  : fs.existsSync(path.join(__dirname, 'server', 'db', 'schema.sql'))
+  ? path.resolve(__dirname, 'server/storage/evidences')
   : path.resolve(process.cwd(), 'server/storage/evidences');
 
 export const EVIDENCE_STORAGE_DIR = process.env.DESAFIO_EVIDENCE_DIR

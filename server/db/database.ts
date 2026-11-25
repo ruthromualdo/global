@@ -31,6 +31,8 @@ const __dirname = path.dirname(__filename);
 
 const DB_DIR = fs.existsSync(path.join(__dirname, 'schema.sql'))
   ? __dirname
+  : fs.existsSync(path.join(__dirname, 'server', 'db', 'schema.sql'))
+  ? path.join(__dirname, 'server', 'db')
   : path.resolve(process.cwd(), 'server/db');
 
 export const DB_FILE_PATH = process.env.DESAFIO_DB_PATH

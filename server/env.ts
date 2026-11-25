@@ -1,11 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __envDir = path.dirname(fileURLToPath(import.meta.url));
+
+function resolveDefaultEnvPath(): string {
+  const candidates = [
+    path.resolve(__envDir, '.env'),
+    path.resolve(__envDir, '..', '.env'),
+    path.resolve(process.cwd(), '.env'),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || candidates[0];
+}
 
 /**
  * Carrega variáveis de um arquivo .env na raiz do projeto sem sobrescrever
  * variáveis já definidas no ambiente do processo (painel Hostinger, PM2, Docker, etc.).
  */
-export function loadEnvFileIfExists(envPath = path.resolve(process.cwd(), '.env')): void {
+export function loadEnvFileIfExists(envPath = resolveDefaultEnvPath()): void {
   if (!fs.existsSync(envPath)) return;
 
   const content = fs.readFileSync(envPath, 'utf-8');

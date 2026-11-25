@@ -4,6 +4,7 @@ import cors from 'cors';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import { VALID_BRAZILIAN_DDDS } from '../src/utils/formatters';
@@ -138,7 +139,25 @@ const allowedCorsOrigins = new Set<string>(
   configuredCorsOrigins.length > 0 ? configuredCorsOrigins : defaultDevOrigins
 );
 
-app.use(
+const SERVER_ENTRY_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+function isSameOriginAsRequest(origin: string, req: express.Request): boolean {
+  try {
+    const parsedOrigin = new URL(origin);
+    const forwardedHost = String(req.headers['x-forwarded-host'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const directHost = String(req.headers.host || '').trim().toLowerCase();
+    const requestHost = forwardedHost || directHost;
+    if (!requestHost) return false;
+    return parsedOrigin.host.toLowerCase() === requestHost;
+  } catch {
+    return false;
+  }
+}
+
+app.use((req, res, next) => {
   cors({
     origin: (origin, callback) => {
       // Requisições sem cabeçalho Origin (same-origin, healthchecks, clientes CLI) são permitidas sem abrir CORS '*'
@@ -147,7 +166,7 @@ app.use(
         return;
       }
       const normalizedOrigin = origin.trim().replace(/\/+$/, '');
-      if (allowedCorsOrigins.has(normalizedOrigin)) {
+      if (allowedCorsOrigins.has(normalizedOrigin) || isSameOriginAsRequest(normalizedOrigin, req)) {
         callback(null, true);
         return;
       }
@@ -169,8 +188,8 @@ app.use(
       'X-Evidence-Description',
       'X-Participant-Id',
     ],
-  })
-);
+  })(req, res, next);
+});
 app.use(express.json());
 
 // Rate limiters nativos em memória (instância única, limites independentes por rota)
@@ -6662,7 +6681,11 @@ app.use('/api', (_req, res) => {
 });
 
 // Serve o frontend compilado (dist/) em produção / deploy único na Hostinger
-const DIST_DIR = path.resolve(process.cwd(), 'dist');
+const DIST_DIR = [
+  path.resolve(SERVER_ENTRY_DIR, 'dist'),
+  path.resolve(SERVER_ENTRY_DIR, '..', 'dist'),
+  path.resolve(process.cwd(), 'dist'),
+].find((dir) => fs.existsSync(path.join(dir, 'index.html'))) || path.resolve(process.cwd(), 'dist');
 const DIST_INDEX_FILE = path.join(DIST_DIR, 'index.html');
 if (fs.existsSync(DIST_INDEX_FILE)) {
   // Cache em memória dos assets estáticos já comprimidos em Gzip (~150 KB totais em RAM):

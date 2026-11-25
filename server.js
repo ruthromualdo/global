@@ -1,7 +1,17 @@
 // server/env.ts
 import fs from "node:fs";
 import path from "node:path";
-function loadEnvFileIfExists(envPath = path.resolve(process.cwd(), ".env")) {
+import { fileURLToPath } from "node:url";
+var __envDir = path.dirname(fileURLToPath(import.meta.url));
+function resolveDefaultEnvPath() {
+  const candidates = [
+    path.resolve(__envDir, ".env"),
+    path.resolve(__envDir, "..", ".env"),
+    path.resolve(process.cwd(), ".env")
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || candidates[0];
+}
+function loadEnvFileIfExists(envPath = resolveDefaultEnvPath()) {
   if (!fs.existsSync(envPath)) return;
   const content = fs.readFileSync(envPath, "utf-8");
   for (const rawLine of content.split(/\r?\n/)) {
@@ -26,6 +36,7 @@ import cors from "cors";
 import crypto3 from "node:crypto";
 import fs4 from "node:fs";
 import path5 from "node:path";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
 import zlib from "node:zlib";
 
 // src/utils/formatters.ts
@@ -103,7 +114,7 @@ var VALID_BRAZILIAN_DDDS = /* @__PURE__ */ new Set([
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 import fs3 from "node:fs";
 import path4 from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/mocks/mockData.ts
 var initialEventSettings = {
@@ -579,7 +590,7 @@ function requireAdmin(req, res, next) {
 
 // server/scripts/seedOfficialCatalog2026.ts
 import path2 from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 // server/db/circuitScoring.ts
@@ -1284,7 +1295,7 @@ function seedOfficialCatalog2026InDb(database) {
     throw err;
   }
 }
-var __filename = fileURLToPath(import.meta.url);
+var __filename = fileURLToPath2(import.meta.url);
 if (process.argv[1] && path2.basename(process.argv[1]).toLowerCase() === "seedofficialcatalog2026.ts" && path2.resolve(process.argv[1]) === path2.resolve(__filename)) {
   const defaultProdDb = path2.resolve(path2.dirname(__filename), "../db/desafio_global.sqlite");
   const targetDbPath = process.env.DESAFIO_DB_PATH ? path2.resolve(process.env.DESAFIO_DB_PATH) : defaultProdDb;
@@ -1631,10 +1642,10 @@ function getDailyRankingsFromDb(targetDb, options) {
 import crypto2 from "node:crypto";
 import fs2 from "node:fs";
 import path3 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-var __filename2 = fileURLToPath2(import.meta.url);
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+var __filename2 = fileURLToPath3(import.meta.url);
 var __dirname = path3.dirname(__filename2);
-var DEFAULT_EVIDENCE_DIR = fs2.existsSync(path3.join(__dirname, "schema.sql")) ? path3.resolve(__dirname, "../storage/evidences") : path3.resolve(process.cwd(), "server/storage/evidences");
+var DEFAULT_EVIDENCE_DIR = fs2.existsSync(path3.join(__dirname, "schema.sql")) ? path3.resolve(__dirname, "../storage/evidences") : fs2.existsSync(path3.join(__dirname, "server", "db", "schema.sql")) ? path3.resolve(__dirname, "server/storage/evidences") : path3.resolve(process.cwd(), "server/storage/evidences");
 var EVIDENCE_STORAGE_DIR = process.env.DESAFIO_EVIDENCE_DIR ? path3.resolve(process.env.DESAFIO_EVIDENCE_DIR) : DEFAULT_EVIDENCE_DIR;
 var MAX_EVIDENCE_SIZE_BYTES = 5 * 1024 * 1024;
 var MAX_VIDEO_EVIDENCE_SIZE_BYTES = Number(
@@ -1989,9 +2000,9 @@ function resolveSafeEvidenceFilePath(storedName, storageDir = EVIDENCE_STORAGE_D
 }
 
 // server/db/database.ts
-var __filename3 = fileURLToPath3(import.meta.url);
+var __filename3 = fileURLToPath4(import.meta.url);
 var __dirname2 = path4.dirname(__filename3);
-var DB_DIR = fs3.existsSync(path4.join(__dirname2, "schema.sql")) ? __dirname2 : path4.resolve(process.cwd(), "server/db");
+var DB_DIR = fs3.existsSync(path4.join(__dirname2, "schema.sql")) ? __dirname2 : fs3.existsSync(path4.join(__dirname2, "server", "db", "schema.sql")) ? path4.join(__dirname2, "server", "db") : path4.resolve(process.cwd(), "server/db");
 var DB_FILE_PATH = process.env.DESAFIO_DB_PATH ? path4.resolve(process.env.DESAFIO_DB_PATH) : path4.join(DB_DIR, "desafio_global.sqlite");
 var SCHEMA_FILE_PATH = path4.join(DB_DIR, "schema.sql");
 fs3.mkdirSync(path4.dirname(DB_FILE_PATH), { recursive: true });
@@ -3458,7 +3469,20 @@ var defaultDevOrigins = process.env.NODE_ENV === "production" ? [] : [
 var allowedCorsOrigins = new Set(
   configuredCorsOrigins.length > 0 ? configuredCorsOrigins : defaultDevOrigins
 );
-app.use(
+var SERVER_ENTRY_DIR = path5.dirname(fileURLToPath5(import.meta.url));
+function isSameOriginAsRequest(origin, req) {
+  try {
+    const parsedOrigin = new URL(origin);
+    const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim().toLowerCase();
+    const directHost = String(req.headers.host || "").trim().toLowerCase();
+    const requestHost = forwardedHost || directHost;
+    if (!requestHost) return false;
+    return parsedOrigin.host.toLowerCase() === requestHost;
+  } catch {
+    return false;
+  }
+}
+app.use((req, res, next) => {
   cors({
     origin: (origin, callback) => {
       if (!origin) {
@@ -3466,7 +3490,7 @@ app.use(
         return;
       }
       const normalizedOrigin = origin.trim().replace(/\/+$/, "");
-      if (allowedCorsOrigins.has(normalizedOrigin)) {
+      if (allowedCorsOrigins.has(normalizedOrigin) || isSameOriginAsRequest(normalizedOrigin, req)) {
         callback(null, true);
         return;
       }
@@ -3485,8 +3509,8 @@ app.use(
       "X-Evidence-Description",
       "X-Participant-Id"
     ]
-  })
-);
+  })(req, res, next);
+});
 app.use(express.json());
 var DEFAULT_RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1e3;
 var loginRateLimiter = createInMemoryRateLimiter({
@@ -8130,7 +8154,11 @@ app.put("/api/admin/governance/:id", requireAdmin, (req, res) => {
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "Endpoint da API n\xE3o encontrado.", code: "API_NOT_FOUND" });
 });
-var DIST_DIR = path5.resolve(process.cwd(), "dist");
+var DIST_DIR = [
+  path5.resolve(SERVER_ENTRY_DIR, "dist"),
+  path5.resolve(SERVER_ENTRY_DIR, "..", "dist"),
+  path5.resolve(process.cwd(), "dist")
+].find((dir) => fs4.existsSync(path5.join(dir, "index.html"))) || path5.resolve(process.cwd(), "dist");
 var DIST_INDEX_FILE = path5.join(DIST_DIR, "index.html");
 if (fs4.existsSync(DIST_INDEX_FILE)) {
   const staticGzipCache = /* @__PURE__ */ new Map();
